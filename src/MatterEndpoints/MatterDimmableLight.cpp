@@ -122,8 +122,9 @@ bool MatterDimmableLight::attributeChangeCB(uint16_t endpoint_id, uint32_t clust
       ret &= _onChangeCB(newState, brightnessLevel);
     }
     if (ret) {
-      // no write back here: the change already came from the fabric
-      // (mode 0 exists in AT+MTATTR precisely so this path never echoes)
+      // no write back here: this callback is itself the notification of a
+      // change already applied (from a controller, or from this host's own
+      // write echo), and issuing a write from inside it would loop
       onOffState = newState;
     }
   } else if (endpoint_id == getEndPointId() && cluster_id == kLevelControlClusterId && attribute_id == kCurrentLevelAttributeId) {

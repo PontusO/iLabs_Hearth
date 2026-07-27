@@ -51,8 +51,10 @@ void MatterEndPoint::setEndPointId(uint16_t ep) {
 
 /*
  * Command construction, showing the mode split that is the point of this
- * class: setAttributeVal (mode 0) is silent, updateAttributeVal (mode 1) is
- * reported to the fabric. See AT_MT_SPEC.md S3.8.
+ * class: setAttributeVal (mode 0) is not reported to the fabric,
+ * updateAttributeVal (mode 1) is. Both still echo a +MTATTR URC back to
+ * this host; the mode only controls what the fabric sees. See
+ * AT_MT_SPEC.md S3.8.
  */
 bool MatterEndPoint::hearthWriteAttr(uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *attrVal, int mode) {
   if (!hearthEndPointAddressable()) {

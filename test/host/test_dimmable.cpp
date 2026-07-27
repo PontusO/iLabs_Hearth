@@ -81,7 +81,7 @@ static void test_local_write_echo_fires_onchange_from_inside_the_setter(void) {
 static void test_toggle(void) {
   MockStream s; MatterDimmableLight light;
   bringUp(s, light, false, 64);
-  s.expect("AT+MTATTR=1,6,0,1,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
   check("toggle from off turns on", light.toggle() && light.getOnOff());
   check("no unexpected commands", s.unexpected().empty());
 }
@@ -89,7 +89,7 @@ static void test_toggle(void) {
 static void test_assignment_operator(void) {
   MockStream s; MatterDimmableLight light;
   bringUp(s, light, false, 64);
-  s.expect("AT+MTATTR=1,6,0,1,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
   light = true;
   check("operator= writes and caches", light.getOnOff() == true);
   check("no unexpected commands", s.unexpected().empty());

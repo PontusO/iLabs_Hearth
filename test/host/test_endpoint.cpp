@@ -21,23 +21,23 @@ public:
 };
 
 /*
- * RE-REVIEW, IMPORTANT 2. The two modes differ on the wire in what comes
- * back, not just in what the firmware does with the value: mode 1 goes
- * through esp_matter::attribute::update(), which fires the firmware's own
- * POST_UPDATE callback and so echoes a +MTATTR URC before OK, while mode 0
- * goes through attribute::set_val() and echoes nothing (main.cpp:393,
- * AT_MT_SPEC.md S3.8). That asymmetry is the whole reason mode 0 exists.
- * Scripted here as the firmware behaves.
+ * CORRECTION. The two modes do not differ in whether the firmware echoes:
+ * mode 1 goes through esp_matter::attribute::update(), and mode 0 goes
+ * through attribute::set_val(a, &val) with its call_callbacks parameter
+ * defaulting to true (main.cpp:394, esp_matter_data_model.h:927), so both
+ * reach set_val_internal's POST_UPDATE and both raise a +MTATTR URC before
+ * OK. What mode 0 actually suppresses is the report to the fabric, not the
+ * echo to this host. Scripted here as the firmware behaves.
  *
- * This endpoint is not in the declaration registry, so the echo has no
- * target and hearthDispatchAttr() drops it. That is the documented policy
- * for an endpoint the sketch never declared, and it is asserted rather than
- * assumed.
+ * This endpoint is not in the declaration registry, so neither echo has a
+ * target and hearthDispatchAttr() drops both. That is the documented
+ * policy for an endpoint the sketch never declared, and it is asserted
+ * rather than assumed.
  */
 static void test_write_modes(void) {
   MatterEndPoint::hearthClearDeclarations();
   MockStream s;
-  s.expect("AT+MTATTR=1,6,0,1,0", "OK\r\n");
+  s.expect("AT+MTATTR=1,6,0,1,0", "+MTATTR:1,6,0,1\r\nOK\r\n");
   s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
   Hearth.begin(s);
   TestEndPoint ep;
@@ -46,7 +46,7 @@ static void test_write_modes(void) {
   check("setAttributeVal writes mode 0", ep.setAttributeVal(0x0006, 0x0000, &v));
   check("updateAttributeVal writes mode 1", ep.updateAttributeVal(0x0006, 0x0000, &v));
   check("script drained", s.scriptDrained());
-  check("the mode-1 echo reached no undeclared endpoint", ep.changes == 0);
+  check("neither echo reached an undeclared endpoint", ep.changes == 0);
   check("no unexpected commands", s.unexpected().empty());
 }
 

@@ -100,7 +100,7 @@ static void test_local_write_echoes_fire_onchange_from_inside_the_setters(void) 
 static void test_toggle(void) {
   MockStream s; MatterColorTemperatureLight light;
   bringUpCT(s, light);
-  s.expect("AT+MTATTR=1,6,0,1,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
   check("toggle from off turns on", light.toggle() && light.getOnOff());
   check("no unexpected commands", s.unexpected().empty());
 }
@@ -108,7 +108,7 @@ static void test_toggle(void) {
 static void test_assignment_operator(void) {
   MockStream s; MatterColorTemperatureLight light;
   bringUpCT(s, light);
-  s.expect("AT+MTATTR=1,6,0,1,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
   light = true;
   check("operator= writes and caches", light.getOnOff() == true);
   check("no unexpected commands", s.unexpected().empty());
@@ -293,7 +293,7 @@ static void test_sensor_negative(void) {
 static void test_sensor_operators(void) {
   MockStream s; MatterTemperatureSensor sensor;
   bringUpSensor(s, sensor);
-  s.expect("AT+MTATTR=1,1026,0,1000,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,1026,0,1000,1", "+MTATTR:1,1026,0,1000\r\nOK\r\n");
   sensor = 10.0;
   check("operator double reads back", (double)sensor > 9.99 && (double)sensor < 10.01);
   check("no unexpected commands", s.unexpected().empty());

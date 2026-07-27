@@ -107,6 +107,20 @@ the rest of the boot, so a stray repeat call is bounded rather than
 catastrophic, but there is still no reason to make one: `Matter.begin()`
 belongs in `setup()`.
 
+**Calling `end()` then `begin()` on an endpoint object after `Matter.begin()`
+has already run leaves it permanently unusable.** `end()` only clears the
+object's own `started` flag; it does not remove the endpoint from the
+declaration registry. A later `begin()` re-declares against that same
+registry entry, and once `Matter.begin()` has reconciled, any declaration
+arriving after that point is refused (`+MTERR:10`, the same code the wire
+uses for a rejected composition change). `begin()` therefore returns `false`
+and never sets `started` back to `true`, so every setter on that object
+returns `false` from then on, with no crash and no further diagnostic. This
+is exact upstream parity, not a Hearth bug: arduino-esp32 3.3.8 refuses a
+second `begin()` on the same object the same way (`getEndPointId() != 0`
+check, logged and returns `false`), so it is not being changed here, only
+written down. `end(); begin();` is only safe *before* `Matter.begin()`.
+
 ## Driving the event loop
 
 On an ESP32 the Matter stack runs in its own FreeRTOS task, so a controller
@@ -203,14 +217,24 @@ void loop() {
 
 Two smaller differences in the same area, for completeness:
 
-- Mode 0 (`setAttributeVal()`) echoes nothing and fires no handler. That is
-  what it is for: a host reflecting a change that came *from* a controller
-  uses mode 0 so it does not bounce back at the fabric.
+- Mode 0 (`setAttributeVal()`) and mode 1 (`updateAttributeVal()`) both
+  echo a `+MTATTR` URC to this host and both fire the sketch's handler; the
+  firmware calls `esp_matter::attribute::set_val()` for mode 0, and that
+  still runs the callback that raises the echo. What mode 0 actually
+  suppresses is the *report to the fabric*: a host reflecting a change that
+  came *from* a controller uses mode 0 so the fabric does not see its own
+  change bounced back at it, not so the host's own handler stays quiet.
 - Upstream calls `attributeChangeCB` on `PRE_UPDATE`, so a handler returning
   `false` there vetoes the write. Over the AT link the co-processor reports
   the change on `POST_UPDATE`, after it has already been applied, so the
-  return value cannot veto anything. Returning `false` still suppresses the
-  library's own cache update, as upstream's does.
+  return value cannot veto anything. For a controller-driven change,
+  returning `false` still suppresses the library's own cache update, as
+  upstream's does. For a *local* write's own echo it does not: the setter
+  that issued the write (e.g. `MatterOnOffLight::setOnOff()`) sets its
+  cache unconditionally once the write itself succeeds, regardless of what
+  the echo's own handler returned, so `false` from a handler only stops
+  that particular echo from being treated as a fresh controller change; it
+  does not roll back the cache the setter already committed.
 
 ## Supported device types
 
@@ -355,4 +379,5 @@ commands and output are in `iLabs_AT_Hearth`'s Task 9 report.
 Host-side (`test/host/`) coverage exercises the transport, the attribute
 codec, endpoint declaration and reconciliation, and the composition apply
 sequence without any hardware. Hardware verification (the default link, the
-examples above, and a real commissioning flow) has not happened yet.
+examples above, and a real commissioning flow) has not happened yet. See
+`HARDWARE-BRINGUP.md` for what to check first once it does.

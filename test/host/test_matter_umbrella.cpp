@@ -58,7 +58,7 @@ static void test_onoff_resolves_and_works(void) {
   umbrellaOnOff.begin(false);
   s.expect("AT+MTEP?", "+MTEP:0,1,0x0100\r\nOK\r\n");
   Matter.begin();
-  s.expect("AT+MTATTR=1,6,0,1,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
   check("MatterOnOffLight declared via Matter.h alone", umbrellaOnOff.setOnOff(true));
   check("state reads back", umbrellaOnOff.getOnOff() == true);
   check("no unexpected commands", s.unexpected().empty());
@@ -71,7 +71,7 @@ static void test_dimmable_resolves_and_works(void) {
   umbrellaDimmable.begin(false, 64);
   s.expect("AT+MTEP?", "+MTEP:0,1,0x0101\r\nOK\r\n");
   Matter.begin();
-  s.expect("AT+MTATTR=1,8,0,128,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,8,0,128,1", "+MTATTR:1,8,0,128\r\nOK\r\n");
   check("MatterDimmableLight declared via Matter.h alone", umbrellaDimmable.setBrightness(128));
   check("brightness reads back", umbrellaDimmable.getBrightness() == 128);
   check("no unexpected commands", s.unexpected().empty());
@@ -84,7 +84,7 @@ static void test_colortemp_resolves_and_works(void) {
   umbrellaColorTemp.begin(false, 64, 200);
   s.expect("AT+MTEP?", "+MTEP:0,1,0x010C\r\nOK\r\n");
   Matter.begin();
-  s.expect("AT+MTATTR=1,768,7,370,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,768,7,370,1", "+MTATTR:1,768,7,370\r\nOK\r\n");
   check("MatterColorTemperatureLight declared via Matter.h alone", umbrellaColorTemp.setColorTemperature(370));
   check("color temperature reads back", umbrellaColorTemp.getColorTemperature() == 370);
   check("no unexpected commands", s.unexpected().empty());
@@ -97,7 +97,7 @@ static void test_tempsensor_resolves_and_works(void) {
   umbrellaTempSensor.begin(0.00);
   s.expect("AT+MTEP?", "+MTEP:0,1,0x0302\r\nOK\r\n");
   Matter.begin();
-  s.expect("AT+MTATTR=1,1026,0,2350,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,1026,0,2350,1", "+MTATTR:1,1026,0,2350\r\nOK\r\n");
   check("MatterTemperatureSensor declared via Matter.h alone", umbrellaTempSensor.setTemperature(23.50));
   check("temperature reads back", umbrellaTempSensor.getTemperature() == 23.5);
   check("no unexpected commands", s.unexpected().empty());

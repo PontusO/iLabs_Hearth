@@ -123,14 +123,17 @@ static void test_library_call_from_onchange_during_a_write_is_refused(void) {
 }
 
 /*
- * The other side of the same coin: a mode-0 write (setAttributeVal) raises
- * no echo, because the firmware takes attribute::set_val() rather than
- * attribute::update() and so never reaches its POST_UPDATE callback
- * (main.cpp:393). That asymmetry is the entire point of mode 0, and a
- * regression that started echoing mode 0 too would loop a reflected
- * controller change straight back at the fabric.
+ * CORRECTION. A mode-0 write (setAttributeVal) echoes a +MTATTR URC too:
+ * main.cpp:394 calls esp_matter::attribute::set_val(a, &val), whose third
+ * parameter (call_callbacks) defaults to true
+ * (esp_matter_data_model.h:927), so set_val_internal still fires
+ * POST_UPDATE (esp_matter_data_model.cpp:785-787), which is what raises
+ * the URC. Mode 0 and mode 1 differ only in whether the change is reported
+ * to the fabric, not in whether the host sees an echo; both echo, and this
+ * library has no way to tell them apart on the wire, so the echo reaches
+ * onChange exactly as a mode-1 write's does.
  */
-static void test_mode_zero_write_raises_no_echo(void) {
+static void test_mode_zero_write_also_echoes(void) {
   MockStream s; MatterOnOffLight light;
   bringUp(s, light, false);
   int changeSeen = 0;
@@ -140,17 +143,17 @@ static void test_mode_zero_write_raises_no_echo(void) {
     return true;
   });
 
-  s.expect("AT+MTATTR=1,6,0,1,0", "OK\r\n");
+  s.expect("AT+MTATTR=1,6,0,1,0", "+MTATTR:1,6,0,1\r\nOK\r\n");
   esp_matter_attr_val_t v = esp_matter_bool(true);
-  check("the silent write succeeds", light.setAttributeVal(0x0006, 0x0000, &v));
-  check("and fired no callback", changeSeen == 0);
+  check("the write succeeds", light.setAttributeVal(0x0006, 0x0000, &v));
+  check("and the echo still fired onChange", changeSeen == 1);
   check("script drained", s.scriptDrained());
 }
 
 static void test_toggle(void) {
   MockStream s; MatterOnOffLight light;
   bringUp(s, light, false);
-  s.expect("AT+MTATTR=1,6,0,1,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
   check("toggle from off turns on", light.toggle() && light.getOnOff());
   check("no unexpected commands", s.unexpected().empty());
 }
@@ -158,7 +161,7 @@ static void test_toggle(void) {
 static void test_assignment_operator(void) {
   MockStream s; MatterOnOffLight light;
   bringUp(s, light, false);
-  s.expect("AT+MTATTR=1,6,0,1,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
   light = true;
   check("operator= writes and caches", light.getOnOff() == true);
   check("no unexpected commands", s.unexpected().empty());
@@ -409,7 +412,7 @@ int main(void) {
   test_set_on_off_writes();
   test_local_write_echo_fires_onchange_from_inside_the_setter();
   test_library_call_from_onchange_during_a_write_is_refused();
-  test_mode_zero_write_raises_no_echo();
+  test_mode_zero_write_also_echoes();
   test_toggle();
   test_assignment_operator();
   test_controller_change_fires_callback();

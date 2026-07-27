@@ -25,9 +25,12 @@ bool HearthLink::isAsyncURC(const char *line) {
 /*
  * An attribute read is AT+MTATTR=<ep>,<cl>,<attr>: three fields, so two
  * commas after the '='. A write is AT+MTATTR=<ep>,<cl>,<attr>,<val>,<mode>
- * (MatterEndPoint::hearthWriteAttr) and answers with a bare OK, never a
- * +MTATTR: line of its own. Deriving this from the command text rather than
- * from a flag the caller passes is deliberate: there is exactly one command
+ * (MatterEndPoint::hearthWriteAttr). Its own answer is a bare OK: both
+ * write modes can have a +MTATTR: URC ahead of that OK (the firmware's own
+ * echo, raised on POST_UPDATE for mode 1 and mode 0 alike), but that line
+ * is never claimed as the write's answer, only dispatched as an ordinary
+ * async URC. Deriving read-vs-write from the command text rather than from
+ * a flag the caller passes is deliberate: there is exactly one command
  * form that behaves this way, it is not something a caller can usefully
  * choose, and a caller that forgot the flag would silently reintroduce the
  * bug this distinction exists to fix.
