@@ -1,0 +1,199 @@
+#######################################
+# Syntax Coloring Map For iLabs Hearth
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+# The two globals. Matter is the arduino-esp32 parity surface; Hearth is
+# this library's own addition for the link, diagnostics and events an
+# ESP32-based Matter has no equivalent of, since there is no co-processor
+# to lose. See README.md, "Hearth and Matter".
+Matter	KEYWORD1
+Hearth	KEYWORD1
+
+# The classes behind the two globals.
+ArduinoMatter	KEYWORD1
+HearthClass	KEYWORD1
+
+# Transport and the six public classes above HearthClass/ArduinoMatter.
+HearthLink	KEYWORD1
+MatterEndPoint	KEYWORD1
+MatterOnOffLight	KEYWORD1
+MatterDimmableLight	KEYWORD1
+MatterColorTemperatureLight	KEYWORD1
+MatterTemperatureSensor	KEYWORD1
+
+# Event and callback types.
+hearthEvent_t	KEYWORD1
+hearthEventCB	KEYWORD1
+matterEvent_t	KEYWORD1
+matterEventCB	KEYWORD1
+attrOperation_t	KEYWORD1
+EndPointCB	KEYWORD1
+EndPointOnOffCB	KEYWORD1
+EndPointBrightnessCB	KEYWORD1
+EndPointTemperatureCB	KEYWORD1
+EndPointIdentifyCB	KEYWORD1
+LineCb	KEYWORD1
+
+# The esp_matter attribute-value shim (HearthCompat.h). Public because
+# getAttributeVal/setAttributeVal/updateAttributeVal and attributeChangeCB
+# all carry it.
+esp_matter_val_type_t	KEYWORD1
+esp_matter_attr_val_t	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+# HearthClass (the Hearth global): link, diagnostics, events.
+begin	KEYWORD2
+linkUp	KEYWORD2
+lastError	KEYWORD2
+onLinkEvent	KEYWORD2
+poll	KEYWORD2
+firmwareVersion	KEYWORD2
+warnedAboutRecommission	KEYWORD2
+hearthSetWarnedAboutRecommission	KEYWORD2
+hearthArmExpectedReboot	KEYWORD2
+hearthDisarmExpectedReboot	KEYWORD2
+hearthExpectedRebootSeen	KEYWORD2
+hearthCommand	KEYWORD2
+hearthSetError	KEYWORD2
+link	KEYWORD2
+hearthReportProtocolError	KEYWORD2
+
+# ArduinoMatter (the Matter global): upstream's closed surface, verbatim.
+onEvent	KEYWORD2
+getManualPairingCode	KEYWORD2
+getOnboardingQRCodeUrl	KEYWORD2
+isWiFiStationEnabled	KEYWORD2
+isWiFiAccessPointEnabled	KEYWORD2
+isThreadEnabled	KEYWORD2
+isBLECommissioningEnabled	KEYWORD2
+isDeviceCommissioned	KEYWORD2
+isWiFiConnected	KEYWORD2
+isThreadConnected	KEYWORD2
+isDeviceConnected	KEYWORD2
+decommission	KEYWORD2
+
+# HearthLink: the AT+MT transport.
+started	KEYWORD2
+stream	KEYWORD2
+command	KEYWORD2
+onURC	KEYWORD2
+isAsyncURC	KEYWORD2
+
+# MatterEndPoint: base class every endpoint type derives from.
+attributeChangeCB	KEYWORD2
+hearthAttrTypeFor	KEYWORD2
+getEndPointId	KEYWORD2
+setEndPointId	KEYWORD2
+getAttributeVal	KEYWORD2
+setAttributeVal	KEYWORD2
+updateAttributeVal	KEYWORD2
+endpointIdentifyCB	KEYWORD2
+onIdentify	KEYWORD2
+hearthDeclare	KEYWORD2
+hearthDeclaredCount	KEYWORD2
+hearthDeclaredAt	KEYWORD2
+hearthDeclaredTypeAt	KEYWORD2
+hearthClearDeclarations	KEYWORD2
+hearthFindByEndPointId	KEYWORD2
+hearthMarkReconciled	KEYWORD2
+
+# MatterOnOffLight / MatterDimmableLight / MatterColorTemperatureLight /
+# MatterTemperatureSensor: the four device types.
+end	KEYWORD2
+setOnOff	KEYWORD2
+getOnOff	KEYWORD2
+toggle	KEYWORD2
+setBrightness	KEYWORD2
+getBrightness	KEYWORD2
+setColorTemperature	KEYWORD2
+getColorTemperature	KEYWORD2
+setTemperature	KEYWORD2
+getTemperature	KEYWORD2
+onChange	KEYWORD2
+onChangeOnOff	KEYWORD2
+onChangeBrightness	KEYWORD2
+onChangeColorTemperature	KEYWORD2
+updateAccessory	KEYWORD2
+
+#######################################
+# Constants (LITERAL1)
+#######################################
+
+# hearthEvent_t: Hearth's own addition, no upstream counterpart.
+HEARTH_LINK_UP	LITERAL1
+HEARTH_LINK_DOWN	LITERAL1
+HEARTH_COPROCESSOR_REBOOTED	LITERAL1
+HEARTH_PROTOCOL_ERROR	LITERAL1
+
+# matterEvent_t: upstream's names and values, verbatim.
+MATTER_WIFI_CONNECTIVITY_CHANGE	LITERAL1
+MATTER_THREAD_CONNECTIVITY_CHANGE	LITERAL1
+MATTER_INTERNET_CONNECTIVITY_CHANGE	LITERAL1
+MATTER_SERVICE_CONNECTIVITY_CHANGE	LITERAL1
+MATTER_SERVICE_PROVISIONING_CHANGE	LITERAL1
+MATTER_TIME_SYNC_CHANGE	LITERAL1
+MATTER_CHIPOBLE_CONNECTION_ESTABLISHED	LITERAL1
+MATTER_CHIPOBLE_CONNECTION_CLOSED	LITERAL1
+MATTER_CLOSE_ALL_BLE_CONNECTIONS	LITERAL1
+MATTER_WIFI_DEVICE_AVAILABLE	LITERAL1
+MATTER_OPERATIONAL_NETWORK_STARTED	LITERAL1
+MATTER_THREAD_STATE_CHANGE	LITERAL1
+MATTER_THREAD_INTERFACE_STATE_CHANGE	LITERAL1
+MATTER_CHIPOBLE_ADVERTISING_CHANGE	LITERAL1
+MATTER_INTERFACE_IP_ADDRESS_CHANGED	LITERAL1
+MATTER_COMMISSIONING_COMPLETE	LITERAL1
+MATTER_FAIL_SAFE_TIMER_EXPIRED	LITERAL1
+MATTER_OPERATIONAL_NETWORK_ENABLED	LITERAL1
+MATTER_DNSSD_INITIALIZED	LITERAL1
+MATTER_DNSSD_RESTART_NEEDED	LITERAL1
+MATTER_BINDINGS_CHANGED_VIA_CLUSTER	LITERAL1
+MATTER_OTA_STATE_CHANGED	LITERAL1
+MATTER_SERVER_READY	LITERAL1
+MATTER_BLE_DEINITIALIZED	LITERAL1
+MATTER_ESP32_SPECIFIC_EVENT	LITERAL1
+MATTER_COMMISSIONING_SESSION_STARTED	LITERAL1
+MATTER_COMMISSIONING_SESSION_STOPPED	LITERAL1
+MATTER_COMMISSIONING_WINDOW_OPEN	LITERAL1
+MATTER_COMMISSIONING_WINDOW_CLOSED	LITERAL1
+MATTER_FABRIC_WILL_BE_REMOVED	LITERAL1
+MATTER_FABRIC_REMOVED	LITERAL1
+MATTER_FABRIC_COMMITTED	LITERAL1
+MATTER_FABRIC_UPDATED	LITERAL1
+MATTER_ESP32_PUBLIC_SPECIFIC_EVENT	LITERAL1
+
+# attrOperation_t (MatterEndPoint).
+ATTR_SET	LITERAL1
+ATTR_UPDATE	LITERAL1
+
+# Device-type constants.
+MAX_BRIGHTNESS	LITERAL1
+MAX_COLOR_TEMPERATURE	LITERAL1
+MIN_COLOR_TEMPERATURE	LITERAL1
+
+# esp_matter_val_type_t (HearthCompat.h).
+ESP_MATTER_VAL_TYPE_INVALID	LITERAL1
+ESP_MATTER_VAL_TYPE_BOOLEAN	LITERAL1
+ESP_MATTER_VAL_TYPE_INTEGER	LITERAL1
+ESP_MATTER_VAL_TYPE_INT8	LITERAL1
+ESP_MATTER_VAL_TYPE_UINT8	LITERAL1
+ESP_MATTER_VAL_TYPE_INT16	LITERAL1
+ESP_MATTER_VAL_TYPE_UINT16	LITERAL1
+ESP_MATTER_VAL_TYPE_INT32	LITERAL1
+ESP_MATTER_VAL_TYPE_UINT32	LITERAL1
+ESP_MATTER_VAL_TYPE_ENUM8	LITERAL1
+ESP_MATTER_VAL_TYPE_BITMAP8	LITERAL1
+
+# Hearth's own tunables (Hearth.h / HearthLink.h / MatterEndPoint.h),
+# overridable with a -D before the header is first included.
+HEARTH_DEFAULT_SERIAL	LITERAL1
+HEARTH_REBOOT_ARM_TIMEOUT_MS	LITERAL1
+HEARTH_MAX_ENDPOINTS	LITERAL1
+HEARTH_LINE_MAX	LITERAL1
+HEARTH_CMD_TIMEOUT_MS	LITERAL1
