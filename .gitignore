@@ -1,0 +1,15 @@
+build/
+*.elf
+*.bin
+*.uf2
+*.hex
+.DS_Store
+.vscode/
+.arduino-cli
+
+# This library lives inside the Dropbox-synced sketchbook, so Dropbox's own
+# artefacts land in the working tree. The sibling iLabs_ESP-NOW sits outside
+# Dropbox and does not need these.
+*conflicted copy*
+.dropbox
+.dropbox.cache
