@@ -4,7 +4,7 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval
+TESTS = test_hearthlink test_attrval test_endpoint
 
 all: $(TESTS)
 
@@ -12,6 +12,9 @@ test_hearthlink: test_hearthlink.cpp ArduinoShim.cpp $(SRC)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 test_attrval: test_attrval.cpp ArduinoShim.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_endpoint: test_endpoint.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all
