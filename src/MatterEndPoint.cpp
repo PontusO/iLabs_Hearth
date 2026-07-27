@@ -109,6 +109,18 @@ bool MatterEndPoint::getAttributeVal(uint32_t cluster_id, uint32_t attribute_id,
   return true;
 }
 
+/*
+ * Base default: ESP_MATTER_VAL_TYPE_INTEGER, i.e. today's behaviour before
+ * any endpoint type overrode this. Cluster/attribute IDs are unused here on
+ * purpose; a concrete type overrides this only for the (cluster, attribute)
+ * pairs it actually knows about and falls through to this for the rest.
+ */
+esp_matter_val_type_t MatterEndPoint::hearthAttrTypeFor(uint32_t cluster_id, uint32_t attribute_id) const {
+  (void)cluster_id;
+  (void)attribute_id;
+  return ESP_MATTER_VAL_TYPE_INTEGER;
+}
+
 bool MatterEndPoint::endpointIdentifyCB(uint16_t endpoint_id, bool identifyIsEnabled) {
   (void)endpoint_id;  // kept for signature parity with upstream; unused here
   if (_onEndPointIdentifyCB) {

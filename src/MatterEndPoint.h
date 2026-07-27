@@ -60,6 +60,22 @@ public:
    * type provides it. */
   virtual bool attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *val) = 0;
 
+  /*
+   * Hearth's own addition (Hearth-prefixed, not part of the upstream
+   * surface, same precedent as the hearthDeclare family below): tells
+   * hearthDispatchAttr() (Hearth.cpp) what esp_matter_val_type_t a given
+   * (cluster_id, attribute_id) pair actually is, so a +MTATTR URC's value
+   * lands in the matching esp_matter_attr_val_t union member before
+   * attributeChangeCB() is called. The wire never carries a type tag (see
+   * this file's header comment), and the generic URC dispatcher has no
+   * per-attribute type table of its own, so without this it could only
+   * guess -- which is exactly what it used to do, hardcoding
+   * ESP_MATTER_VAL_TYPE_INTEGER for everything. That default is preserved
+   * here for any endpoint type that does not override this, so the switch
+   * only changes behaviour for endpoint types that opt in by overriding it.
+   */
+  virtual esp_matter_val_type_t hearthAttrTypeFor(uint32_t cluster_id, uint32_t attribute_id) const;
+
   uint16_t getEndPointId();
   void setEndPointId(uint16_t ep);
 

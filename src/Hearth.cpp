@@ -210,16 +210,20 @@ void hearthDispatchEvt(const char *rest) {
 /*
  * Parses "<ep>,<cl>,<attr>,<val>" (the text after "+MTATTR:") and routes it
  * to that endpoint's attributeChangeCB, if the endpoint is one the sketch
- * declared. The wire carries a bare integer with no type tag (MatterEndPoint.h),
- * and at this generic dispatch point there is no per-attribute type
- * knowledge to reconstruct one from, unlike the synchronous
+ * declared. The wire carries a bare integer with no type tag
+ * (MatterEndPoint.h), and at this generic dispatch point there is no
+ * built-in per-attribute type knowledge, unlike the synchronous
  * getAttributeVal() path where the *caller* already knows what type it
- * asked for. The value is therefore rebuilt as ESP_MATTER_VAL_TYPE_INTEGER,
- * .val.i holding the raw signed wire value: Tasks 6-8's concrete endpoint
- * types must read val.i directly (ignoring .type, which is not the
- * attribute's real type) and reinterpret it according to their own known
- * attribute definition, exactly as their setAttributeVal/updateAttributeVal
- * callers already must for the type they pass in.
+ * asked for. The value is therefore rebuilt via the target endpoint's own
+ * hearthAttrTypeFor(cluster, attribute) -- each concrete endpoint type
+ * (Tasks 6-8) overrides this for the clusters/attributes it owns, so the
+ * esp_matter_attr_val_t handed to attributeChangeCB lands in the same union
+ * member upstream's own implementations read (val.b for a bool attribute,
+ * val.u for an unsigned one, and so on), matching upstream exactly rather
+ * than forcing every override to know about this port's wire format. An
+ * endpoint type that does not override hearthAttrTypeFor() gets
+ * ESP_MATTER_VAL_TYPE_INTEGER, .val.i holding the raw signed wire value,
+ * same as before this existed.
  *
  * An ep with no registered endpoint (the root endpoint, or one the sketch
  * never declared) is dropped silently: both are legitimately not ours, per
@@ -246,7 +250,8 @@ void hearthDispatchAttr(const char *rest) {
   if (!target) {
     return;
   }
-  esp_matter_attr_val_t val = hearthAttrValFromLong(ESP_MATTER_VAL_TYPE_INTEGER, value);
+  esp_matter_val_type_t type = target->hearthAttrTypeFor((uint32_t)cluster, (uint32_t)attribute);
+  esp_matter_attr_val_t val = hearthAttrValFromLong(type, value);
   target->attributeChangeCB((uint16_t)ep, (uint32_t)cluster, (uint32_t)attribute, &val);
 }
 

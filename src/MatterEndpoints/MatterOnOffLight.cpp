@@ -73,10 +73,12 @@ void MatterOnOffLight::operator=(bool newState) {
 }
 
 /*
- * The wire never carries a type tag: hearthDispatchAttr() (Hearth.cpp)
- * always rebuilds val as ESP_MATTER_VAL_TYPE_INTEGER with the raw signed
- * value in val.i, regardless of the attribute's real type, so val->val.b
- * must not be read here. See Task 5's report, "What Tasks 6-8 need to know".
+ * hearthAttrTypeFor() below tells hearthDispatchAttr() (Hearth.cpp) that
+ * (kOnOffClusterId, kOnOffAttributeId) is a boolean, so by the time it
+ * calls this, val->val.b is the member the wire's value actually landed
+ * in. Reading val->val.i here, as an earlier revision did, would read a
+ * union member the dispatcher never wrote, since the type is now BOOLEAN,
+ * not the generic INTEGER fallback.
  */
 bool MatterOnOffLight::attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *val) {
   bool ret = true;
@@ -84,7 +86,7 @@ bool MatterOnOffLight::attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_
     return false;
   }
   if (endpoint_id == getEndPointId() && cluster_id == kOnOffClusterId && attribute_id == kOnOffAttributeId) {
-    bool newState = (val->val.i != 0);
+    bool newState = val->val.b;
     if (_onChangeOnOffCB != NULL) {
       ret &= _onChangeOnOffCB(newState);
     }
@@ -98,4 +100,11 @@ bool MatterOnOffLight::attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_
     }
   }
   return ret;
+}
+
+esp_matter_val_type_t MatterOnOffLight::hearthAttrTypeFor(uint32_t cluster_id, uint32_t attribute_id) const {
+  if (cluster_id == kOnOffClusterId && attribute_id == kOnOffAttributeId) {
+    return ESP_MATTER_VAL_TYPE_BOOLEAN;
+  }
+  return MatterEndPoint::hearthAttrTypeFor(cluster_id, attribute_id);
 }

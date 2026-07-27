@@ -59,6 +59,15 @@ public:
   // this function is called by Matter internal event processor. It could be overwritten by the application, if necessary.
   bool attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *val);
 
+  /*
+   * Hearth's own addition (Hearth-prefixed; see MatterEndPoint.h): tells
+   * the +MTATTR dispatcher that OnOff::Id / OnOff::Attributes::OnOff::Id is
+   * a boolean, so attributeChangeCB() above (and any sketch override of it)
+   * receives val->val.b already populated, matching upstream's own
+   * MatterOnOffLight::attributeChangeCB, which reads exactly that member.
+   */
+  esp_matter_val_type_t hearthAttrTypeFor(uint32_t cluster_id, uint32_t attribute_id) const override;
+
 protected:
   bool started = false;
   bool onOffState = false;  // default initial state is off, but it can be changed by begin(bool)

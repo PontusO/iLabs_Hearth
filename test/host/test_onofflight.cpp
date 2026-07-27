@@ -81,6 +81,36 @@ static void test_failed_write_returns_false(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
+/*
+ * hearthDispatchAttr (Hearth.cpp) must rebuild a +MTATTR URC's value as
+ * the attribute's real esp_matter_val_type_t, not a hardcoded INTEGER, or
+ * an upstream-style attributeChangeCB override that reads val->val.b (as
+ * every upstream endpoint class does) reads a union member that was never
+ * written. This subclass mimics exactly that: an override that inspects
+ * the raw esp_matter_attr_val_t itself, the way a sketch overriding the
+ * virtual would, then defers to the base implementation.
+ */
+class TypeCheckingLight : public MatterOnOffLight {
+public:
+  esp_matter_val_type_t seenType = ESP_MATTER_VAL_TYPE_INVALID;
+  bool seenBool = false;
+  bool attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *val) override {
+    seenType = val->type;
+    seenBool = val->val.b;
+    return MatterOnOffLight::attributeChangeCB(endpoint_id, cluster_id, attribute_id, val);
+  }
+};
+
+static void test_controller_change_delivers_typed_boolean(void) {
+  MockStream s; TypeCheckingLight light;
+  bringUp(s, light, false);
+  s.injectURC("+MTATTR:1,6,0,1");
+  Hearth.poll();
+  check("value type is boolean, not the generic integer", light.seenType == ESP_MATTER_VAL_TYPE_BOOLEAN);
+  check("value lands in val.b, where upstream's own callbacks read it", light.seenBool == true);
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 int main(void) {
   printf("\n===== MatterOnOffLight tests =====\n");
   test_begin_declares_and_adopts();
@@ -89,6 +119,7 @@ int main(void) {
   test_assignment_operator();
   test_controller_change_fires_callback();
   test_failed_write_returns_false();
+  test_controller_change_delivers_typed_boolean();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }
