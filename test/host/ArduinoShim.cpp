@@ -7,6 +7,7 @@
 #include <stdarg.h>
 
 uint32_t g_millis = 0;
+uint32_t g_yieldAdvanceMs = 0;
 
 size_t Print::printf(const char *fmt, ...) {
   char buf[256];

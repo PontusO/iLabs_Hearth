@@ -7,11 +7,17 @@
 extern uint32_t g_millis;
 inline uint32_t millis() { return g_millis; }
 inline void delay(uint32_t ms) { g_millis += ms; }
-/* Real yield() just cooperates with other tasks; here it also advances the
- * simulated clock by 1ms, so a blocking wait loop that polls millis() (e.g.
- * HearthLink::readLine's timeout) actually elapses instead of spinning
- * forever against a clock nothing else is advancing. */
-inline void yield() { g_millis += 1; }
+
+/* yield() is inert by default, matching its real meaning (cooperate with
+ * other tasks, do not advance time). A test that busy-waits on a timeout
+ * (e.g. HearthLink::readLine's wait loop, which polls millis() and calls
+ * yield() between reads) would otherwise spin forever against a clock
+ * nothing else advances. Such a test must opt in explicitly by setting
+ * g_yieldAdvanceMs before the call and resetting it to 0 afterwards, so the
+ * dependency on simulated time is visible at the call site that needs it
+ * rather than hidden inside yield() itself. */
+extern uint32_t g_yieldAdvanceMs;
+inline void yield() { g_millis += g_yieldAdvanceMs; }
 
 class String : public std::string {
 public:

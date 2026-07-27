@@ -69,6 +69,26 @@ static void test_urc_during_command(void) {
         lines == "+MTCODES:MT:Y.K9042C00KA0648G00,34970112332;");
 }
 
+static void test_attr_read_result_not_urc(void) {
+  MockStream s;
+  /* AT+MTATTR=<ep>,<cl>,<attr> is a read; its own answer arrives as a
+   * +MTATTR: line, which is also one of isAsyncURC()'s prefixes. While this
+   * command is in flight that line must be claimed as the result, not
+   * routed to the URC handler: this is the exact case the +MTATTR
+   * exclusion in command() exists for, and the one most likely to regress
+   * silently if a later refactor drops it. */
+  s.expect("AT+MTATTR=1,6,0", "+MTATTR:1,6,0,1\r\nOK\r\n");
+  HearthLink link;
+  link.begin(s);
+  std::string urcs, lines;
+  link.onURC(collect, &urcs);
+  check("attribute read returns 0",
+        link.command("AT+MTATTR=1,6,0", collect, &lines) == 0);
+  check("+MTATTR result reached the command callback",
+        lines == "+MTATTR:1,6,0,1;");
+  check("URC handler received nothing", urcs.empty());
+}
+
 static void test_poll_dispatches_urc(void) {
   MockStream s;
   HearthLink link;
@@ -85,7 +105,12 @@ static void test_timeout(void) {
   s.expect("AT", "");  /* peer says nothing */
   HearthLink link;
   link.begin(s);
+  /* readLine()'s wait loop polls millis() and calls yield() between reads;
+   * opt this test alone into advancing the simulated clock so the timeout
+   * elapses instead of spinning forever, then hand the clock back inert. */
+  g_yieldAdvanceMs = 1;
   check("silence returns -2", link.command("AT", nullptr, nullptr, 50) == -2);
+  g_yieldAdvanceMs = 0;
 }
 
 static void test_not_started(void) {
@@ -100,6 +125,7 @@ int main(void) {
   test_plain_error();
   test_intermediate_lines();
   test_urc_during_command();
+  test_attr_read_result_not_urc();
   test_poll_dispatches_urc();
   test_timeout();
   test_not_started();
