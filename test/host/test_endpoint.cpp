@@ -20,10 +20,25 @@ public:
   }
 };
 
+/*
+ * RE-REVIEW, IMPORTANT 2. The two modes differ on the wire in what comes
+ * back, not just in what the firmware does with the value: mode 1 goes
+ * through esp_matter::attribute::update(), which fires the firmware's own
+ * POST_UPDATE callback and so echoes a +MTATTR URC before OK, while mode 0
+ * goes through attribute::set_val() and echoes nothing (main.cpp:393,
+ * AT_MT_SPEC.md S3.8). That asymmetry is the whole reason mode 0 exists.
+ * Scripted here as the firmware behaves.
+ *
+ * This endpoint is not in the declaration registry, so the echo has no
+ * target and hearthDispatchAttr() drops it. That is the documented policy
+ * for an endpoint the sketch never declared, and it is asserted rather than
+ * assumed.
+ */
 static void test_write_modes(void) {
+  MatterEndPoint::hearthClearDeclarations();
   MockStream s;
   s.expect("AT+MTATTR=1,6,0,1,0", "OK\r\n");
-  s.expect("AT+MTATTR=1,6,0,1,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
   Hearth.begin(s);
   TestEndPoint ep;
   ep.setEndPointId(1);
@@ -31,6 +46,8 @@ static void test_write_modes(void) {
   check("setAttributeVal writes mode 0", ep.setAttributeVal(0x0006, 0x0000, &v));
   check("updateAttributeVal writes mode 1", ep.updateAttributeVal(0x0006, 0x0000, &v));
   check("script drained", s.scriptDrained());
+  check("the mode-1 echo reached no undeclared endpoint", ep.changes == 0);
+  check("no unexpected commands", s.unexpected().empty());
 }
 
 static void test_read(void) {

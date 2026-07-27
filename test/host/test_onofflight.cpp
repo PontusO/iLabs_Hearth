@@ -27,14 +27,124 @@ static void test_begin_declares_and_adopts(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
+/*
+ * RE-REVIEW, IMPORTANT 2. What the C6 really answers to a mode-1 write:
+ * the +MTATTR URC the firmware's own attribute callback raises, *then* OK
+ * (AT_MT_SPEC.md S3.8, "A write echoes a +MTATTR URC ... then OK";
+ * main.cpp's mt_matter_attr_write() calls esp_matter::attribute::update()
+ * for mode 1, which fires app_attribute_update_cb on POST_UPDATE). Every
+ * write test in this suite used to script a bare OK, i.e. a firmware that
+ * does not exist. Scripted here as the firmware actually behaves.
+ */
 static void test_set_on_off_writes(void) {
   MockStream s; MatterOnOffLight light;
   bringUp(s, light, false);
-  s.expect("AT+MTATTR=1,6,0,1,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
   check("setOnOff(true) succeeds", light.setOnOff(true));
   check("state cached", light.getOnOff() == true);
   check("operator bool agrees", (bool)light == true);
   check("no unexpected commands", s.unexpected().empty());
+  check("script drained", s.scriptDrained());
+}
+
+/*
+ * RE-REVIEW, IMPORTANT 2, the behaviour question. The write echo is
+ * dispatched as an ordinary URC (it is not an attribute *read*'s own
+ * answer), so it reaches attributeChangeCB and fires the sketch's onChange
+ * synchronously, from inside setOnOff(), before setOnOff() has returned.
+ *
+ * That is upstream's behaviour too, not a Hearth invention:
+ * arduino-esp32 3.3.8's Matter.cpp routes PRE_UPDATE to
+ * ep->attributeChangeCB(), and MatterOnOffLight::setOnOff() reaches it
+ * through attribute::update() on the calling thread. A sketch's onChange
+ * fires from inside its own setter there as well. Pinned here so it is a
+ * decision on the record rather than a surprise on the bench.
+ */
+static void test_local_write_echo_fires_onchange_from_inside_the_setter(void) {
+  MockStream s; MatterOnOffLight light;
+  bringUp(s, light, false);
+  int changeSeen = 0;
+  bool state = false;
+  bool seenBeforeReturn = false;
+  light.onChange([&](bool v) {
+    changeSeen++;
+    state = v;
+    return true;
+  });
+
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
+  bool ok = light.setOnOff(true);
+  seenBeforeReturn = (changeSeen == 1);
+
+  check("the write succeeds", ok);
+  check("onChange fired exactly once", changeSeen == 1);
+  check("and fired before the setter returned", seenBeforeReturn);
+  check("with the value the firmware echoed", state == true);
+  check("cached state agrees", light.getOnOff() == true);
+  check("no extra traffic on the wire", s.unexpected().empty());
+  check("script drained", s.scriptDrained());
+}
+
+/*
+ * RE-REVIEW, IMPORTANT 2, the consequence that is genuinely Hearth's and
+ * not upstream's. The echo is dispatched from inside HearthLink::command(),
+ * which holds the re-entrancy latch, so a sketch whose onChange calls back
+ * into the library is refused with HEARTH_CMD_REENTRANT. On arduino-esp32
+ * the same call is served, because there is no shared UART to protect.
+ *
+ * This is a real, documented divergence (README, "Callbacks fire from
+ * inside your own setter"), not a bug to be fixed by dropping the latch:
+ * serving the nested call would mean two readers on one stream, and the
+ * outer command would lose its own terminal OK. The refusal is loud (a code
+ * of its own, distinct from a retryable timeout) and puts nothing on the
+ * wire. The outer write completes normally regardless.
+ */
+static void test_library_call_from_onchange_during_a_write_is_refused(void) {
+  MockStream s; MatterOnOffLight light;
+  bringUp(s, light, false);
+  int nestedRc = 0;
+  int nestedCalls = 0;
+  light.onChange([&](bool v) {
+    (void)v;
+    nestedCalls++;
+    nestedRc = Hearth.hearthCommand("AT+MTVER?");
+    return true;
+  });
+
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
+  bool ok = light.setOnOff(true);
+
+  check("the callback really did call back into the library", nestedCalls == 1);
+  check("and was refused with the re-entrancy code", nestedRc == HEARTH_CMD_REENTRANT);
+  check("the refused call put nothing on the wire", s.unexpected().empty());
+  check("the write it interrupted still succeeded", ok);
+  check("and still cached its state", light.getOnOff() == true);
+  check("script drained", s.scriptDrained());
+}
+
+/*
+ * The other side of the same coin: a mode-0 write (setAttributeVal) raises
+ * no echo, because the firmware takes attribute::set_val() rather than
+ * attribute::update() and so never reaches its POST_UPDATE callback
+ * (main.cpp:393). That asymmetry is the entire point of mode 0, and a
+ * regression that started echoing mode 0 too would loop a reflected
+ * controller change straight back at the fabric.
+ */
+static void test_mode_zero_write_raises_no_echo(void) {
+  MockStream s; MatterOnOffLight light;
+  bringUp(s, light, false);
+  int changeSeen = 0;
+  light.onChange([&](bool v) {
+    changeSeen++;
+    (void)v;
+    return true;
+  });
+
+  s.expect("AT+MTATTR=1,6,0,1,0", "OK\r\n");
+  esp_matter_attr_val_t v = esp_matter_bool(true);
+  check("the silent write succeeds", light.setAttributeVal(0x0006, 0x0000, &v));
+  check("and fired no callback", changeSeen == 0);
+  check("script drained", s.scriptDrained());
 }
 
 static void test_toggle(void) {
@@ -210,6 +320,9 @@ int main(void) {
   printf("\n===== MatterOnOffLight tests =====\n");
   test_begin_declares_and_adopts();
   test_set_on_off_writes();
+  test_local_write_echo_fires_onchange_from_inside_the_setter();
+  test_library_call_from_onchange_during_a_write_is_refused();
+  test_mode_zero_write_raises_no_echo();
   test_toggle();
   test_assignment_operator();
   test_controller_change_fires_callback();

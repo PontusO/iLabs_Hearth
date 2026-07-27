@@ -27,14 +27,55 @@ static void test_begin_declares_and_adopts(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
+/*
+ * RE-REVIEW, IMPORTANT 2. The C6 answers a mode-1 write with the +MTATTR
+ * URC its own attribute callback raises, then OK (AT_MT_SPEC.md S3.8).
+ * Scripted here as the firmware actually behaves; see
+ * test_onofflight.cpp's own note for the full reasoning.
+ */
 static void test_set_on_off_writes(void) {
   MockStream s; MatterDimmableLight light;
   bringUp(s, light, false, 64);
-  s.expect("AT+MTATTR=1,6,0,1,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
   check("setOnOff(true) succeeds", light.setOnOff(true));
   check("state cached", light.getOnOff() == true);
   check("operator bool agrees", (bool)light == true);
   check("no unexpected commands", s.unexpected().empty());
+  check("script drained", s.scriptDrained());
+}
+
+/*
+ * RE-REVIEW, IMPORTANT 2, this class's own version of the behaviour pin.
+ * The echo is dispatched as an ordinary URC, so onChange fires
+ * synchronously from inside the setter, with the *echoed* value and the
+ * other cached value alongside it. A library call from that callback is
+ * refused with the re-entrancy code, which is Hearth's divergence from
+ * upstream and is documented in the README.
+ */
+static void test_local_write_echo_fires_onchange_from_inside_the_setter(void) {
+  MockStream s; MatterDimmableLight light;
+  bringUp(s, light, false, 64);
+  int changeSeen = 0, nestedRc = 0;
+  bool state = false;
+  uint8_t levelAtChange = 0;
+  light.onChange([&](bool on, uint8_t level) {
+    changeSeen++;
+    state = on;
+    levelAtChange = level;
+    nestedRc = Hearth.hearthCommand("AT+MTVER?");
+    return true;
+  });
+
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
+  bool ok = light.setOnOff(true);
+
+  check("the write succeeds", ok);
+  check("onChange fired once, from inside the setter", changeSeen == 1);
+  check("with the echoed on/off value", state == true);
+  check("and the cached brightness alongside it", levelAtChange == 64);
+  check("a library call from the callback is refused", nestedRc == HEARTH_CMD_REENTRANT);
+  check("no extra traffic on the wire", s.unexpected().empty());
+  check("script drained", s.scriptDrained());
 }
 
 static void test_toggle(void) {
@@ -57,10 +98,20 @@ static void test_assignment_operator(void) {
 static void test_brightness_write(void) {
   MockStream s; MatterDimmableLight light;
   bringUp(s, light, true, 64);
-  s.expect("AT+MTATTR=1,8,0,128,1", "OK\r\n");
+  int brightnessSeen = 0;
+  uint8_t level = 0;
+  light.onChangeBrightness([&](uint8_t v) {
+    brightnessSeen++;
+    level = v;
+    return true;
+  });
+  /* Same write echo as the on/off case, on the LevelControl cluster. */
+  s.expect("AT+MTATTR=1,8,0,128,1", "+MTATTR:1,8,0,128\r\nOK\r\n");
   check("setBrightness writes CurrentLevel", light.setBrightness(128));
   check("brightness cached", light.getBrightness() == 128);
+  check("the echo fired onChangeBrightness from inside the setter", brightnessSeen == 1 && level == 128);
   check("no unexpected commands", s.unexpected().empty());
+  check("script drained", s.scriptDrained());
 }
 
 static void test_max_brightness_constant(void) {
@@ -158,6 +209,7 @@ int main(void) {
   printf("\n===== MatterDimmableLight tests =====\n");
   test_begin_declares_and_adopts();
   test_set_on_off_writes();
+  test_local_write_echo_fires_onchange_from_inside_the_setter();
   test_toggle();
   test_assignment_operator();
   test_brightness_write();

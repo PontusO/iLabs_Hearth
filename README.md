@@ -154,6 +154,64 @@ Two further consequences of the link being single-threaded and cooperative:
 - `Hearth.poll()` is likewise a no-op when called from a callback, for the
   same reason. Calling it from `loop()` is always safe.
 
+### Your `onChange` fires from inside your own setter
+
+`light.setOnOff(true)`, `setBrightness()`, `setColorTemperature()` and
+`sensor.setTemperature()` all write with `AT+MTATTR` mode 1, and the
+co-processor answers a mode-1 write with a `+MTATTR` URC (its own attribute
+callback confirming the change) *before* the `OK`. That URC is dispatched
+like any other, so **your `onChange` handler runs before the setter you
+called has returned**, with the value the co-processor echoed back:
+
+```cpp
+light.onChange(setLightOnOff);
+light.setOnOff(true);   // setLightOnOff(true) has already run by here
+```
+
+This is not a Hearth quirk. arduino-esp32 does the same: its `setOnOff()`
+reaches `esp_matter::attribute::update()`, which calls the endpoint's
+`attributeChangeCB` synchronously on the calling thread. A sketch written
+for arduino-esp32 sees its handler fire from inside its own setter there
+too. It is called out here only because it is easy to be surprised by, and
+because of the one place where Hearth then differs:
+
+**A library call made from that handler is refused.** The echo is dispatched
+while the write is still in flight on the UART, so a nested
+`Matter.isDeviceCommissioned()`, `otherLight.setOnOff()` or any other call
+that reaches the AT link returns failure (`HEARTH_CMD_REENTRANT`, `-3`, from
+`Hearth.hearthCommand()`; a `false` or an empty `String` from the API on
+top of it) and puts nothing on the wire. On arduino-esp32 the same call is
+served, because there is no shared serial link to protect. Set a flag in the
+handler and act on it in `loop()`:
+
+```cpp
+volatile bool g_lightChanged = false;
+
+bool setLightOnOff(bool state) {
+  digitalWrite(ledPin, state);
+  g_lightChanged = true;    // do not call the library from here
+  return true;
+}
+
+void loop() {
+  if (g_lightChanged) {
+    g_lightChanged = false;
+    otherLight.setOnOff(true);   // served normally: nothing is in flight
+  }
+}
+```
+
+Two smaller differences in the same area, for completeness:
+
+- Mode 0 (`setAttributeVal()`) echoes nothing and fires no handler. That is
+  what it is for: a host reflecting a change that came *from* a controller
+  uses mode 0 so it does not bounce back at the fabric.
+- Upstream calls `attributeChangeCB` on `PRE_UPDATE`, so a handler returning
+  `false` there vetoes the write. Over the AT link the co-processor reports
+  the change on `POST_UPDATE`, after it has already been applied, so the
+  return value cannot veto anything. Returning `false` still suppresses the
+  library's own cache update, as upstream's does.
+
 ## Supported device types
 
 Four of arduino-esp32's twenty `Matter*` endpoint classes exist today:

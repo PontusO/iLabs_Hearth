@@ -40,14 +40,61 @@ static void test_begin_declares_and_adopts(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
+/*
+ * RE-REVIEW, IMPORTANT 2. The C6 answers a mode-1 write with the +MTATTR
+ * URC its own attribute callback raises, then OK (AT_MT_SPEC.md S3.8).
+ * Scripted here as the firmware actually behaves; see test_onofflight.cpp's
+ * own note for the full reasoning.
+ */
 static void test_set_on_off_writes(void) {
   MockStream s; MatterColorTemperatureLight light;
   bringUpCT(s, light);
-  s.expect("AT+MTATTR=1,6,0,1,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
   check("setOnOff(true) succeeds", light.setOnOff(true));
   check("state cached", light.getOnOff() == true);
   check("operator bool agrees", (bool)light == true);
   check("no unexpected commands", s.unexpected().empty());
+  check("script drained", s.scriptDrained());
+}
+
+/*
+ * RE-REVIEW, IMPORTANT 2, this class's own behaviour pin. All three
+ * setters echo, so onChange fires synchronously from inside each of them,
+ * carrying the echoed value plus the two cached ones. A library call made
+ * from that callback is refused with the re-entrancy code: Hearth's one
+ * divergence from upstream here, documented in the README.
+ */
+static void test_local_write_echoes_fire_onchange_from_inside_the_setters(void) {
+  MockStream s; MatterColorTemperatureLight light;
+  bringUpCT(s, light);
+  int changeSeen = 0, nestedRc = 0;
+  bool state = false;
+  uint8_t levelAtChange = 0;
+  uint16_t tempAtChange = 0;
+  light.onChange([&](bool on, uint8_t level, uint16_t temp) {
+    changeSeen++;
+    state = on;
+    levelAtChange = level;
+    tempAtChange = temp;
+    nestedRc = Hearth.hearthCommand("AT+MTVER?");
+    return true;
+  });
+
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
+  check("the on/off write succeeds", light.setOnOff(true));
+  check("onChange fired from inside setOnOff", changeSeen == 1 && state == true);
+  check("a library call from the callback is refused", nestedRc == HEARTH_CMD_REENTRANT);
+
+  s.expect("AT+MTATTR=1,8,0,128,1", "+MTATTR:1,8,0,128\r\nOK\r\n");
+  check("the brightness write succeeds", light.setBrightness(128));
+  check("onChange fired again from inside setBrightness", changeSeen == 2 && levelAtChange == 128);
+
+  s.expect("AT+MTATTR=1,768,7,370,1", "+MTATTR:1,768,7,370\r\nOK\r\n");
+  check("the colour temperature write succeeds", light.setColorTemperature(370));
+  check("onChange fired again from inside setColorTemperature", changeSeen == 3 && tempAtChange == 370);
+
+  check("no extra traffic on the wire", s.unexpected().empty());
+  check("script drained", s.scriptDrained());
 }
 
 static void test_toggle(void) {
@@ -70,10 +117,11 @@ static void test_assignment_operator(void) {
 static void test_brightness_write(void) {
   MockStream s; MatterColorTemperatureLight light;
   bringUpCT(s, light);
-  s.expect("AT+MTATTR=1,8,0,128,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,8,0,128,1", "+MTATTR:1,8,0,128\r\nOK\r\n");
   check("setBrightness writes CurrentLevel", light.setBrightness(128));
   check("brightness cached", light.getBrightness() == 128);
   check("no unexpected commands", s.unexpected().empty());
+  check("script drained", s.scriptDrained());
 }
 
 static void test_max_brightness_constant(void) {
@@ -83,10 +131,11 @@ static void test_max_brightness_constant(void) {
 static void test_color_temperature_write(void) {
   MockStream s; MatterColorTemperatureLight light;
   bringUpCT(s, light);
-  s.expect("AT+MTATTR=1,768,7,370,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,768,7,370,1", "+MTATTR:1,768,7,370\r\nOK\r\n");
   check("setColorTemperature writes mireds", light.setColorTemperature(370));
   check("cached", light.getColorTemperature() == 370);
   check("no unexpected commands", s.unexpected().empty());
+  check("script drained", s.scriptDrained());
 }
 
 static void test_color_temperature_bounds(void) {
@@ -221,7 +270,11 @@ static void test_sensor_begin_declares_and_adopts(void) {
 static void test_sensor_push(void) {
   MockStream s; MatterTemperatureSensor sensor;
   bringUpSensor(s, sensor);
-  s.expect("AT+MTATTR=1,1026,0,2350,1", "OK\r\n");
+  /* The sensor's own setter echoes too: it is a mode-1 write like any
+   * other. MatterTemperatureSensor::attributeChangeCB has no user callback
+   * to fire (this endpoint is read-direction, matching upstream), so the
+   * echo is delivered and quietly absorbed. */
+  s.expect("AT+MTATTR=1,1026,0,2350,1", "+MTATTR:1,1026,0,2350\r\nOK\r\n");
   check("23.50 C becomes MeasuredValue 2350", sensor.setTemperature(23.50));
   check("and reads back as 23.5", sensor.getTemperature() > 23.49 && sensor.getTemperature() < 23.51);
   check("no unexpected commands", s.unexpected().empty());
@@ -231,7 +284,7 @@ static void test_sensor_push(void) {
 static void test_sensor_negative(void) {
   MockStream s; MatterTemperatureSensor sensor;
   bringUpSensor(s, sensor);
-  s.expect("AT+MTATTR=1,1026,0,-1234,1", "OK\r\n");
+  s.expect("AT+MTATTR=1,1026,0,-1234,1", "+MTATTR:1,1026,0,-1234\r\nOK\r\n");
   check("-12.34 C is sent as -1234", sensor.setTemperature(-12.34));
   check("and reads back negative", sensor.getTemperature() < -12.33 && sensor.getTemperature() > -12.35);
   check("no unexpected commands", s.unexpected().empty());
@@ -293,6 +346,7 @@ int main(void) {
   printf("\n===== MatterColorTemperatureLight and MatterTemperatureSensor tests =====\n");
   test_begin_declares_and_adopts();
   test_set_on_off_writes();
+  test_local_write_echoes_fire_onchange_from_inside_the_setters();
   test_toggle();
   test_assignment_operator();
   test_brightness_write();
