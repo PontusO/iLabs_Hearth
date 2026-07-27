@@ -55,6 +55,22 @@ static void test_unknown_endpoint_reports_code(void) {
   check("the +MTERR code is retained", Hearth.lastError() == 2);
 }
 
+static void test_read_rejects_invalid_type(void) {
+  /* attrVal->type is the target type for the rebuild (the wire only carries
+   * a bare integer); ESP_MATTER_VAL_TYPE_INVALID must be refused before the
+   * command is even sent, not handed to hearthAttrValFromLong to guess at. */
+  MockStream s;  // no expect(): the command must never reach the wire
+  Hearth.begin(s);
+  TestEndPoint ep;
+  ep.setEndPointId(1);
+  esp_matter_attr_val_t v;
+  v.type = ESP_MATTER_VAL_TYPE_INVALID;
+  v.val.u = 0;
+  check("a read with an invalid target type fails", !ep.getAttributeVal(0x0006, 0x0000, &v));
+  check("the type-not-carryable code is set", Hearth.lastError() == 5);
+  check("no command was sent to the wire", s.unexpected().empty());
+}
+
 static void test_declaration_order(void) {
   MatterEndPoint::hearthClearDeclarations();
   TestEndPoint a, b;
@@ -82,14 +98,34 @@ static void test_identify_callback(void) {
   check("identify callback fires", seen && state);
 }
 
+static void test_declaration_registry_full(void) {
+  /* hearthDeclare() must reject the (HEARTH_MAX_ENDPOINTS + 1)th endpoint
+   * rather than truncating the registry silently: a regression here would
+   * leave a sketch's later endpoints quietly missing from the data model. */
+  MatterEndPoint::hearthClearDeclarations();
+  static TestEndPoint eps[HEARTH_MAX_ENDPOINTS + 1];
+  bool allFilled = true;
+  for (int i = 0; i < HEARTH_MAX_ENDPOINTS; i++) {
+    if (!MatterEndPoint::hearthDeclare(&eps[i], 0x0100)) {
+      allFilled = false;
+    }
+  }
+  check("all HEARTH_MAX_ENDPOINTS declarations are accepted", allFilled);
+  check("count reaches the cap", MatterEndPoint::hearthDeclaredCount() == HEARTH_MAX_ENDPOINTS);
+  check("the next declaration is rejected", !MatterEndPoint::hearthDeclare(&eps[HEARTH_MAX_ENDPOINTS], 0x0100));
+  check("count does not grow past the cap", MatterEndPoint::hearthDeclaredCount() == HEARTH_MAX_ENDPOINTS);
+}
+
 int main(void) {
   printf("\n===== MatterEndPoint tests =====\n");
   test_write_modes();
   test_read();
   test_unknown_endpoint_reports_code();
+  test_read_rejects_invalid_type();
   test_declaration_order();
   test_lookup_by_endpoint_id();
   test_identify_callback();
+  test_declaration_registry_full();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

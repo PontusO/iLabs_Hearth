@@ -104,7 +104,15 @@ inline bool hearthAttrValToLong(const esp_matter_attr_val_t &v, long *out) {
   }
 }
 
-/* Rebuild a typed value from an AT integer, given the target type. */
+/*
+ * Rebuild a typed value from an AT integer, given the target type. An
+ * unknown t (ESP_MATTER_VAL_TYPE_INVALID, or a value outside the enum, which
+ * a caller can get to via an unchecked cast) is not silently accepted as
+ * whatever t happened to be: the result's .type is forced to
+ * ESP_MATTER_VAL_TYPE_INVALID so a caller inspecting it afterwards can tell
+ * the rebuild did not actually know the type, rather than trusting a value
+ * that was only ever read out of the union's unsigned member by accident.
+ */
 inline esp_matter_attr_val_t hearthAttrValFromLong(esp_matter_val_type_t t, long v) {
   esp_matter_attr_val_t a;
   a.type = t;
@@ -123,7 +131,11 @@ inline esp_matter_attr_val_t hearthAttrValFromLong(esp_matter_val_type_t t, long
     case ESP_MATTER_VAL_TYPE_UINT32:
     case ESP_MATTER_VAL_TYPE_ENUM8:
     case ESP_MATTER_VAL_TYPE_BITMAP8:
+      a.val.u = (uint32_t)v;
+      break;
+    case ESP_MATTER_VAL_TYPE_INVALID:
     default:
+      a.type = ESP_MATTER_VAL_TYPE_INVALID;
       a.val.u = (uint32_t)v;
       break;
   }

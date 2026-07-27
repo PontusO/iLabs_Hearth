@@ -40,12 +40,23 @@ static void test_uncarryable(void) {
   check("an uncarryable type is refused", !hearthAttrValToLong(v, &out));
 }
 
+static void test_rebuild_rejects_unknown_type(void) {
+  /* A type outside the enum (reachable via an unchecked cast, e.g. a
+   * corrupted or never-initialised attrVal->type) must not be handed back
+   * as though it were valid: hearthAttrValFromLong's default branch forces
+   * .type to ESP_MATTER_VAL_TYPE_INVALID so a caller inspecting the result
+   * can tell the rebuild did not know the type. */
+  esp_matter_attr_val_t v = hearthAttrValFromLong((esp_matter_val_type_t)99, 42);
+  check("an out-of-enum type rebuilds as INVALID", v.type == ESP_MATTER_VAL_TYPE_INVALID);
+}
+
 int main(void) {
   printf("\n===== attribute value codec tests =====\n");
   test_bool_roundtrip();
   test_unsigned_roundtrip();
   test_signed_negative();
   test_uncarryable();
+  test_rebuild_rejects_unknown_type();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

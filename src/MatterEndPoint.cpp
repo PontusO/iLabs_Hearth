@@ -79,6 +79,20 @@ bool MatterEndPoint::getAttributeVal(uint32_t cluster_id, uint32_t attribute_id,
     Hearth.hearthSetError(1);
     return false;
   }
+  /*
+   * The result is rebuilt from attrVal->type (see the header comment): an
+   * invalid or out-of-enum incoming type must not be allowed through to
+   * hearthAttrValFromLong, whose default branch would otherwise hand back a
+   * value silently misread out of the wrong union member. Reuse
+   * hearthAttrValToLong's own known-type check rather than duplicating its
+   * switch; the value it flattens is discarded, only the type verdict
+   * matters here.
+   */
+  long discard;
+  if (!hearthAttrValToLong(*attrVal, &discard)) {
+    Hearth.hearthSetError(5);  // the wire's "type not carryable" code
+    return false;
+  }
   char cmd[48];
   snprintf(cmd, sizeof(cmd), "AT+MTATTR=%u,%lu,%lu", (unsigned)endpoint_id, (unsigned long)cluster_id, (unsigned long)attribute_id);
 

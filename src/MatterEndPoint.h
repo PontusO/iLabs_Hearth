@@ -3,12 +3,17 @@
  *
  * Mirrors arduino-esp32's Matter library MatterEndPoint (see
  * ~/.arduino15/packages/esp32/hardware/esp32/3.3.8/libraries/Matter/src/MatterEndPoint.h),
- * with two differences:
+ * with three differences:
  *
  * - createSecondaryNetworkInterface() and getSecondaryNetworkEndPointId()
  *   are not implemented. They exist upstream for devices with more than one
  *   network interface; the C6 image has one. The gap is recorded in the
  *   README (Task 9).
+ * - getAttribute() is not implemented either. Upstream returns an
+ *   esp_matter::attribute_t *, a handle into ESP-IDF's live data model; a
+ *   host on RP2350 has no such data model to hand a handle into; there is no
+ *   host-side type this could return. Concrete endpoint types must go
+ *   through getAttributeVal/setAttributeVal/updateAttributeVal instead.
  * - the hearth* statics are Hearth's own addition, not part of the upstream
  *   surface, so per the naming rule they carry a Hearth prefix rather than a
  *   Matter one. They are an ordered registry of the endpoints a sketch
@@ -21,6 +26,14 @@
  * devices). A host reflecting a controller-driven change must use
  * setAttributeVal, or it echoes the change back to the fabric and loops.
  * See AT_MT_SPEC.md S3.8.
+ *
+ * getAttributeVal rebuilds its result using attrVal->type as the target
+ * type: the wire only ever carries a bare integer, never a type tag, so the
+ * caller must pre-set attrVal->type to the expected type (typically via
+ * esp_matter_bool()/esp_matter_uint8()/etc.) before calling. A call with
+ * attrVal->type left as ESP_MATTER_VAL_TYPE_INVALID, or set to anything
+ * outside esp_matter_val_type_t, is rejected with +MTERR:5 rather than
+ * risking a value silently misread out of the wrong union member.
  */
 #pragma once
 
