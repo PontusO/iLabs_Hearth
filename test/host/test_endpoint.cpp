@@ -98,6 +98,118 @@ static void test_identify_callback(void) {
   check("identify callback fires", seen && state);
 }
 
+/*
+ * FINAL REVIEW, IMPORTANT 2. The registry holds raw pointers and nothing
+ * ever removed one. A destroyed endpoint (a scope-local device object, or
+ * one owned by something that goes away) therefore left a dangling pointer
+ * behind that hearthFindByEndPointId() dereferences on the very next
+ * +MTATTR URC. Destruction must deregister.
+ */
+static void test_destroyed_endpoint_is_deregistered(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  TestEndPoint keep;
+  MatterEndPoint::hearthDeclare(&keep, 0x0100);
+  keep.setEndPointId(1);
+  {
+    TestEndPoint transient;
+    MatterEndPoint::hearthDeclare(&transient, 0x0302);
+    transient.setEndPointId(2);
+    check("both are registered", MatterEndPoint::hearthDeclaredCount() == 2);
+    check("the transient one is findable while alive", MatterEndPoint::hearthFindByEndPointId(2) == &transient);
+  }
+  check("destruction removed it from the registry", MatterEndPoint::hearthDeclaredCount() == 1);
+  check("and it is no longer findable", MatterEndPoint::hearthFindByEndPointId(2) == nullptr);
+  check("the surviving endpoint is untouched", MatterEndPoint::hearthDeclaredAt(0) == &keep
+                                            && MatterEndPoint::hearthDeclaredTypeAt(0) == 0x0100);
+}
+
+/* Removal must preserve declaration order for everything after it: endpoint
+ * IDs are assigned from that order, so compacting the array the wrong way
+ * would silently reshuffle the composition. */
+static void test_deregistration_preserves_order(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  TestEndPoint a, c;
+  {
+    TestEndPoint b;
+    MatterEndPoint::hearthDeclare(&a, 0x0100);
+    MatterEndPoint::hearthDeclare(&b, 0x0101);
+    MatterEndPoint::hearthDeclare(&c, 0x0302);
+    check("three declared", MatterEndPoint::hearthDeclaredCount() == 3);
+  }
+  check("the middle one is gone", MatterEndPoint::hearthDeclaredCount() == 2);
+  check("order of the survivors is preserved",
+        MatterEndPoint::hearthDeclaredAt(0) == &a && MatterEndPoint::hearthDeclaredTypeAt(0) == 0x0100
+        && MatterEndPoint::hearthDeclaredAt(1) == &c && MatterEndPoint::hearthDeclaredTypeAt(1) == 0x0302);
+}
+
+/*
+ * FINAL REVIEW, IMPORTANT 2, second half. begin(); end(); begin(); on the
+ * same device object used to append a second entry for it, silently
+ * changing the composition from one endpoint to two and so triggering a
+ * full clear/apply/reboot cycle on the next Matter.begin(). Re-declaring an
+ * endpoint that is already registered is a no-op, not an addition.
+ */
+static void test_repeat_declaration_is_idempotent(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  TestEndPoint a;
+  check("first declaration accepted", MatterEndPoint::hearthDeclare(&a, 0x0100));
+  check("a repeat declaration is accepted too", MatterEndPoint::hearthDeclare(&a, 0x0100));
+  check("but does not grow the registry", MatterEndPoint::hearthDeclaredCount() == 1);
+  check("and keeps the one entry it had", MatterEndPoint::hearthDeclaredAt(0) == &a
+                                       && MatterEndPoint::hearthDeclaredTypeAt(0) == 0x0100);
+}
+
+/*
+ * FINAL REVIEW, IMPORTANT 3. Every declared endpoint's endpoint_id is 0
+ * until reconcile adopts a real one, and 0 is the C6's Root Node. A lookup
+ * for 0 therefore matched the first declared endpoint, so after a reconcile
+ * that never ran or aborted, a stray +MTATTR:0,... would be delivered to a
+ * device object it has nothing to do with. Endpoint 0 must never match.
+ */
+static void test_endpoint_zero_never_matches_a_declared_endpoint(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  TestEndPoint a, b;
+  MatterEndPoint::hearthDeclare(&a, 0x0100);
+  MatterEndPoint::hearthDeclare(&b, 0x0302);
+  check("both are still unreconciled", a.getEndPointId() == 0 && b.getEndPointId() == 0);
+  check("a lookup for the Root Node finds nothing", MatterEndPoint::hearthFindByEndPointId(0) == nullptr);
+  a.setEndPointId(1);
+  check("a lookup for 0 still finds nothing once one is reconciled",
+        MatterEndPoint::hearthFindByEndPointId(0) == nullptr);
+  check("and the reconciled one is found normally", MatterEndPoint::hearthFindByEndPointId(1) == &a);
+}
+
+/*
+ * FINAL REVIEW, IMPORTANT 3, second half. The same 0 on the write side:
+ * hearthWriteAttr() formatted AT+MTATTR=0,... whenever reconcile had not
+ * run, so a sketch carrying on after a failed Matter.begin() silently read
+ * and wrote the co-processor's Root Node. An attribute access on an
+ * unreconciled endpoint must fail before it reaches the wire, carrying the
+ * protocol's own "unknown endpoint" code.
+ */
+static void test_attr_access_on_unreconciled_endpoint_fails_loudly(void) {
+  MockStream s;  // no expect(): nothing may reach the wire
+  Hearth.begin(s);
+  TestEndPoint ep;  // never reconciled, so endpoint_id is still 0
+  esp_matter_attr_val_t v = esp_matter_bool(true);
+
+  /* If the endpoint-0 guard regresses, the command does reach the drained
+   * mock, which never answers; keep the simulated clock moving so that is a
+   * failed check rather than a hung suite (same hook, and same reason, as
+   * test_timeout() in test_hearthlink.cpp). */
+  g_yieldAdvanceMs = 1;
+  check("setAttributeVal refuses", !ep.setAttributeVal(0x0006, 0x0000, &v));
+  check("and reports the unknown-endpoint code", Hearth.lastError() == 2);
+  Hearth.hearthSetError(0);
+  check("updateAttributeVal refuses", !ep.updateAttributeVal(0x0006, 0x0000, &v));
+  check("and reports the unknown-endpoint code", Hearth.lastError() == 2);
+  Hearth.hearthSetError(0);
+  check("getAttributeVal refuses", !ep.getAttributeVal(0x0006, 0x0000, &v));
+  check("and reports the unknown-endpoint code", Hearth.lastError() == 2);
+  g_yieldAdvanceMs = 0;
+  check("nothing reached the wire", s.unexpected().empty());
+}
+
 static void test_declaration_registry_full(void) {
   /* hearthDeclare() must reject the (HEARTH_MAX_ENDPOINTS + 1)th endpoint
    * rather than truncating the registry silently: a regression here would
@@ -125,6 +237,11 @@ int main(void) {
   test_declaration_order();
   test_lookup_by_endpoint_id();
   test_identify_callback();
+  test_destroyed_endpoint_is_deregistered();
+  test_deregistration_preserves_order();
+  test_repeat_declaration_is_idempotent();
+  test_endpoint_zero_never_matches_a_declared_endpoint();
+  test_attr_access_on_unreconciled_endpoint_fails_loudly();
   test_declaration_registry_full();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;

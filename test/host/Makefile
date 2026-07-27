@@ -4,7 +4,7 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_colortemp_sensor test_matter_umbrella
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_colortemp_sensor test_matter_umbrella test_no_global_instances
 
 all: $(TESTS)
 
@@ -42,6 +42,13 @@ test_colortemp_sensor: test_colortemp_sensor.cpp ArduinoShim.cpp $(SRC) ../../sr
 # types at file scope. Needs every endpoint .cpp linked in, since it
 # exercises all four.
 test_matter_umbrella: test_matter_umbrella.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+# Regression test for the final-review MINOR 1 fix: the Matter and Hearth
+# globals must honour NO_GLOBAL_INSTANCES / NO_GLOBAL_MATTER /
+# NO_GLOBAL_HEARTH. Mostly a compile-time assertion (see the file's own
+# comment), so a failure here shows up as a build error, not a failed check.
+test_no_global_instances: test_no_global_instances.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all

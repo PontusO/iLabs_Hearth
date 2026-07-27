@@ -100,6 +100,74 @@ static void test_poll_dispatches_urc(void) {
   check("poll dispatches a pending URC", urcs == "+MTATTR:1,6,0,1;");
 }
 
+/*
+ * FINAL REVIEW, IMPORTANT 1. A URC dispatched mid-command reaches a sketch
+ * callback, and a sketch callback may perfectly reasonably call back into
+ * the library (upstream's onChange handlers do exactly this sort of thing).
+ * Without a guard the inner command() shares the outer's stream: it writes
+ * its own command line, then consumes the outer command's result lines and
+ * terminal OK, returning "success" with no result line of its own, while
+ * the outer blocks its full timeout and returns -2. Both callers get a
+ * wrong answer and neither can tell. Fixing the +MTATTR exclusion (CRITICAL
+ * 1) makes URCs dispatch far more often, so this stops being theoretical.
+ *
+ * The contract: the re-entrant call is refused outright with
+ * HEARTH_CMD_REENTRANT and sends nothing, and the outer command completes
+ * exactly as if the callback had done nothing.
+ */
+static HearthLink *g_reentrantLink = nullptr;
+static int g_reentrantRc = 0;
+static int g_reentrantCalls = 0;
+
+static void reenterFromURC(const char *line, void *arg) {
+  ((std::string *)arg)->append(line).append(";");
+  g_reentrantCalls++;
+  g_reentrantRc = g_reentrantLink->command("AT+MTVER?");
+}
+
+static void test_reentrant_command_is_refused(void) {
+  MockStream s;
+  s.expect("AT+MTCODES?", "+MTEVT:3\r\n+MTCODES:MT:Y.K9042C00KA0648G00,34970112332\r\nOK\r\n");
+  HearthLink link;
+  link.begin(s);
+  g_reentrantLink = &link;
+  g_reentrantRc = 0;
+  g_reentrantCalls = 0;
+  std::string urcs, lines;
+  link.onURC(reenterFromURC, &urcs);
+
+  /* If the guard regresses, the outer command blocks its full timeout; keep
+   * the simulated clock moving so that is a failure rather than a hang. */
+  g_yieldAdvanceMs = 1;
+  int rc = link.command("AT+MTCODES?", collect, &lines);
+  g_yieldAdvanceMs = 0;
+
+  check("the callback really did re-enter", g_reentrantCalls == 1);
+  check("the re-entrant call is refused", g_reentrantRc == HEARTH_CMD_REENTRANT);
+  check("the re-entrant call put nothing on the wire", s.unexpected().empty());
+  check("the outer command still returns 0", rc == 0);
+  check("and still receives its own result line",
+        lines == "+MTCODES:MT:Y.K9042C00KA0648G00,34970112332;");
+  check("the URC was still dispatched", urcs == "+MTEVT:3;");
+
+  link.onURC(nullptr, nullptr);
+  g_reentrantLink = nullptr;
+}
+
+/* The same guard, seen from poll(): a callback that calls poll() again must
+ * not drain lines the command in flight is waiting for. */
+static void test_reentrant_poll_is_a_noop(void) {
+  MockStream s;
+  HearthLink link;
+  link.begin(s);
+  std::string urcs;
+  link.onURC(collect, &urcs);
+  s.injectURC("+MTEVT:3");
+  link.poll();
+  check("poll still dispatches normally", urcs == "+MTEVT:3;");
+  check("poll outside a command is not refused", s.unexpected().empty());
+}
+
 static void test_timeout(void) {
   MockStream s;
   s.expect("AT", "");  /* peer says nothing */
@@ -127,6 +195,8 @@ int main(void) {
   test_urc_during_command();
   test_attr_read_result_not_urc();
   test_poll_dispatches_urc();
+  test_reentrant_command_is_refused();
+  test_reentrant_poll_is_a_noop();
   test_timeout();
   test_not_started();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);

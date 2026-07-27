@@ -12,8 +12,31 @@ MatterEndPoint::HearthDeclaration MatterEndPoint::_hearthDeclared[HEARTH_MAX_END
 uint8_t MatterEndPoint::_hearthDeclaredCount = 0;
 bool MatterEndPoint::_hearthReconciled = false;
 
+MatterEndPoint::~MatterEndPoint() {
+  hearthUndeclare(this);
+}
+
 uint16_t MatterEndPoint::getEndPointId() {
   return endpoint_id;
+}
+
+/*
+ * Guard shared by every attribute accessor below. endpoint_id is 0 until
+ * ArduinoMatter::begin() adopts a real one from the C6, and setEndPointId()
+ * refuses 0, so 0 means exactly one thing: this endpoint has not been
+ * reconciled, because begin() was never called or it aborted. Formatting
+ * AT+MTATTR=0,... in that state does not fail: 0 is the co-processor's Root
+ * Node, a real endpoint that exists on every device, so the sketch silently
+ * reads and writes attributes on it instead of on its own light or sensor.
+ * Fail here, before the wire, carrying the protocol's own code 2 ("unknown
+ * endpoint", AT_MT_SPEC.md S5), which is precisely what the condition is.
+ */
+bool MatterEndPoint::hearthEndPointAddressable() {
+  if (endpoint_id != 0) {
+    return true;
+  }
+  Hearth.hearthSetError(2);
+  return false;
 }
 
 void MatterEndPoint::setEndPointId(uint16_t ep) {
@@ -29,6 +52,9 @@ void MatterEndPoint::setEndPointId(uint16_t ep) {
  * reported to the fabric. See AT_MT_SPEC.md S3.8.
  */
 bool MatterEndPoint::hearthWriteAttr(uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *attrVal, int mode) {
+  if (!hearthEndPointAddressable()) {
+    return false;
+  }
   long v;
   if (attrVal == nullptr || !hearthAttrValToLong(*attrVal, &v)) {
     Hearth.hearthSetError(5);  // the wire's "type not carryable" code
@@ -78,6 +104,9 @@ void MatterEndPoint::hearthOnAttrLine(const char *line, void *arg) {
 bool MatterEndPoint::getAttributeVal(uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *attrVal) {
   if (attrVal == nullptr) {
     Hearth.hearthSetError(1);
+    return false;
+  }
+  if (!hearthEndPointAddressable()) {
     return false;
   }
   /*
@@ -134,7 +163,36 @@ void MatterEndPoint::onIdentify(EndPointIdentifyCB onEndPointIdentifyCB) {
 }
 
 bool MatterEndPoint::hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId) {
-  if (ep == nullptr || _hearthDeclaredCount >= HEARTH_MAX_ENDPOINTS) {
+  if (ep == nullptr) {
+    return false;
+  }
+  /*
+   * Already registered: update in place rather than appending a second
+   * entry for the same object. begin(); end(); begin(); on one device
+   * object is a plausible sketch (upstream's end() is documented as "just
+   * stop processing events", so restarting is legitimate), and appending
+   * turned that into a different, longer composition, which reconcile then
+   * "fixed" with a clear/apply/co-processor-reboot cycle the sketch never
+   * asked for. An exact repeat changes nothing at all and is allowed even
+   * after reconcile; a repeat that changes the device type is a real
+   * composition change and goes through the same post-reconcile refusal as
+   * a brand new declaration.
+   */
+  for (uint8_t i = 0; i < _hearthDeclaredCount; i++) {
+    if (_hearthDeclared[i].ep != ep) {
+      continue;
+    }
+    if (_hearthDeclared[i].deviceTypeId == deviceTypeId) {
+      return true;
+    }
+    if (_hearthReconciled) {
+      Hearth.hearthSetError(10);
+      return false;
+    }
+    _hearthDeclared[i].deviceTypeId = deviceTypeId;
+    return true;
+  }
+  if (_hearthDeclaredCount >= HEARTH_MAX_ENDPOINTS) {
     return false;
   }
   if (_hearthReconciled) {
@@ -153,6 +211,32 @@ bool MatterEndPoint::hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId) {
   _hearthDeclared[_hearthDeclaredCount].deviceTypeId = deviceTypeId;
   _hearthDeclaredCount++;
   return true;
+}
+
+/*
+ * Remove `ep` if it is registered, shifting everything after it down so
+ * declaration order (which is what endpoint IDs are assigned from) survives
+ * the removal. A no-op for an endpoint that was never declared, which is
+ * the common case: the destructor calls this unconditionally, and plenty of
+ * MatterEndPoint objects (a stack temporary, one whose begin() was refused)
+ * never made it into the registry.
+ */
+void MatterEndPoint::hearthUndeclare(MatterEndPoint *ep) {
+  if (ep == nullptr) {
+    return;
+  }
+  for (uint8_t i = 0; i < _hearthDeclaredCount; i++) {
+    if (_hearthDeclared[i].ep != ep) {
+      continue;
+    }
+    for (uint8_t j = (uint8_t)(i + 1); j < _hearthDeclaredCount; j++) {
+      _hearthDeclared[j - 1] = _hearthDeclared[j];
+    }
+    _hearthDeclaredCount--;
+    _hearthDeclared[_hearthDeclaredCount].ep = nullptr;
+    _hearthDeclared[_hearthDeclaredCount].deviceTypeId = 0;
+    return;
+  }
 }
 
 uint8_t MatterEndPoint::hearthDeclaredCount() {
@@ -176,6 +260,10 @@ uint32_t MatterEndPoint::hearthDeclaredTypeAt(uint8_t index) {
 void MatterEndPoint::hearthClearDeclarations() {
   _hearthDeclaredCount = 0;
   _hearthReconciled = false;
+  /* A new composition is a new set of inputs, so it deserves a real
+   * reconcile attempt rather than inheriting the previous one's verdict.
+   * See HearthClass::hearthReconcileFailed(). */
+  Hearth.hearthSetReconcileFailed(false);
 }
 
 void MatterEndPoint::hearthMarkReconciled() {
@@ -183,6 +271,13 @@ void MatterEndPoint::hearthMarkReconciled() {
 }
 
 MatterEndPoint *MatterEndPoint::hearthFindByEndPointId(uint16_t ep) {
+  /* 0 is the Root Node and also the "not reconciled yet" value every
+   * declared endpoint carries, so a match on it is never right: see the
+   * header. This is the only place the distinction can be made, because
+   * from here the two cases are indistinguishable. */
+  if (ep == 0) {
+    return nullptr;
+  }
   for (uint8_t i = 0; i < _hearthDeclaredCount; i++) {
     if (_hearthDeclared[i].ep->getEndPointId() == ep) {
       return _hearthDeclared[i].ep;

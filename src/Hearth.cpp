@@ -10,6 +10,7 @@
 HearthClass::HearthClass()
   : _lastError(0),
     _warnedAboutRecommission(false),
+    _reconcileFailed(false),
     _expectingReboot(false),
     _expectedRebootSeen(false),
     _expectedRebootArmedAt(0),
@@ -20,6 +21,7 @@ void HearthClass::begin(Stream &serial, unsigned long baud) {
                // only the HEARTH_DEFAULT_SERIAL fallback in hearthEnsureLink() actually uses a baud.
   _link.begin(serial);
   _link.onURC(hearthOnURCLine, this);
+  _reconcileFailed = false;  // a new link is a new start; see hearthReconcileFailed()
   _expectingReboot = false;
   _expectedRebootSeen = false;
   _expectedRebootArmedAt = 0;
@@ -97,6 +99,22 @@ String HearthClass::firmwareVersion() {
 
 int HearthClass::hearthCommand(const char *cmd, HearthLink::LineCb onLine, void *arg) {
   hearthEnsureLink();
+  /*
+   * Pump the URC queue before every command. Nothing else can: upstream
+   * runs the Matter stack in a background task, so an unmodified sketch
+   * contains no poll() call and there is no parity surface on which to add
+   * one. What every upstream loop() *does* contain is at least one call
+   * into the library (isDeviceCommissioned(), a sensor update, a toggle),
+   * and every one of those reaches the wire through here. Draining here is
+   * therefore what makes a controller-driven change reach the sketch's
+   * onChange() on an unmodified sketch. A sketch whose loop() calls nothing
+   * into the library at all still has to call Hearth.poll() itself; the
+   * README says so.
+   *
+   * _link.poll() is a no-op when called re-entrantly, so a callback this
+   * drain dispatches that calls back into the library cannot recurse here.
+   */
+  poll();
   /* Same ordering reason as poll(): a buffered +MTREADY that arrives on the
    * wire ahead of this command's own response lines is read and dispatched
    * by _link.command()'s read loop before it returns, so the expiry check
@@ -491,6 +509,10 @@ void hearthAbortReconcile(int rc) {
   if (rc == -2) {
     Hearth.hearthSetError(-2);
   }
+  /* Latch the failure for the rest of the boot. See
+   * HearthClass::hearthReconcileFailed(): the retry cap below bounds one
+   * call, this bounds the loop() the sketch wraps that call in. */
+  Hearth.hearthSetReconcileFailed();
   Hearth.hearthReportProtocolError();
 }
 
@@ -546,6 +568,21 @@ static const int kHearthMaxReconcileAttempts = 2;
  * this AT+MTEPAPPLY triggered has completed."
  */
 void ArduinoMatter::begin() {
+  /*
+   * A reconcile that already failed this boot is not attempted again. The
+   * retry cap below is per call; this is per boot, and the two are not the
+   * same bound because a sketch may call begin() from loop(). Without it, a
+   * composition the C6 rejects (unknown device type, past its 16-endpoint
+   * cap) runs AT+MTEPCLEAR, the writes, AT+MTEPAPPLY and a co-processor
+   * reboot on every iteration, forever. Nothing about the inputs changes
+   * between those iterations, so a retry can only repeat the NVS wear and
+   * keep the C6 permanently rebooting. Silent rather than re-raising
+   * HEARTH_PROTOCOL_ERROR: the event fired once, on the attempt that
+   * actually failed, and repeating it every iteration would bury it.
+   */
+  if (Hearth.hearthReconcileFailed()) {
+    return;
+  }
   for (int attempt = 0; attempt < kHearthMaxReconcileAttempts; attempt++) {
     HearthEpQueryCtx ctx;
     ctx.count = 0;

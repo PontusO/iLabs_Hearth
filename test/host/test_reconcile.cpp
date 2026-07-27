@@ -323,6 +323,82 @@ static void test_persistent_mismatch_bails_after_retry_cap(void) {
   Hearth.onLinkEvent(nullptr);
 }
 
+/*
+ * FINAL REVIEW, CRITICAL 2. kHearthMaxReconcileAttempts bounds one call, not
+ * the boot. The README documents calling Matter.begin() from loop(), and
+ * upstream's examples call isDeviceCommissioned() there, so a sketch whose
+ * composition the C6 rejects (unknown device type, or past the 16-endpoint
+ * cap) would run clear + writes + apply + reboot on every single loop
+ * iteration, forever: unbounded NVS wear on the C6 and a co-processor that
+ * never finishes rebooting. A reconcile that failed once must stay failed
+ * for the rest of the boot; nothing about the inputs changes between
+ * iterations, so retrying can only repeat the damage.
+ */
+static void test_failed_reconcile_is_latched_for_the_boot(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  TestEndPoint light;
+  MatterEndPoint::hearthDeclare(&light, 0x0100);
+
+  MockStream s;
+  s.expect("AT+MTEP?", "OK\r\n");
+  s.expect("AT+MTFABRICS?", "+MTFABRICS:0\r\nOK\r\n");
+  s.expect("AT+MTEPCLEAR", "OK\r\n");
+  s.expect("AT+MTEP=0x0100", "+MTERR:6\r\nERROR\r\n"); /* the C6 rejects the type */
+  Hearth.begin(s);
+
+  int seen = 0;
+  Hearth.onLinkEvent([&](hearthEvent_t) { seen++; });
+
+  Matter.begin();
+  check("the first attempt runs and fails", s.scriptDrained() && seen == 1);
+  check("the failure is latched", Hearth.hearthReconcileFailed());
+
+  /* Three more loop() iterations. The script is empty, so anything sent now
+   * lands in unexpected(). g_yieldAdvanceMs is set for the same reason
+   * test_timeout() in test_hearthlink.cpp sets it: if the latch ever
+   * regresses, the command that should not have been sent gets no reply
+   * from the drained mock and readLine() would otherwise spin on a clock
+   * nothing advances. With it set, a regression fails the checks below in
+   * a few milliseconds of simulated time instead of hanging the suite. */
+  g_yieldAdvanceMs = 1;
+  Matter.begin();
+  Matter.begin();
+  Matter.begin();
+  g_yieldAdvanceMs = 0;
+  check("later Matter.begin() calls issue nothing at all", s.unexpected().empty());
+  check("and do not re-raise the protocol error", seen == 1);
+
+  Hearth.onLinkEvent(nullptr);
+}
+
+/* The latch must not outlive the thing it protects: Hearth.begin() (a fresh
+ * link) and hearthClearDeclarations() (a fresh composition) both clear it,
+ * so a genuinely new set of inputs gets a genuine attempt. Without this the
+ * latch would be indistinguishable from a permanently dead library. */
+static void test_reconcile_latch_clears_with_a_fresh_composition(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  TestEndPoint bad;
+  MatterEndPoint::hearthDeclare(&bad, 0x0100);
+
+  MockStream s1;
+  s1.expect("AT+MTEP?", "ERROR\r\n");
+  Hearth.begin(s1);
+  Matter.begin();
+  check("the first composition failed and latched", Hearth.hearthReconcileFailed());
+
+  MatterEndPoint::hearthClearDeclarations();
+  check("clearing the declarations clears the latch", !Hearth.hearthReconcileFailed());
+
+  TestEndPoint good;
+  MatterEndPoint::hearthDeclare(&good, 0x0100);
+  MockStream s2;
+  s2.expect("AT+MTEP?", "+MTEP:0,1,0x0100\r\nOK\r\n");
+  Hearth.begin(s2);
+  Matter.begin();
+  check("and the next reconcile runs normally", good.getEndPointId() == 1);
+  check("no unexpected commands", s2.unexpected().empty());
+}
+
 static void test_event_urc_maps_to_enum(void) {
   MockStream s;
   Hearth.begin(s);
@@ -388,6 +464,8 @@ int main(void) {
   test_apply_timeout_reports_protocol_error_and_disarms();
   test_rejected_write_aborts_immediately();
   test_persistent_mismatch_bails_after_retry_cap();
+  test_failed_reconcile_is_latched_for_the_boot();
+  test_reconcile_latch_clears_with_a_fresh_composition();
   test_event_urc_maps_to_enum();
   test_pairing_code();
   test_commissioned_query();

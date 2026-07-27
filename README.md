@@ -82,7 +82,12 @@ void setup() {
 }
 
 void loop() {
-  Matter.begin();  // harmless once commissioned; drives the link's poll loop
+  // Any call into the library also pumps the link; see "Driving the event
+  // loop" below. This is the call every upstream example already makes.
+  if (!Matter.isDeviceCommissioned()) {
+    Serial.println("Not commissioned yet.");
+  }
+  delay(500);
 }
 ```
 
@@ -91,6 +96,63 @@ over the wire until `Matter.begin()` reconciles the sketch's declared
 composition against the C6's live one. This is why every upstream example,
 and this rule, calls `Matter.begin()` last, after every endpoint's own
 `begin()`.
+
+**Do not call `Matter.begin()` from `loop()`.** An earlier version of this
+README suggested it. It is not harmless: on a composition the C6 rejects
+(an unimplemented device type, or more than sixteen endpoints) every call
+runs a clear, the endpoint writes, an apply and a co-processor reboot, so
+calling it per iteration means unbounded NVS wear on the C6 and a device
+that never finishes booting. The library now latches a failed reconcile for
+the rest of the boot, so a stray repeat call is bounded rather than
+catastrophic, but there is still no reason to make one: `Matter.begin()`
+belongs in `setup()`.
+
+## Driving the event loop
+
+On an ESP32 the Matter stack runs in its own FreeRTOS task, so a controller
+turning the light on reaches the sketch's `onChange()` handler no matter
+what `loop()` is doing. There is no equivalent here: the RP2350 has nothing
+running in the background, and a change arriving from the fabric shows up
+as a `+MTATTR` line sitting in the host's UART buffer until something reads
+it.
+
+**Every call into this library reads that buffer first.** Any
+`Matter.*` call, any endpoint method, anything that reaches the AT link
+drains and dispatches whatever URCs are pending before it sends its own
+command, and dispatches any that interleave with the reply. Upstream's own
+examples call `Matter.isDeviceCommissioned()` on every `loop()` iteration,
+and that alone is enough: an unmodified upstream sketch gets its change
+callbacks with nothing added.
+
+**A sketch whose `loop()` never calls into the library must call
+`Hearth.poll()` itself**, or callbacks never fire:
+
+```cpp
+void loop() {
+  Hearth.poll();   // drains pending +MTATTR / +MTEVT / +MTIDENT URCs
+  // ... work that does not touch Matter or any endpoint object ...
+}
+```
+
+Parity is therefore **conditional**, and worth being precise about: it holds
+for a sketch that calls into the library at least once per iteration, which
+covers all three shipped examples and the upstream pattern generally. It
+does not hold for a sketch that sets everything up and then sits in a loop
+doing unrelated work. Callback latency is also bounded by how often the
+sketch calls in, not by the co-processor: a `loop()` that calls the library
+once a second sees controller-driven changes up to a second late. There is
+no upstream analogue of `Hearth.poll()` to hide this behind, which is why
+it carries a Hearth name rather than being smuggled onto `Matter`.
+
+Two further consequences of the link being single-threaded and cooperative:
+
+- A change callback runs **inside** whichever library call happened to
+  dispatch it. Calling back into the library from that callback is refused
+  rather than served (`HEARTH_CMD_REENTRANT`), because a nested command
+  would consume the outer command's reply. Set a flag and act on it after
+  the call returns.
+- `Hearth.poll()` is likewise a no-op when called from a callback, for the
+  same reason. Calling it from `loop()` is always safe.
 
 ## Supported device types
 
@@ -180,6 +242,11 @@ commands and output are in `iLabs_AT_Hearth`'s Task 9 report.
 
 ## Limitations
 
+- **Parity on controller-driven callbacks is conditional on the sketch
+  calling into the library.** There is no background task here as there is
+  on an ESP32; a `loop()` that never touches `Matter.*` or an endpoint
+  object must call `Hearth.poll()`. See "Driving the event loop" above,
+  including the callback-latency and re-entrancy consequences.
 - **`createSecondaryNetworkInterface()` and
   `getSecondaryNetworkEndPointId()` are not implemented.** They exist
   upstream for devices with more than one network interface; the C6 image

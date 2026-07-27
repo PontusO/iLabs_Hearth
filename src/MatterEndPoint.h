@@ -48,6 +48,22 @@
 
 class MatterEndPoint {
 public:
+  /*
+   * Deregisters this endpoint from the declaration registry. The registry
+   * holds raw pointers and nothing else ever removes one, so without this a
+   * destroyed device object (a scope-local, or one owned by something that
+   * goes away) leaves a dangling pointer that hearthFindByEndPointId()
+   * dereferences on the very next +MTATTR URC.
+   *
+   * Non-virtual, exactly as upstream's MatterEndPoint is: this gives the
+   * destructor upstream already has implicitly a body, it does not add a
+   * name to the Matter-named surface, and matching upstream's (non-)
+   * virtuality keeps that surface identical. Nothing in this library or in
+   * upstream's examples deletes a device object through a MatterEndPoint *;
+   * they are file-scope or stack objects, destroyed as their concrete type.
+   */
+  ~MatterEndPoint();
+
   enum attrOperation_t {
     ATTR_SET = false,
     ATTR_UPDATE = true
@@ -87,12 +103,35 @@ public:
   void onIdentify(EndPointIdentifyCB onEndPointIdentifyCB);
 
   /* Hearth additions, not part of the upstream surface: the ordered
-   * registry of endpoints a sketch declared. */
+   * registry of endpoints a sketch declared.
+   *
+   * hearthDeclare() is idempotent for an endpoint already in the registry:
+   * a repeat declaration of the same object updates its entry in place
+   * rather than appending a second one. A sketch doing begin(); end();
+   * begin(); on one device object otherwise turned a one-endpoint
+   * composition into a two-endpoint one, which reconcile then "fixed" with
+   * a full clear/apply/co-processor-reboot cycle.
+   *
+   * hearthUndeclare() removes an endpoint, preserving the order of
+   * everything after it: endpoint IDs are assigned from declaration order,
+   * so compacting the array any other way would silently reshuffle the
+   * composition. Called from the destructor; a sketch has no reason to call
+   * it directly. */
   static bool hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId);
+  static void hearthUndeclare(MatterEndPoint *ep);
   static uint8_t hearthDeclaredCount();
   static MatterEndPoint *hearthDeclaredAt(uint8_t index);
   static uint32_t hearthDeclaredTypeAt(uint8_t index);
   static void hearthClearDeclarations();
+
+  /*
+   * Endpoint 0 never matches. It is the C6's Root Node, which the firmware
+   * deliberately never reports over +MTATTR (AT_MT_SPEC.md S4), and it is
+   * also the value every declared endpoint carries until reconcile adopts a
+   * real one. Without this, a lookup for 0 before (or after a failed)
+   * reconcile matched whichever endpoint the sketch happened to declare
+   * first, delivering Root Node traffic to an unrelated device object.
+   */
   static MatterEndPoint *hearthFindByEndPointId(uint16_t ep);
 
   /* Called once by Matter.begin() (Task 5) after it has reconciled the
@@ -117,5 +156,6 @@ private:
   static bool _hearthReconciled;
 
   bool hearthWriteAttr(uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *attrVal, int mode);
+  bool hearthEndPointAddressable();
   static void hearthOnAttrLine(const char *line, void *arg);
 };

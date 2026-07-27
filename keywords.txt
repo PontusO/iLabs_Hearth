@@ -62,6 +62,8 @@ hearthDisarmExpectedReboot	KEYWORD2
 hearthExpectedRebootSeen	KEYWORD2
 hearthCommand	KEYWORD2
 hearthSetError	KEYWORD2
+hearthReconcileFailed	KEYWORD2
+hearthSetReconcileFailed	KEYWORD2
 link	KEYWORD2
 hearthReportProtocolError	KEYWORD2
 
@@ -85,6 +87,7 @@ stream	KEYWORD2
 command	KEYWORD2
 onURC	KEYWORD2
 isAsyncURC	KEYWORD2
+hearthIsAttrRead	KEYWORD2
 
 # MatterEndPoint: base class every endpoint type derives from.
 attributeChangeCB	KEYWORD2
@@ -97,6 +100,7 @@ updateAttributeVal	KEYWORD2
 endpointIdentifyCB	KEYWORD2
 onIdentify	KEYWORD2
 hearthDeclare	KEYWORD2
+hearthUndeclare	KEYWORD2
 hearthDeclaredCount	KEYWORD2
 hearthDeclaredAt	KEYWORD2
 hearthDeclaredTypeAt	KEYWORD2
@@ -197,3 +201,9 @@ HEARTH_REBOOT_ARM_TIMEOUT_MS	LITERAL1
 HEARTH_MAX_ENDPOINTS	LITERAL1
 HEARTH_LINE_MAX	LITERAL1
 HEARTH_CMD_TIMEOUT_MS	LITERAL1
+
+# HearthLink::command()'s refusal code for a re-entrant call, and the
+# opt-out for the Hearth global (the Matter global honours upstream's own
+# NO_GLOBAL_INSTANCES / NO_GLOBAL_MATTER).
+HEARTH_CMD_REENTRANT	LITERAL1
+NO_GLOBAL_HEARTH	LITERAL1

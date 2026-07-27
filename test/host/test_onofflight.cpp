@@ -72,6 +72,101 @@ static void test_controller_change_fires_callback(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
+/*
+ * FINAL REVIEW, CRITICAL 1. The test above drives the dispatch with an
+ * explicit Hearth.poll(), which no upstream sketch contains: upstream runs
+ * the Matter stack in a background task and has nothing for poll() to be a
+ * parity of. What every upstream example's loop() *does* contain is
+ * `Matter.isDeviceCommissioned()`, so that call, on its own, has to be
+ * enough to get a controller-driven change through to onChange(). Nothing
+ * below calls poll(); if the library stops pumping pending URCs on its own
+ * API calls, this fails and the library's primary function is broken again.
+ */
+static void test_controller_change_fires_from_a_bare_upstream_loop(void) {
+  MockStream s;
+  MatterOnOffLight light;
+  bringUp(s, light, false);
+  int changeSeen = 0;
+  bool state = false;
+  light.onChange([&](bool v) {
+    changeSeen++;
+    state = v;
+    return true;
+  });
+
+  /* The controller turns the light on while the sketch is between loop()
+   * iterations: the URC lands in the host's UART buffer with no command in
+   * flight and nothing else running. */
+  s.injectURC("+MTATTR:1,6,0,1");
+
+  /* One iteration of an unmodified upstream loop(). */
+  s.expect("AT+MTFABRICS?", "+MTFABRICS:1\r\nOK\r\n");
+  bool commissioned = Matter.isDeviceCommissioned();
+
+  check("the sketch's own query still answers correctly", commissioned);
+  check("onChange fired with no Hearth.poll() in the sketch", changeSeen == 1 && state == true);
+  check("cached state updated", light.getOnOff() == true);
+  check("no unexpected commands", s.unexpected().empty());
+  check("script drained", s.scriptDrained());
+}
+
+/*
+ * FINAL REVIEW, CRITICAL 1, second half. Same change, but arriving while a
+ * command is already in flight, which is the far more likely timing on a
+ * real link: the C6 interleaves the URC with the reply it is already
+ * sending. HearthLink::command() used to refuse to dispatch *any* +MTATTR
+ * line mid-command (the exclusion exists for an attribute read claiming its
+ * own answer, but was applied unconditionally), so this line was offered to
+ * AT+MTFABRICS?'s line handler, dropped on its prefix check, and lost.
+ */
+static void test_controller_change_arriving_mid_command_is_dispatched(void) {
+  MockStream s;
+  MatterOnOffLight light;
+  bringUp(s, light, false);
+  int changeSeen = 0;
+  bool state = false;
+  light.onChange([&](bool v) {
+    changeSeen++;
+    state = v;
+    return true;
+  });
+
+  /* The URC is bundled into the reply to a command that is not an attribute
+   * read, which is where it must be treated as a URC and dispatched. */
+  s.expect("AT+MTFABRICS?", "+MTATTR:1,6,0,1\r\n+MTFABRICS:1\r\nOK\r\n");
+  bool commissioned = Matter.isDeviceCommissioned();
+
+  check("the in-flight command still parses its own result", commissioned);
+  check("the interleaved +MTATTR reached onChange", changeSeen == 1 && state == true);
+  check("cached state updated", light.getOnOff() == true);
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/*
+ * The other half of the +MTATTR exclusion: narrowing it must not break the
+ * case it was written for. An attribute *read*'s own +MTATTR answer is still
+ * claimed as the result and never routed to onChange, or every read would
+ * fire a spurious change callback.
+ */
+static void test_attribute_read_answer_is_not_a_change_callback(void) {
+  MockStream s;
+  MatterOnOffLight light;
+  bringUp(s, light, false);
+  int changeSeen = 0;
+  light.onChange([&](bool v) {
+    changeSeen++;
+    (void)v;
+    return true;
+  });
+
+  s.expect("AT+MTATTR=1,6,0", "+MTATTR:1,6,0,1\r\nOK\r\n");
+  esp_matter_attr_val_t v = esp_matter_bool(false);
+  check("the read succeeds", light.getAttributeVal(0x0006, 0x0000, &v));
+  check("and returns the reported value", v.val.b == true);
+  check("the read's own answer did not fire onChange", changeSeen == 0);
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 static void test_failed_write_returns_false(void) {
   MockStream s; MatterOnOffLight light;
   bringUp(s, light, false);
@@ -118,6 +213,9 @@ int main(void) {
   test_toggle();
   test_assignment_operator();
   test_controller_change_fires_callback();
+  test_controller_change_fires_from_a_bare_upstream_loop();
+  test_controller_change_arriving_mid_command_is_dispatched();
+  test_attribute_read_answer_is_not_a_change_callback();
   test_failed_write_returns_false();
   test_controller_change_delivers_typed_boolean();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);

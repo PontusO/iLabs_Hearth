@@ -106,6 +106,61 @@ inline esp_matter_attr_val_t esp_matter_int16(int16_t v) {
 }
 
 /*
+ * The rest of esp_matter_val_type_t's constructors. None of the four
+ * endpoint classes this library implements needs them: the census in
+ * CLAUDE.md found only u8, u16, bool, i16 and u32 across all twenty of
+ * upstream's classes. They exist because a sketch can call
+ * setAttributeVal()/updateAttributeVal()/getAttributeVal() on any cluster
+ * and attribute it likes, including ones no implemented class wraps, and
+ * without a constructor for the type it would simply fail to compile. That
+ * is the same "an unmodified sketch must build" argument that widened the
+ * union above.
+ *
+ * Signatures are read from esp-matter's own
+ * components/esp_matter/data_model/esp_matter_attribute_utils.h (v1.5.1),
+ * not transcribed from memory: enum8 and bitmap8 both take a uint8_t there,
+ * which is not guessable from their names.
+ *
+ * Every one writes the full 32-bit width through .i or .u, upholding the
+ * write-widest/read-narrowest invariant the union's comment above states
+ * and test_attrval.cpp asserts.
+ */
+inline esp_matter_attr_val_t esp_matter_int8(int8_t v) {
+  esp_matter_attr_val_t a;
+  a.type = ESP_MATTER_VAL_TYPE_INT8;
+  a.val.i = v;
+  return a;
+}
+
+inline esp_matter_attr_val_t esp_matter_int32(int32_t v) {
+  esp_matter_attr_val_t a;
+  a.type = ESP_MATTER_VAL_TYPE_INT32;
+  a.val.i = v;
+  return a;
+}
+
+inline esp_matter_attr_val_t esp_matter_uint32(uint32_t v) {
+  esp_matter_attr_val_t a;
+  a.type = ESP_MATTER_VAL_TYPE_UINT32;
+  a.val.u = v;
+  return a;
+}
+
+inline esp_matter_attr_val_t esp_matter_enum8(uint8_t v) {
+  esp_matter_attr_val_t a;
+  a.type = ESP_MATTER_VAL_TYPE_ENUM8;
+  a.val.u = v;
+  return a;
+}
+
+inline esp_matter_attr_val_t esp_matter_bitmap8(uint8_t v) {
+  esp_matter_attr_val_t a;
+  a.type = ESP_MATTER_VAL_TYPE_BITMAP8;
+  a.val.u = v;
+  return a;
+}
+
+/*
  * Flatten to the single integer AT+MTATTR carries. Signed types read val.i,
  * unsigned and enum/bitmap types read val.u, boolean reads val.b; a naive
  * codec that reads one union member for everything gets the signed types

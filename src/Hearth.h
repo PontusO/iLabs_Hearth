@@ -124,6 +124,36 @@ public:
   }
 
   /*
+   * True once a composition reconcile (ArduinoMatter::begin()) has failed,
+   * and therefore must not be attempted again for the rest of this boot.
+   *
+   * kHearthMaxReconcileAttempts (Hearth.cpp) bounds one call; this bounds
+   * the boot. Upstream's own examples poll the library from loop(), and
+   * this library's README used to suggest calling Matter.begin() there too,
+   * so without a latch a composition the C6 rejects (unknown device type,
+   * or past its 16-endpoint cap) would run AT+MTEPCLEAR, the writes,
+   * AT+MTEPAPPLY and a co-processor reboot on every single loop iteration,
+   * forever: unbounded NVS wear on the C6 and a device that never finishes
+   * booting. Nothing about the inputs changes between those iterations, so
+   * a retry can only repeat the damage.
+   *
+   * The latch is cleared by begin() (a new link is a new start) and by
+   * MatterEndPoint::hearthClearDeclarations() (a new composition is a new
+   * set of inputs, so it deserves a real attempt), which are also the two
+   * hooks the host tests use to start clean.
+   *
+   * Lives here rather than on ArduinoMatter because the naming rule bars
+   * adding members to a Matter-named class.
+   */
+  bool hearthReconcileFailed() const {
+    return _reconcileFailed;
+  }
+  /* For the Matter-named layer, which cannot hold this state itself. */
+  void hearthSetReconcileFailed(bool failed = true) {
+    _reconcileFailed = failed;
+  }
+
+  /*
    * Arm the link for a reboot the host itself is about to trigger, e.g.
    * immediately before sending AT+MTEPAPPLY. While armed, the next
    * +MTREADY completes the arm silently instead of raising
@@ -211,6 +241,7 @@ private:
   HearthLink _link;
   int _lastError;
   bool _warnedAboutRecommission;
+  bool _reconcileFailed;
   bool _expectingReboot;
   bool _expectedRebootSeen;
   uint32_t _expectedRebootArmedAt;
@@ -218,7 +249,26 @@ private:
   hearthEventCB _linkEventCB;
 };
 
+/*
+ * The same opt-out upstream's Matter.h gives its own global (see the guard
+ * on `Matter` at the bottom of this file), under a Hearth-named macro
+ * because this global is Hearth's own invention. A sketch that already has
+ * a symbol called Hearth, or that simply does not want the library
+ * declaring names it did not ask for, defines NO_GLOBAL_HEARTH, or
+ * arduino-esp32's blanket NO_GLOBAL_INSTANCES, and this declaration goes
+ * away.
+ *
+ * As upstream does, the *definition* in Hearth.cpp is left unguarded, and
+ * for this library that is not merely copying: the library's own
+ * translation units (Hearth.cpp's ArduinoMatter implementation,
+ * MatterEndPoint.cpp) call through this object, so a build-wide -D that
+ * removed the definition would not compile. What the guard suppresses is
+ * the name entering the sketch's own translation unit, which is all it can
+ * usefully do here.
+ */
+#if !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_HEARTH)
 extern HearthClass Hearth;
+#endif
 
 /*
  * CHIP platform event identifiers. Names and values are read from source,
@@ -332,4 +382,8 @@ public:
   static void decommission();
 };
 
+/* Upstream's own guard, verbatim (arduino-esp32 3.3.8, Matter.h:222). Not
+ * an addition to the Matter-named surface: it is part of that surface. */
+#if !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_MATTER)
 extern ArduinoMatter Matter;
+#endif
