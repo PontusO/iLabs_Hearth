@@ -4,7 +4,7 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable
 
 all: $(TESTS)
 
@@ -28,6 +28,9 @@ test_reconcile: test_reconcile.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp .
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 test_onofflight: test_onofflight.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_dimmable: test_dimmable.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all
