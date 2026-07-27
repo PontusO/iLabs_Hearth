@@ -1,7 +1,12 @@
 /*
  * Hearth.cpp - the Hearth global and ArduinoMatter/Matter, implementation.
  */
-#include "Hearth.h"
+/* HearthGlobal.h, not Hearth.h: ArduinoMatter's implementation below calls
+ * through the Hearth object, so it needs the declaration even in a build
+ * that set NO_GLOBAL_INSTANCES or NO_GLOBAL_HEARTH. This file happens to
+ * define the object above its first use today, which would have covered it
+ * by accident; the include makes it not an accident. See that header. */
+#include "HearthGlobal.h"
 #include "MatterEndPoint.h"
 #include <string.h>
 #include <stdio.h>

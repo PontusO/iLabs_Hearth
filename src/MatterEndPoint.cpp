@@ -3,7 +3,10 @@
  * registry.
  */
 #include "MatterEndPoint.h"
-#include "Hearth.h"
+/* HearthGlobal.h, not Hearth.h: this file calls through the Hearth object,
+ * so it needs the declaration even in a build that set NO_GLOBAL_INSTANCES
+ * or NO_GLOBAL_HEARTH. See that header. */
+#include "HearthGlobal.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>

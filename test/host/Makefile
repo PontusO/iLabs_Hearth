@@ -48,8 +48,16 @@ test_matter_umbrella: test_matter_umbrella.cpp ArduinoShim.cpp $(SRC) ../../src/
 # globals must honour NO_GLOBAL_INSTANCES / NO_GLOBAL_MATTER /
 # NO_GLOBAL_HEARTH. Mostly a compile-time assertion (see the file's own
 # comment), so a failure here shows up as a build error, not a failed check.
-test_no_global_instances: test_no_global_instances.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp
-	$(CXX) $(CXXFLAGS) -o $@ $^
+#
+# -DNO_GLOBAL_INSTANCES is on the command line, applying to *every* source in
+# this recipe, not #define'd inside the test .cpp. That is the whole point of
+# this target after the re-review: a sketch (or a board variant, or a
+# platform.local.txt) that sets the macro sets it build-wide, so the library's
+# own translation units are compiled with it too, and those are the ones that
+# used not to build. Defining it in the test TU alone compiled the library
+# normally and linked the result, which could never see the failure.
+test_no_global_instances: test_no_global_instances.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp
+	$(CXX) $(CXXFLAGS) -DNO_GLOBAL_INSTANCES -o $@ $^
 
 run: all
 	@for t in $(TESTS); do ./$$t || exit 1; done

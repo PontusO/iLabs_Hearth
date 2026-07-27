@@ -258,13 +258,24 @@ private:
  * arduino-esp32's blanket NO_GLOBAL_INSTANCES, and this declaration goes
  * away.
  *
- * As upstream does, the *definition* in Hearth.cpp is left unguarded, and
- * for this library that is not merely copying: the library's own
- * translation units (Hearth.cpp's ArduinoMatter implementation,
- * MatterEndPoint.cpp) call through this object, so a build-wide -D that
- * removed the definition would not compile. What the guard suppresses is
- * the name entering the sketch's own translation unit, which is all it can
- * usefully do here.
+ * As upstream does, the *definition* in Hearth.cpp is left unguarded, so an
+ * opted-out sketch still links against an object that exists.
+ *
+ * That alone is not enough here, and the earlier version of this comment got
+ * the reason wrong: it reasoned about the definition disappearing, when what
+ * actually disappears under the macro is the *declaration*, and the
+ * declaration is what the library's own translation units need. Upstream can
+ * get away with the bare guard because none of its own .cpp files ever names
+ * its Matter global. This library's do: MatterEndPoint.cpp calls through the
+ * Hearth object nine times, Hearth.cpp more. The macro is never scoped to
+ * the sketch, either: it arrives as a build-wide -D and reaches every
+ * library source. So a build-wide NO_GLOBAL_INSTANCES did not compile at
+ * all, which is the opposite of an opt-out.
+ *
+ * The fix is HearthGlobal.h, an internal header carrying the same `extern`
+ * with no guard, which every library source that touches the object includes
+ * instead of this one. The guard below then does exactly, and only, what it
+ * is for: keep the name out of the *sketch's* translation unit.
  */
 #if !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_HEARTH)
 extern HearthClass Hearth;
