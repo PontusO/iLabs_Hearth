@@ -110,6 +110,61 @@ static void test_commissioned_change_warns(void) {
   check("and it warned first", Hearth.warnedAboutRecommission());
 }
 
+/* IMPORTANT 5: fail closed on a fabric query that returns an outright
+ * ERROR. hearthQueryFabricCount() must not read that as "definitely zero
+ * fabrics"; it already did not (a non-zero hearthCommand() return alone was
+ * enough), but this pins the behaviour down. Does not disturb the apply
+ * sequence: fabricsKnown/fabrics only gate the warning, not which commands
+ * follow. */
+static void test_fabric_query_error_still_warns(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  Hearth.hearthSetWarnedAboutRecommission(false); /* the flag is a persistent Hearth member; start clean */
+  TestEndPoint light;
+  MatterEndPoint::hearthDeclare(&light, 0x0100);
+
+  MockStream s;
+  s.expect("AT+MTEP?", "OK\r\n");
+  s.expect("AT+MTFABRICS?", "ERROR\r\n");
+  s.expect("AT+MTEPCLEAR", "OK\r\n");
+  s.expect("AT+MTEP=0x0100", "OK\r\n");
+  s.expect("AT+MTEPAPPLY", "OK\r\n+MTREADY\r\n");
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x0100\r\nOK\r\n");
+  Hearth.begin(s);
+  Matter.begin();
+
+  check("a failed fabric query still warns (fail closed)", Hearth.warnedAboutRecommission());
+  check("reconcile still completes", light.getEndPointId() == 1);
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/* IMPORTANT 5, the specific hole the review found: an OK with no
+ * +MTFABRICS: line (a truncated or malformed reply) is a *successful*
+ * hearthCommand() return, so gating hearthQueryFabricCount() on the return
+ * code alone reads this as "definitely zero fabrics" and skips the
+ * warning. hearthQueryFabricCount() must instead confirm it actually
+ * parsed a +MTFABRICS: line, the same way hearthQueryCodes()/
+ * hearthQueryNet() gate on ctx.got. */
+static void test_fabric_query_truncated_reply_still_warns(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  Hearth.hearthSetWarnedAboutRecommission(false);
+  TestEndPoint light;
+  MatterEndPoint::hearthDeclare(&light, 0x0100);
+
+  MockStream s;
+  s.expect("AT+MTEP?", "OK\r\n");
+  s.expect("AT+MTFABRICS?", "OK\r\n"); /* malformed: OK with no +MTFABRICS: line */
+  s.expect("AT+MTEPCLEAR", "OK\r\n");
+  s.expect("AT+MTEP=0x0100", "OK\r\n");
+  s.expect("AT+MTEPAPPLY", "OK\r\n+MTREADY\r\n");
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x0100\r\nOK\r\n");
+  Hearth.begin(s);
+  Matter.begin();
+
+  check("a truncated fabric reply still warns (fail closed)", Hearth.warnedAboutRecommission());
+  check("reconcile still completes", light.getEndPointId() == 1);
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 /* CRITICAL 1 regression: the expected-reboot arm must be scoped to
  * AT+MTEPAPPLY only, not to the whole reconcile. A +MTREADY already sitting
  * on the wire before Matter.begin() is even called (an earlier, unrelated
@@ -223,6 +278,11 @@ static void test_rejected_write_aborts_immediately(void) {
   check("the rejected write leaves the endpoint ID at 0", light.getEndPointId() == 0);
   check("aborts as a protocol error without ever sending AT+MTEPAPPLY", seen == 1 && got == HEARTH_PROTOCOL_ERROR);
   check("no unexpected commands", s.unexpected().empty());
+  /* The +MTERR:6 the wire actually sent must survive, not get overwritten
+   * with the generic -2 timeout sentinel: that is the whole point of the
+   * +MTERR grammar (S5), letting a host tell "wrong form" apart from
+   * "that device type does not exist". */
+  check("the real +MTERR code is preserved, not the timeout sentinel", Hearth.lastError() == 6);
 
   Hearth.onLinkEvent(nullptr);
 }
@@ -322,6 +382,8 @@ int main(void) {
   test_empty_composition_applies();
   test_reordered_composition_applies();
   test_commissioned_change_warns();
+  test_fabric_query_error_still_warns();
+  test_fabric_query_truncated_reply_still_warns();
   test_stray_ready_before_apply_is_still_reported();
   test_apply_timeout_reports_protocol_error_and_disarms();
   test_rejected_write_aborts_immediately();

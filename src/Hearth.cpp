@@ -354,17 +354,34 @@ void hearthOnEpLine(const char *line, void *arg) {
   ctx->count++;
 }
 
-/* "+MTFABRICS:<count>" (AT_MT_SPEC.md S3.4). */
+/* "+MTFABRICS:<count>" (AT_MT_SPEC.md S3.4). Gated on ctx.got, the same way
+ * hearthQueryCodes()/hearthQueryNet() confirm they actually read a matching
+ * line: an OK with no +MTFABRICS: line (a truncated or malformed reply)
+ * must not be read as "definitely zero fabrics", or the fail-closed warning
+ * in ArduinoMatter::begin() below never fires for it. */
+struct HearthFabricsCtx {
+  long count;
+  bool got;
+};
+
 void hearthOnFabricsLine(const char *line, void *arg) {
-  long *out = (long *)arg;
+  HearthFabricsCtx *ctx = (HearthFabricsCtx *)arg;
   if (strncmp(line, "+MTFABRICS:", 11) == 0) {
-    *out = atol(line + 11);
+    ctx->count = atol(line + 11);
+    ctx->got = true;
   }
 }
 
 bool hearthQueryFabricCount(long *out) {
+  HearthFabricsCtx ctx;
+  ctx.count = 0;
+  ctx.got = false;
   *out = 0;
-  return Hearth.hearthCommand("AT+MTFABRICS?", hearthOnFabricsLine, out) == 0;
+  if (Hearth.hearthCommand("AT+MTFABRICS?", hearthOnFabricsLine, &ctx) != 0 || !ctx.got) {
+    return false;
+  }
+  *out = ctx.count;
+  return true;
 }
 
 /* "+MTCODES:<qr_payload>,<manual_pairing_code>" (AT_MT_SPEC.md S3.6). Fixed
@@ -447,12 +464,28 @@ bool hearthQueryNet(HearthNetCtx *ctx) {
   return Hearth.hearthCommand("AT+MTNET?", hearthOnNetLine, ctx) == 0 && ctx->got;
 }
 
-/* Shared bail-out for every failure path in ArduinoMatter::begin() below:
- * host-side timeout sentinel (-2, HearthLink::command()'s own convention
- * for "nothing usable came back") plus HEARTH_PROTOCOL_ERROR, and the
- * caller returns immediately afterwards with every endpoint ID still at 0. */
-void hearthAbortReconcile() {
-  Hearth.hearthSetError(-2);
+/*
+ * Shared bail-out for every failure path in ArduinoMatter::begin() below:
+ * HEARTH_PROTOCOL_ERROR, and the caller returns immediately afterwards with
+ * every endpoint ID still at 0.
+ *
+ * `rc` is the hearthCommand() return that triggered the abort, or -2 for
+ * the two paths with no single command to blame (the AT+MTEPAPPLY wait
+ * timing out; the retry cap exhausted on a composition that never
+ * converged). hearthCommand() already recorded the real code in
+ * lastError() when rc is a positive +MTERR value: overwriting it here with
+ * a generic -2 would throw away exactly the information the +MTERR
+ * grammar exists to carry (S5, "you asked the wrong way" vs "that device
+ * type does not exist"). -2 is set only when rc itself is -2 (a genuine
+ * host-side timeout, which hearthCommand() leaves lastError() at 0 for);
+ * a bare ERROR (-1) is left at whatever hearthCommand() already set
+ * (also 0, since a bare-ERROR "wrong command form" carries no code to
+ * preserve).
+ */
+void hearthAbortReconcile(int rc) {
+  if (rc == -2) {
+    Hearth.hearthSetError(-2);
+  }
   Hearth.hearthReportProtocolError();
 }
 
@@ -511,8 +544,9 @@ void ArduinoMatter::begin() {
   for (int attempt = 0; attempt < kHearthMaxReconcileAttempts; attempt++) {
     HearthEpQueryCtx ctx;
     ctx.count = 0;
-    if (Hearth.hearthCommand("AT+MTEP?", hearthOnEpLine, &ctx) != 0) {
-      hearthAbortReconcile();
+    int queryRc = Hearth.hearthCommand("AT+MTEP?", hearthOnEpLine, &ctx);
+    if (queryRc != 0) {
+      hearthAbortReconcile(queryRc);
       return;
     }
 
@@ -560,28 +594,30 @@ void ArduinoMatter::begin() {
       Hearth.hearthSetWarnedAboutRecommission();
     }
 
-    if (Hearth.hearthCommand("AT+MTEPCLEAR") != 0) {
-      hearthAbortReconcile();
+    int clearRc = Hearth.hearthCommand("AT+MTEPCLEAR");
+    if (clearRc != 0) {
+      hearthAbortReconcile(clearRc);
       return;
     }
-    bool writesOk = true;
+    int writeRc = 0;
     for (uint8_t i = 0; i < declaredCount; i++) {
       char cmd[24];
       snprintf(cmd, sizeof(cmd), "AT+MTEP=0x%04lX", (unsigned long)MatterEndPoint::hearthDeclaredTypeAt(i));
-      if (Hearth.hearthCommand(cmd) != 0) {
-        writesOk = false;
+      writeRc = Hearth.hearthCommand(cmd);
+      if (writeRc != 0) {
         break;
       }
     }
-    if (!writesOk) {
-      hearthAbortReconcile();
+    if (writeRc != 0) {
+      hearthAbortReconcile(writeRc);
       return;
     }
 
     Hearth.hearthArmExpectedReboot();
-    if (Hearth.hearthCommand("AT+MTEPAPPLY") != 0) {
+    int applyRc = Hearth.hearthCommand("AT+MTEPAPPLY");
+    if (applyRc != 0) {
       Hearth.hearthDisarmExpectedReboot();
-      hearthAbortReconcile();
+      hearthAbortReconcile(applyRc);
       return;
     }
 
@@ -596,9 +632,12 @@ void ArduinoMatter::begin() {
          * at 0 rather than guessing: 0 is the Root Node, which the firmware
          * deliberately never reports over +MTATTR (S4), so an attribute
          * write against it fails loudly instead of silently doing nothing
-         * useful. */
+         * useful. No wire code applies here (AT+MTEPAPPLY itself returned
+         * OK; it is the promised +MTREADY that never showed), so -2 is the
+         * genuine "nothing usable came back" case, not a discarded real
+         * code. */
         Hearth.hearthDisarmExpectedReboot();
-        hearthAbortReconcile();
+        hearthAbortReconcile(-2);
         return;
       }
       yield();
@@ -608,8 +647,9 @@ void ArduinoMatter::begin() {
   /* Exhausted kHearthMaxReconcileAttempts rounds without ever reaching the
    * identical case: something on the wire keeps rejecting the composition
    * (unknown device type, the endpoint cap, ...) rather than time or luck
-   * fixing it. */
-  hearthAbortReconcile();
+   * fixing it. No single command failed here either (the last AT+MTEP?
+   * returned OK, just with content that still did not match), so -2 again. */
+  hearthAbortReconcile(-2);
 }
 
 String ArduinoMatter::getManualPairingCode() {
