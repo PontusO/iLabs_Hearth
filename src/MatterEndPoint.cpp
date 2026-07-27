@@ -10,6 +10,7 @@
 
 MatterEndPoint::HearthDeclaration MatterEndPoint::_hearthDeclared[HEARTH_MAX_ENDPOINTS];
 uint8_t MatterEndPoint::_hearthDeclaredCount = 0;
+bool MatterEndPoint::_hearthReconciled = false;
 
 uint16_t MatterEndPoint::getEndPointId() {
   return endpoint_id;
@@ -124,6 +125,18 @@ bool MatterEndPoint::hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId) {
   if (ep == nullptr || _hearthDeclaredCount >= HEARTH_MAX_ENDPOINTS) {
     return false;
   }
+  if (_hearthReconciled) {
+    /*
+     * Matter.begin() already reconciled the registry against the C6 and
+     * will not query it again; a declaration arriving after that point
+     * would sit in the registry with endpoint_id 0 forever. Reused error
+     * code 10, the wire's own "composition change rejected" code (S3.9),
+     * since this is the same rejection just caught host-side before it
+     * ever reaches the wire.
+     */
+    Hearth.hearthSetError(10);
+    return false;
+  }
   _hearthDeclared[_hearthDeclaredCount].ep = ep;
   _hearthDeclared[_hearthDeclaredCount].deviceTypeId = deviceTypeId;
   _hearthDeclaredCount++;
@@ -150,6 +163,11 @@ uint32_t MatterEndPoint::hearthDeclaredTypeAt(uint8_t index) {
 
 void MatterEndPoint::hearthClearDeclarations() {
   _hearthDeclaredCount = 0;
+  _hearthReconciled = false;
+}
+
+void MatterEndPoint::hearthMarkReconciled() {
+  _hearthReconciled = true;
 }
 
 MatterEndPoint *MatterEndPoint::hearthFindByEndPointId(uint16_t ep) {

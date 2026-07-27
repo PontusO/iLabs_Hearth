@@ -1,18 +1,27 @@
 /*
- * Hearth.h - the Hearth global: link configuration, diagnostics and the
- * link-event surface for the AT+MT link to the ESP32-C6 co-processor.
+ * Hearth.h - the Hearth global (link configuration, diagnostics and the
+ * link-event surface for the AT+MT link to the ESP32-C6 co-processor), and
+ * matterEvent_t / ArduinoMatter / Matter, the Matter-named surface.
  *
- * Everything here has no arduino-esp32 counterpart. It lives on Hearth
- * rather than on the Matter-named class (Task 5) because the naming rule
- * bars adding members to a Matter-named class: that surface must stay
- * exactly what upstream defines, nothing more. See CLAUDE.md, "Naming and
- * legal constraint".
+ * The HearthClass parts below have no arduino-esp32 counterpart and live on
+ * Hearth rather than on the Matter-named class because the naming rule bars
+ * adding members to a Matter-named class: that surface must stay exactly
+ * what upstream defines, nothing more. See CLAUDE.md, "Naming and legal
+ * constraint".
+ *
+ * ArduinoMatter and matterEvent_t, further down, ARE that Matter-named
+ * surface: this is the file src/Matter.h's `#include "Hearth.h"` shim
+ * resolves to, so an unmodified sketch's `Matter.*` and `matterEvent_t`
+ * calls land here. It gets exactly the members upstream's Matter.h defines,
+ * nothing more; see that class's own comment below for the two exceptions
+ * and why they are not really exceptions.
  */
 #pragma once
 
 #include <functional>
 #include <Arduino.h>
 #include "HearthLink.h"
+#include "HearthCompat.h"
 
 /*
  * Link used when begin() is skipped entirely. Serial1 is the documented
@@ -158,9 +167,21 @@ public:
     return _link;
   }
 
+  /*
+   * Invoke the registered onLinkEvent() callback, if any. Public so the
+   * Matter-named layer (ArduinoMatter::begin(), below) can report protocol
+   * trouble it detects itself, e.g. HEARTH_PROTOCOL_ERROR when the
+   * +MTREADY that AT+MTEPAPPLY promises never arrives: that layer cannot
+   * hold the event callback itself (the naming rule bars adding anything,
+   * including private state, to a Matter-named class), and cannot be a
+   * friend of HearthClass without HearthClass naming a Matter-named class
+   * back, which is the same rule working the other way. A plain public
+   * method is the smallest surface that avoids both.
+   */
+  void hearthRaiseEvent(hearthEvent_t e);
+
 private:
   void hearthEnsureLink();
-  void hearthRaiseEvent(hearthEvent_t e);
   void hearthCheckExpectedRebootExpiry();
   static void hearthOnURCLine(const char *line, void *arg);
   static void hearthOnVerLine(const char *line, void *arg);
@@ -176,3 +197,117 @@ private:
 };
 
 extern HearthClass Hearth;
+
+/*
+ * CHIP platform event identifiers. Names and values are read from source,
+ * not transcribed from memory (CLAUDE.md's rule on device type IDs applies
+ * here for the same reason: a wrong value here is a silent, hard-to-notice
+ * bug for any sketch that switches on it):
+ *
+ *   - the base values: connectedhomeip's
+ *     src/include/platform/CHIPDeviceEvent.h, kFlag_IsPublic = 0x8000,
+ *     kRange_Public = kFlag_IsPublic, and the PublicEventTypes enum, whose
+ *     first member kWiFiConnectivityChange = kRange_Public and the rest
+ *     increment from there;
+ *   - the four commissioning-session/window events and the four fabric
+ *     events (0xD000-0xD007): esp-matter's own components/esp_matter/
+ *     esp_matter.h, which extends DeviceEventType with
+ *     kCommissioningSessionStarted = kRange_PublicPlatformSpecific + 0x1000,
+ *     where kRange_PublicPlatformSpecific = kFlag_IsPublic |
+ *     kFlag_IsPlatformSpecific = 0xC000, and the rest increment from there;
+ *   - the enumerator names, MATTER_ESP32_SPECIFIC_EVENT's "previous + 1"
+ *     value (upstream's own comment claims 0x9000, but the code has no
+ *     explicit value there, so it takes MATTER_BLE_DEINITIALIZED + 1 by
+ *     ordinary C++ enum rules), and MATTER_ESP32_PUBLIC_SPECIFIC_EVENT =
+ *     kRange_PublicPlatformSpecific (0xC000): arduino-esp32 3.3.8's
+ *     libraries/Matter/src/Matter.h, lines 56-160.
+ */
+enum matterEvent_t {
+  MATTER_WIFI_CONNECTIVITY_CHANGE = 0x8000,
+  MATTER_THREAD_CONNECTIVITY_CHANGE,
+  MATTER_INTERNET_CONNECTIVITY_CHANGE,
+  MATTER_SERVICE_CONNECTIVITY_CHANGE,
+  MATTER_SERVICE_PROVISIONING_CHANGE,
+  MATTER_TIME_SYNC_CHANGE,
+  MATTER_CHIPOBLE_CONNECTION_ESTABLISHED,
+  MATTER_CHIPOBLE_CONNECTION_CLOSED,
+  MATTER_CLOSE_ALL_BLE_CONNECTIONS,
+  MATTER_WIFI_DEVICE_AVAILABLE,
+  MATTER_OPERATIONAL_NETWORK_STARTED,
+  MATTER_THREAD_STATE_CHANGE,
+  MATTER_THREAD_INTERFACE_STATE_CHANGE,
+  MATTER_CHIPOBLE_ADVERTISING_CHANGE,
+  MATTER_INTERFACE_IP_ADDRESS_CHANGED,
+  MATTER_COMMISSIONING_COMPLETE,
+  MATTER_FAIL_SAFE_TIMER_EXPIRED,
+  MATTER_OPERATIONAL_NETWORK_ENABLED,
+  MATTER_DNSSD_INITIALIZED,
+  MATTER_DNSSD_RESTART_NEEDED,
+  MATTER_BINDINGS_CHANGED_VIA_CLUSTER,
+  MATTER_OTA_STATE_CHANGED,
+  MATTER_SERVER_READY,
+  MATTER_BLE_DEINITIALIZED,
+  MATTER_ESP32_SPECIFIC_EVENT, /* = previous + 1, see the comment above */
+  MATTER_COMMISSIONING_SESSION_STARTED = 0xD000,
+  MATTER_COMMISSIONING_SESSION_STOPPED,
+  MATTER_COMMISSIONING_WINDOW_OPEN,
+  MATTER_COMMISSIONING_WINDOW_CLOSED,
+  MATTER_FABRIC_WILL_BE_REMOVED,
+  MATTER_FABRIC_REMOVED,
+  MATTER_FABRIC_COMMITTED,
+  MATTER_FABRIC_UPDATED,
+  MATTER_ESP32_PUBLIC_SPECIFIC_EVENT = 0xC000,
+};
+
+/*
+ * ArduinoMatter: the Matter-named surface. Gets exactly the members
+ * upstream's Matter.h (arduino-esp32 3.3.8, line ~165 on) defines, nothing
+ * more; anything this port needs to invent lives on HearthClass above
+ * instead, per CLAUDE.md's naming rule. Two things upstream has are handled
+ * differently here, neither of which is really an exception:
+ *
+ *   - _matterEventCB is upstream's own public static member, not something
+ *     this port added. It stays public, as upstream has it, which is what
+ *     lets HearthClass's URC dispatcher (Hearth.cpp) invoke it directly
+ *     without either class naming the other as a friend.
+ *   - the friend class list (MatterOnOffLight, MatterTemperatureSensor,
+ *     ...) and the protected _init() upstream has exist so concrete
+ *     endpoint classes can reach into ArduinoMatter's private esp_matter
+ *     setup. This port's endpoint types (Task 6 on) talk to the C6 over
+ *     AT+MTEP / AT+MTATTR instead of a local esp_matter data model, so
+ *     there is no equivalent setup to reach into; both are omitted as not
+ *     applicable rather than reproduced as dead code.
+ *
+ * getManualPairingCode() and getOnboardingQRCodeUrl() are declared here and
+ * defined in Hearth.cpp rather than inline as upstream has them: upstream's
+ * bodies return a hardcoded test credential; these query AT+MTCODES? for
+ * the device's real one, which does not fit in a one-line inline body. The
+ * signatures match upstream exactly; only the implementation differs.
+ */
+class ArduinoMatter {
+public:
+  using matterEventCB = std::function<void(matterEvent_t, const chip::DeviceLayer::ChipDeviceEvent *)>;
+  static matterEventCB _matterEventCB;
+
+  static void onEvent(matterEventCB cb) {
+    _matterEventCB = cb;
+  }
+
+  static void begin();
+
+  static String getManualPairingCode();
+  static String getOnboardingQRCodeUrl();
+
+  static bool isWiFiStationEnabled();
+  static bool isWiFiAccessPointEnabled();
+  static bool isThreadEnabled();
+  static bool isBLECommissioningEnabled();
+
+  static bool isDeviceCommissioned();
+  static bool isWiFiConnected();
+  static bool isThreadConnected();
+  static bool isDeviceConnected();
+  static void decommission();
+};
+
+extern ArduinoMatter Matter;

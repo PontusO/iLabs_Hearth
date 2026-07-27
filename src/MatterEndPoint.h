@@ -79,6 +79,14 @@ public:
   static void hearthClearDeclarations();
   static MatterEndPoint *hearthFindByEndPointId(uint16_t ep);
 
+  /* Called once by Matter.begin() (Task 5) after it has reconciled the
+   * declared registry against the C6's live composition. Declaring a new
+   * endpoint after that point would never receive an endpoint ID (nothing
+   * queries the C6 again), so hearthDeclare() refuses it once this is set.
+   * hearthClearDeclarations() resets it, so a test (or a sketch re-running
+   * begin()) can reconcile again from a clean slate. */
+  static void hearthMarkReconciled();
+
 protected:
   uint16_t endpoint_id = 0;
   EndPointIdentifyCB _onEndPointIdentifyCB = nullptr;
@@ -90,6 +98,7 @@ private:
   };
   static HearthDeclaration _hearthDeclared[HEARTH_MAX_ENDPOINTS];
   static uint8_t _hearthDeclaredCount;
+  static bool _hearthReconciled;
 
   bool hearthWriteAttr(uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *attrVal, int mode);
   static void hearthOnAttrLine(const char *line, void *arg);
