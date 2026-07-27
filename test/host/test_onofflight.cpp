@@ -306,6 +306,64 @@ static void test_rebegin_after_reconcile_does_not_desync_the_cache(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
+/*
+ * RE-REVIEW, MINOR 4. A +MTATTR that lands before reconcile has finished is
+ * consumed and dropped: hearthCommand() drains URCs at the top of every
+ * call, including the AT+MTEP? that reconcile itself issues, and at that
+ * moment every declared endpoint still has endpoint_id 0, so
+ * hearthFindByEndPointId() finds no target.
+ *
+ * Dropping is the right answer, not merely a tolerable one, so it is pinned
+ * here rather than fixed:
+ *
+ *   - the alternative is matching a real endpoint id against endpoints that
+ *     all still carry 0, which is precisely the Root Node confusion the
+ *     final review's IMPORTANT 3 closed. Nothing in the registry can
+ *     legitimately claim the value;
+ *   - a composition change reboots the C6 (AT+MTEPAPPLY), so anything
+ *     buffered from before it is stale by definition;
+ *   - the values are authoritative on the C6, not on the host, and are
+ *     re-readable with getAttributeVal() once ids are adopted. Upstream's
+ *     own examples resynchronise here anyway: they call updateAccessory()
+ *     right after Matter.begin() to push the sketch's cached state at the
+ *     hardware.
+ *
+ * The window is one AT round trip on the no-change path. Buffering across
+ * it would need a queue whose depth is a new failure mode of its own.
+ */
+static void test_urcs_arriving_before_reconcile_are_dropped(void) {
+  MockStream s;
+  MatterOnOffLight light;
+  MatterEndPoint::hearthClearDeclarations();
+  Hearth.begin(s);
+  light.begin(false);
+  int changeSeen = 0;
+  light.onChange([&](bool v) {
+    changeSeen++;
+    (void)v;
+    return true;
+  });
+
+  /* The C6 reports a state change before the host has adopted any endpoint
+   * id, i.e. while Matter.begin() is still in flight. */
+  s.injectURC("+MTATTR:1,6,0,1");
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x0100\r\nOK\r\n");
+  Matter.begin();
+
+  check("reconcile still succeeded", light.getEndPointId() == 1);
+  check("the pre-reconcile URC fired no callback", changeSeen == 0);
+  check("and did not touch the cached state", light.getOnOff() == false);
+  check("it was consumed, not left in the buffer", s.scriptDrained());
+
+  /* The very next one, now that ids are adopted, is delivered normally: the
+   * drop is scoped to the pre-reconcile window and nothing is wedged. */
+  s.injectURC("+MTATTR:1,6,0,1");
+  Hearth.poll();
+  check("a change after reconcile is delivered", changeSeen == 1);
+  check("and updates the cache", light.getOnOff() == true);
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 static void test_failed_write_returns_false(void) {
   MockStream s; MatterOnOffLight light;
   bringUp(s, light, false);
@@ -359,6 +417,7 @@ int main(void) {
   test_controller_change_arriving_mid_command_is_dispatched();
   test_attribute_read_answer_is_not_a_change_callback();
   test_rebegin_after_reconcile_does_not_desync_the_cache();
+  test_urcs_arriving_before_reconcile_are_dropped();
   test_failed_write_returns_false();
   test_controller_change_delivers_typed_boolean();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);

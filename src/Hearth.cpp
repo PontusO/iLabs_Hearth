@@ -118,6 +118,12 @@ int HearthClass::hearthCommand(const char *cmd, HearthLink::LineCb onLine, void 
    *
    * _link.poll() is a no-op when called re-entrantly, so a callback this
    * drain dispatches that calls back into the library cannot recurse here.
+   *
+   * One consequence, deliberate: this also drains during
+   * ArduinoMatter::begin()'s own AT+MTEP?, when no endpoint has adopted an
+   * id yet, so a +MTATTR arriving in that window is consumed and dropped.
+   * hearthDispatchAttr() below carries the reasoning for why that is the
+   * right answer rather than a gap.
    */
   poll();
   /* Same ordering reason as poll(): a buffered +MTREADY that arrives on the
@@ -252,6 +258,32 @@ void hearthDispatchEvt(const char *rest) {
  * never declared) is dropped silently: both are legitimately not ours, per
  * AT_MT_SPEC.md S4's own note that the root endpoint is intentionally never
  * reported.
+ *
+ * A third case reaches the same drop and is worth naming, because it is not
+ * obviously the same thing (re-review, MINOR 4): a +MTATTR that arrives
+ * *before reconcile has finished*. hearthCommand() drains URCs at the top of
+ * every call, including the AT+MTEP? that ArduinoMatter::begin() issues, and
+ * at that moment every declared endpoint still has endpoint_id 0, so nothing
+ * here matches and the line is consumed and discarded.
+ *
+ * That is deliberate rather than a gap to be closed later:
+ *
+ *   - there is no correct alternative delivery. Matching a real endpoint id
+ *     against endpoints that all still carry 0 is exactly the Root Node
+ *     confusion hearthFindByEndPointId()'s own guard exists to prevent;
+ *   - a composition change reboots the C6 (AT+MTEPAPPLY), so anything
+ *     buffered from before that point is stale by construction;
+ *   - the C6, not the host, holds the authoritative value, and a sketch that
+ *     wants it can read it back with getAttributeVal() once ids are adopted.
+ *     Upstream's own examples resynchronise here anyway, calling
+ *     updateAccessory() right after Matter.begin();
+ *   - the window is one AT round trip on the ordinary no-change boot.
+ *     Buffering across it would mean a queue whose depth and overflow policy
+ *     are a new failure mode in exchange for values that are already stale.
+ *
+ * Pinned by test_urcs_arriving_before_reconcile_are_dropped()
+ * (test_onofflight.cpp), which also asserts that the very next URC, after
+ * ids are adopted, is delivered normally.
  */
 void hearthDispatchAttr(const char *rest) {
   char *end;
