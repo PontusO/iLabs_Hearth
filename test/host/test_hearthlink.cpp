@@ -154,9 +154,15 @@ static void test_reentrant_command_is_refused(void) {
   g_reentrantLink = nullptr;
 }
 
-/* The same guard, seen from poll(): a callback that calls poll() again must
- * not drain lines the command in flight is waiting for. */
-static void test_reentrant_poll_is_a_noop(void) {
+/*
+ * RE-REVIEW, MINOR 1. This used to be called
+ * test_reentrant_poll_is_a_noop and injected one URC, called poll() once,
+ * and nested nothing: it tested that poll() works, which is
+ * test_poll_dispatches_urc's job, and named itself after a property it
+ * never exercised. Renamed to what it actually checks. The two tests below
+ * are the re-entrancy ones.
+ */
+static void test_poll_outside_a_command_dispatches_normally(void) {
   MockStream s;
   HearthLink link;
   link.begin(s);
@@ -166,6 +172,107 @@ static void test_reentrant_poll_is_a_noop(void) {
   link.poll();
   check("poll still dispatches normally", urcs == "+MTEVT:3;");
   check("poll outside a command is not refused", s.unexpected().empty());
+}
+
+/*
+ * Shared by the two genuinely re-entrant poll tests below: a URC handler
+ * that calls poll() on the same link that is currently dispatching it.
+ *
+ * It also tracks how deeply dispatches nest, which is the only assertion
+ * that distinguishes a working guard from a missing one in the
+ * poll-inside-poll case: a nested poll that really drained the queue would
+ * still dispatch every URC exactly once and still in arrival order, just
+ * from inside the previous URC's handler instead of from the outer loop.
+ * Depth is what tells those apart, and depth is what would grow without
+ * bound on a busy link.
+ */
+static HearthLink *g_pollLink = nullptr;
+static int g_nestedPolls = 0;
+static int g_dispatchDepth = 0;
+static int g_maxDispatchDepth = 0;
+
+static void pollFromURC(const char *line, void *arg) {
+  g_dispatchDepth++;
+  if (g_dispatchDepth > g_maxDispatchDepth) {
+    g_maxDispatchDepth = g_dispatchDepth;
+  }
+  ((std::string *)arg)->append(line).append(";");
+  g_nestedPolls++;
+  g_pollLink->poll();
+  g_dispatchDepth--;
+}
+
+/*
+ * RE-REVIEW, MINOR 1, the real thing: a URC dispatched *from inside a
+ * command* reaches a handler that calls poll(). This is the hazard the
+ * guard exists for. Without it the nested poll() drains the rest of the
+ * stream looking for URCs, swallowing the outer command's own result line
+ * and its terminal OK (neither is a URC, so both are simply discarded), and
+ * the outer command then blocks its full timeout and returns -2 having seen
+ * nothing.
+ *
+ * With the mode-1 write echo now modelled (see the endpoint suites), this
+ * is not a contrived arrangement: every setter dispatches a URC mid-command,
+ * so any sketch handler that calls Hearth.poll() lands here.
+ */
+static void test_reentrant_poll_during_a_command_is_a_noop(void) {
+  MockStream s;
+  s.expect("AT+MTCODES?", "+MTEVT:3\r\n+MTCODES:MT:Y.K9042C00KA0648G00,34970112332\r\nOK\r\n");
+  HearthLink link;
+  link.begin(s);
+  g_pollLink = &link;
+  g_nestedPolls = 0;
+  g_dispatchDepth = 0;
+  g_maxDispatchDepth = 0;
+  std::string urcs, lines;
+  link.onURC(pollFromURC, &urcs);
+
+  /* If the guard regresses, the outer command blocks its full timeout; keep
+   * the simulated clock moving so that is a failure rather than a hang. */
+  g_yieldAdvanceMs = 1;
+  int rc = link.command("AT+MTCODES?", collect, &lines);
+  g_yieldAdvanceMs = 0;
+
+  check("the handler really did call poll() re-entrantly", g_nestedPolls == 1);
+  check("the outer command still returns 0", rc == 0);
+  check("and still receives its own result line",
+        lines == "+MTCODES:MT:Y.K9042C00KA0648G00,34970112332;");
+  check("the URC was dispatched exactly once", urcs == "+MTEVT:3;");
+
+  link.onURC(nullptr, nullptr);
+  g_pollLink = nullptr;
+}
+
+/*
+ * RE-REVIEW, MINOR 1, second half: poll() re-entered from inside poll().
+ * The nested call must consume nothing, so the outer loop still sees the
+ * second URC and each is dispatched exactly once, in arrival order. A
+ * missing guard shows up here as the second URC arriving before the first
+ * one's handler has finished, i.e. out of order and, on a longer queue,
+ * with unbounded recursion depth.
+ */
+static void test_reentrant_poll_during_a_poll_is_a_noop(void) {
+  MockStream s;
+  HearthLink link;
+  link.begin(s);
+  g_pollLink = &link;
+  g_nestedPolls = 0;
+  g_dispatchDepth = 0;
+  g_maxDispatchDepth = 0;
+  std::string urcs;
+  link.onURC(pollFromURC, &urcs);
+
+  s.injectURC("+MTEVT:3");
+  s.injectURC("+MTEVT:4");
+  link.poll();
+
+  check("both handlers ran and both re-entered", g_nestedPolls == 2);
+  check("each URC was dispatched exactly once, in order", urcs == "+MTEVT:3;+MTEVT:4;");
+  check("the nested poll consumed nothing, so dispatches never nested", g_maxDispatchDepth == 1);
+  check("nothing reached the wire", s.unexpected().empty());
+
+  link.onURC(nullptr, nullptr);
+  g_pollLink = nullptr;
 }
 
 static void test_timeout(void) {
@@ -196,7 +303,9 @@ int main(void) {
   test_attr_read_result_not_urc();
   test_poll_dispatches_urc();
   test_reentrant_command_is_refused();
-  test_reentrant_poll_is_a_noop();
+  test_poll_outside_a_command_dispatches_normally();
+  test_reentrant_poll_during_a_command_is_a_noop();
+  test_reentrant_poll_during_a_poll_is_a_noop();
   test_timeout();
   test_not_started();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);

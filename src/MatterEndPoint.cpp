@@ -170,23 +170,36 @@ bool MatterEndPoint::hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId) {
     return false;
   }
   /*
-   * Already registered: update in place rather than appending a second
-   * entry for the same object. begin(); end(); begin(); on one device
-   * object is a plausible sketch (upstream's end() is documented as "just
-   * stop processing events", so restarting is legitimate), and appending
-   * turned that into a different, longer composition, which reconcile then
-   * "fixed" with a clear/apply/co-processor-reboot cycle the sketch never
-   * asked for. An exact repeat changes nothing at all and is allowed even
-   * after reconcile; a repeat that changes the device type is a real
-   * composition change and goes through the same post-reconcile refusal as
-   * a brand new declaration.
+   * Already registered. Before reconcile, update in place rather than
+   * appending a second entry for the same object: begin(); end(); begin();
+   * on one device object is a plausible sketch (upstream's end() is
+   * documented as "just stop processing events", so restarting is
+   * legitimate), and appending turned that into a different, longer
+   * composition, which reconcile then "fixed" with a
+   * clear/apply/co-processor-reboot cycle the sketch never asked for.
+   *
+   * After reconcile, refuse, whether or not the device type changed. A
+   * changed type is a real composition change arriving too late to be
+   * reconciled, so it belongs with the brand-new-declaration refusal below.
+   * An exact repeat was allowed through for a while on the reasoning that
+   * it changes nothing, and that was wrong: it changes nothing *here*, but
+   * the caller is MatterOnOffLight::begin(initialState) and its siblings,
+   * which take a true return as licence to overwrite their cached state
+   * with the sketch's initial value while issuing no AT traffic at all. A
+   * sketch calling light.begin(true) after Matter.begin() therefore came
+   * away believing the light was on while the C6 still had it off, and the
+   * setOnOff(true) that should have corrected it short-circuited on its own
+   * equality check. The light silently never came on, with no error
+   * anywhere.
+   *
+   * Refusing is also exact upstream parity: arduino-esp32 3.3.8's
+   * MatterOnOffLight::begin() opens with `if (getEndPointId() != 0) {
+   * log_e("... has already been created."); return false; }`, and every
+   * other endpoint class does the same.
    */
   for (uint8_t i = 0; i < _hearthDeclaredCount; i++) {
     if (_hearthDeclared[i].ep != ep) {
       continue;
-    }
-    if (_hearthDeclared[i].deviceTypeId == deviceTypeId) {
-      return true;
     }
     if (_hearthReconciled) {
       Hearth.hearthSetError(10);

@@ -105,12 +105,20 @@ public:
   /* Hearth additions, not part of the upstream surface: the ordered
    * registry of endpoints a sketch declared.
    *
-   * hearthDeclare() is idempotent for an endpoint already in the registry:
-   * a repeat declaration of the same object updates its entry in place
-   * rather than appending a second one. A sketch doing begin(); end();
-   * begin(); on one device object otherwise turned a one-endpoint
-   * composition into a two-endpoint one, which reconcile then "fixed" with
-   * a full clear/apply/co-processor-reboot cycle.
+   * hearthDeclare() is idempotent for an endpoint already in the registry,
+   * *before* reconcile: a repeat declaration of the same object updates its
+   * entry in place rather than appending a second one. A sketch doing
+   * begin(); end(); begin(); on one device object otherwise turned a
+   * one-endpoint composition into a two-endpoint one, which reconcile then
+   * "fixed" with a full clear/apply/co-processor-reboot cycle.
+   *
+   * After reconcile it refuses instead, with +MTERR:10, even for an exact
+   * repeat. The registry would be unharmed either way, but a true return
+   * licenses the calling endpoint's begin() to overwrite its cached state
+   * from its initialState argument without writing anything to the wire,
+   * which desynchronises the sketch from the C6 silently. Upstream refuses
+   * the same call for the same reason (its begin() bails out once
+   * getEndPointId() is non-zero). See the .cpp for the full case.
    *
    * hearthUndeclare() removes an endpoint, preserving the order of
    * everything after it: endpoint IDs are assigned from declaration order,

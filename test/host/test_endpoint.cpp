@@ -177,6 +177,70 @@ static void test_repeat_declaration_is_idempotent(void) {
 }
 
 /*
+ * RE-REVIEW, MINOR 2, first branch. Re-declaring the same object with a
+ * *different* device type before reconcile is a genuine composition change
+ * and is taken: the sketch is still setting itself up, nothing has been
+ * reconciled against the C6 yet, and the alternative (appending) is the bug
+ * the idempotence rule exists to prevent. Untested until now.
+ */
+static void test_repeat_declaration_with_a_new_type_updates_in_place(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  TestEndPoint a, b;
+  check("first declaration accepted", MatterEndPoint::hearthDeclare(&a, 0x0100));
+  check("a second endpoint after it", MatterEndPoint::hearthDeclare(&b, 0x0302));
+  check("re-declaring the first with a new type is accepted", MatterEndPoint::hearthDeclare(&a, 0x0101));
+  check("the registry did not grow", MatterEndPoint::hearthDeclaredCount() == 2);
+  check("the entry was updated in place", MatterEndPoint::hearthDeclaredAt(0) == &a
+                                       && MatterEndPoint::hearthDeclaredTypeAt(0) == 0x0101);
+  check("and the endpoint after it kept its position", MatterEndPoint::hearthDeclaredAt(1) == &b
+                                                    && MatterEndPoint::hearthDeclaredTypeAt(1) == 0x0302);
+}
+
+/*
+ * RE-REVIEW, MINOR 2 second branch, and MINOR 3. After reconcile, *any*
+ * re-declaration of an already-registered endpoint is refused, whether or
+ * not the device type changed.
+ *
+ * A changed type is a composition change arriving too late to be reconciled,
+ * so it goes through the same +MTERR:10 refusal as a brand new declaration.
+ *
+ * An *exact repeat* used to be allowed through, on the reasoning that it
+ * changes nothing. It changes nothing in the registry, but the caller is
+ * MatterOnOffLight::begin(initialState) and friends, which take a true
+ * return as licence to overwrite their cached state with the sketch's
+ * initial value and never write it to the wire. A sketch calling
+ * light.begin(true) after Matter.begin() therefore ended up believing the
+ * light was on while the C6 still had it off, and the next setOnOff(true)
+ * short-circuited on the equality check and never turned it on: a silent
+ * divergence with no error anywhere.
+ *
+ * Refusing is also exact upstream parity. arduino-esp32 3.3.8's
+ * MatterOnOffLight::begin() opens with `if (getEndPointId() != 0) { log_e(
+ * "... has already been created."); return false; }`, and every other
+ * endpoint class does the same.
+ */
+static void test_repeat_declaration_after_reconcile_is_refused(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  TestEndPoint a;
+  check("first declaration accepted", MatterEndPoint::hearthDeclare(&a, 0x0100));
+  MatterEndPoint::hearthMarkReconciled();
+  a.setEndPointId(1);
+
+  Hearth.hearthSetError(0);
+  check("an exact repeat is refused after reconcile", !MatterEndPoint::hearthDeclare(&a, 0x0100));
+  check("carrying the composition-rejected code", Hearth.lastError() == 10);
+
+  Hearth.hearthSetError(0);
+  check("a repeat with a different type is refused too", !MatterEndPoint::hearthDeclare(&a, 0x0101));
+  check("carrying the same code", Hearth.lastError() == 10);
+
+  check("neither attempt disturbed the registry", MatterEndPoint::hearthDeclaredCount() == 1
+                                               && MatterEndPoint::hearthDeclaredAt(0) == &a
+                                               && MatterEndPoint::hearthDeclaredTypeAt(0) == 0x0100);
+  check("and the adopted endpoint id is untouched", a.getEndPointId() == 1);
+}
+
+/*
  * FINAL REVIEW, IMPORTANT 3. Every declared endpoint's endpoint_id is 0
  * until reconcile adopts a real one, and 0 is the C6's Root Node. A lookup
  * for 0 therefore matched the first declared endpoint, so after a reconcile
@@ -257,6 +321,8 @@ int main(void) {
   test_destroyed_endpoint_is_deregistered();
   test_deregistration_preserves_order();
   test_repeat_declaration_is_idempotent();
+  test_repeat_declaration_with_a_new_type_updates_in_place();
+  test_repeat_declaration_after_reconcile_is_refused();
   test_endpoint_zero_never_matches_a_declared_endpoint();
   test_attr_access_on_unreconciled_endpoint_fails_loudly();
   test_declaration_registry_full();

@@ -277,6 +277,35 @@ static void test_attribute_read_answer_is_not_a_change_callback(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
+/*
+ * RE-REVIEW, MINOR 3, seen from the sketch rather than from the registry.
+ * A second begin() after Matter.begin() used to be accepted (an exact
+ * repeat declaration returned true), so it overwrote onOffState with its
+ * initialState argument without ever putting that value on the wire. The
+ * light was then off on the C6 and "on" in the sketch's cache, and the
+ * setOnOff(true) that should have fixed it short-circuited on the equality
+ * check instead: the light silently never came on.
+ *
+ * It must be refused, which is also what upstream does
+ * (MatterOnOffLight::begin() returns false once getEndPointId() != 0), and
+ * the cache must be left alone so the next setOnOff actually writes.
+ */
+static void test_rebegin_after_reconcile_does_not_desync_the_cache(void) {
+  MockStream s; MatterOnOffLight light;
+  bringUp(s, light, false);
+
+  check("a second begin() after Matter.begin() is refused", !light.begin(true));
+  check("and reports the composition-rejected code", Hearth.lastError() == 10);
+  check("the cached state was not overwritten", light.getOnOff() == false);
+  check("the refused begin() issued no AT traffic", s.scriptDrained());
+
+  /* The point of all of the above: this write must still reach the wire. */
+  s.expect("AT+MTATTR=1,6,0,1,1", "+MTATTR:1,6,0,1\r\nOK\r\n");
+  check("so the next setOnOff(true) really does turn the light on", light.setOnOff(true));
+  check("and the write happened", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 static void test_failed_write_returns_false(void) {
   MockStream s; MatterOnOffLight light;
   bringUp(s, light, false);
@@ -329,6 +358,7 @@ int main(void) {
   test_controller_change_fires_from_a_bare_upstream_loop();
   test_controller_change_arriving_mid_command_is_dispatched();
   test_attribute_read_answer_is_not_a_change_callback();
+  test_rebegin_after_reconcile_does_not_desync_the_cache();
   test_failed_write_returns_false();
   test_controller_change_delivers_typed_boolean();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
