@@ -99,6 +99,27 @@ static void test_expected_reboot_expires_then_spontaneous_reboot_raises(void) {
   check("a spontaneous +MTREADY after expiry is a reboot", seen == 1 && got == HEARTH_COPROCESSOR_REBOOTED);
 }
 
+/*
+ * Regression test for the review-round-2 finding: the reply arrived well
+ * within the deadline, sitting unread in the stream, and only the *host*
+ * was late calling poll(). That must not be misreported as a spontaneous
+ * reboot: the buffered +MTREADY has to be dispatched (and consume the arm)
+ * before the expiry check gets a chance to clear it out from under the
+ * reply that already arrived.
+ */
+static void test_expected_reboot_reply_already_buffered_before_late_poll(void) {
+  MockStream s;
+  Hearth.begin(s);
+  int seen = 0;
+  Hearth.onLinkEvent([&](hearthEvent_t) { seen++; });
+  Hearth.hearthArmExpectedReboot(100);
+  s.injectURC("+MTREADY");  // the co-processor replied promptly...
+  g_millis += 200;          // ...but the host doesn't get around to poll() until after the deadline
+  Hearth.poll();
+  check("no false reboot when only the host was late to poll", seen == 0);
+  check("hearthExpectedRebootSeen still reports the reply arrived", Hearth.hearthExpectedRebootSeen());
+}
+
 int main(void) {
   printf("\n===== Hearth link tests =====\n");
   test_version();
@@ -108,6 +129,7 @@ int main(void) {
   test_expected_reboot_consumed_silently();
   test_expected_reboot_disarmed_then_spontaneous_reboot_raises();
   test_expected_reboot_expires_then_spontaneous_reboot_raises();
+  test_expected_reboot_reply_already_buffered_before_late_poll();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

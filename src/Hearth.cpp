@@ -56,8 +56,20 @@ void HearthClass::hearthRaiseEvent(hearthEvent_t e) {
 
 void HearthClass::poll() {
   hearthEnsureLink();
-  hearthCheckExpectedRebootExpiry();
+  /*
+   * Dispatch first, check expiry second. A +MTREADY the co-processor sent
+   * well within the deadline may already be sitting unread in the stream if
+   * the host was simply slow to call poll(); if the expiry check ran first
+   * it would clear the arm out from under that already-arrived reply, and
+   * the reply would then be misdispatched as a spontaneous
+   * HEARTH_COPROCESSOR_REBOOTED even though nothing actually went wrong.
+   * Once _link.poll() has had a chance to consume a buffered +MTREADY (via
+   * hearthOnURCLine(), which clears _expectingReboot itself on the expected
+   * path), the expiry check below has nothing left to clear and the
+   * ordering stops mattering.
+   */
   _link.poll();
+  hearthCheckExpectedRebootExpiry();
 }
 
 void HearthClass::hearthOnVerLine(const char *line, void *arg) {
@@ -78,8 +90,13 @@ String HearthClass::firmwareVersion() {
 
 int HearthClass::hearthCommand(const char *cmd, HearthLink::LineCb onLine, void *arg) {
   hearthEnsureLink();
-  hearthCheckExpectedRebootExpiry();
+  /* Same ordering reason as poll(): a buffered +MTREADY that arrives on the
+   * wire ahead of this command's own response lines is read and dispatched
+   * by _link.command()'s read loop before it returns, so the expiry check
+   * must run after, not before, or a reply that was already sitting there
+   * could be misclassified the same way described in poll() above. */
   int rc = _link.command(cmd, onLine, arg);
+  hearthCheckExpectedRebootExpiry();
   _lastError = (rc > 0) ? rc : 0;
   return rc;
 }
