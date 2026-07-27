@@ -4,11 +4,14 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink
+TESTS = test_hearthlink test_attrval
 
 all: $(TESTS)
 
 test_hearthlink: test_hearthlink.cpp ArduinoShim.cpp $(SRC)
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_attrval: test_attrval.cpp ArduinoShim.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all
