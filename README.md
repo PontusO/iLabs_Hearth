@@ -132,32 +132,51 @@ call is inert for Matter's purposes on this platform. This is left as-is in
 the copied sketches rather than patched out, for the same byte-identity
 reason above.
 
-**They do not currently compile against `arduino-pico` as shipped.**
-Compiling all three with `arduino-cli` against a Challenger RP2350 board
-surfaced three distinct blockers, none of them hidden by patching a sketch:
+**Compiling them against `arduino-pico` found, and then closed, a real
+parity gap in this library.** `arduino-cli` compiles against a Challenger
+RP2350 board first surfaced three blockers, none hidden by patching a
+sketch:
 
 1. `MatterOnOffLight` and `MatterDimmableLight` `#include <Preferences.h>`,
-   a header the `esp32` core ships and `arduino-pico` does not. This is a
-   gap in the RP2040/RP2350 core, not in this library.
+   a header the `esp32` core ships and `arduino-pico` does not. A gap in
+   the RP2040/RP2350 core, not in this library.
 2. `MatterTemperatureSensor` references the bare macro `BOOT_PIN`, which no
    `arduino-pico` board variant defines (`esp32` boards define it; RP2040/
-   RP2350 boards have no standard equivalent). Also a core gap, not this
-   library's.
-3. All three fail earlier still on a gap that **is** this library's: this
-   library's `Matter.h` (via `Hearth.h`) does not `#include` the endpoint
-   class headers (`MatterEndPoint.h` and the four headers under
+   RP2350 boards have no standard equivalent). Also a core gap.
+3. All three failed earlier still, on a gap that **was** this library's:
+   `Matter.h` (via `Hearth.h`) did not `#include` the endpoint class
+   headers (`MatterEndPoint.h` and the four headers under
    `MatterEndpoints/`) the way upstream's `Matter.h` aggregates all twenty
-   of its own. A sketch that does nothing but `#include <Matter.h>` and then
-   declares `MatterOnOffLight light;` at file scope, exactly as every
-   upstream example does, currently fails with `'MatterOnOffLight' does not
-   name a type`.
+   of its own. A sketch that does nothing but `#include <Matter.h>` and
+   then declares `MatterOnOffLight light;` at file scope, exactly as every
+   upstream example does, failed with `'MatterOnOffLight' does not name a
+   type`.
 
-Item 3 is a real parity gap found by this compile attempt, in the same vein
-as two gaps found earlier in this project by the same method (a union
+Item 3 was a real parity gap found by this compile attempt, in the same
+vein as two gaps found earlier in this project by the same method (a union
 member set that was too narrow, and an attribute type that was being
-flattened). It is reported here rather than silently patched, per this
-project's own rule for compile failures surfaced by the upstream examples.
-Full commands and output are in `iLabs_AT_Hearth`'s Task 9 report.
+flattened). **It has since been fixed**: `Hearth.h` now includes
+`MatterEndPoint.h` and the four `MatterEndpoints/*.h` headers this library
+implements, the same aggregation upstream's own `Matter.h` does. A
+regression test (`test/host/test_matter_umbrella.cpp`) compiles a
+translation unit whose only `iLabs Hearth` include is `Matter.h`,
+declaring all four device types at file scope; it fails to build if this
+aggregation ever regresses.
+
+With the fix in place, `MatterTemperatureSensor` (the one example that
+does not depend on `Preferences.h`) was recompiled. The `does not name a
+type` cascade is gone; only the pre-existing, external `BOOT_PIN` error
+remains. Supplying `BOOT_PIN` via a compiler flag rather than editing the
+sketch (`arduino-cli compile --build-property
+"compiler.cpp.extra_flags=-DBOOT_PIN=0" ...`, which is the same mechanism
+a board variant's own `pins_arduino.h` would use, not a sketch patch)
+makes `MatterTemperatureSensor` **compile and link cleanly**: zero errors
+attributable to this library. `MatterOnOffLight` and `MatterDimmableLight`
+remain blocked at their `#include <Preferences.h>` line, upstream of any
+Hearth-specific code, so that experiment does not extend to them; a real
+`Preferences.h` implementation for `arduino-pico`, not a define, would be
+needed to test them the same way, and none exists to test against. Full
+commands and output are in `iLabs_AT_Hearth`'s Task 9 report.
 
 ## Limitations
 
@@ -181,9 +200,14 @@ Full commands and output are in `iLabs_AT_Hearth`'s Task 9 report.
   implemented; see "Supported device types" above.
 - **The default link (`Serial1`) is an assumption, not a verified fact.**
   See "Wiring" above.
-- **The upstream examples do not currently compile against arduino-pico.**
-  See "Examples" above for the three specific blockers, one of which is a
-  gap in this library rather than in the sketches or the RP2040/RP2350 core.
+- **Two of the three upstream examples still do not compile against
+  arduino-pico, for reasons outside this library.** `MatterOnOffLight` and
+  `MatterDimmableLight` both `#include <Preferences.h>`, which does not
+  exist anywhere in the `arduino-pico` core. `MatterTemperatureSensor`
+  compiles and links cleanly once the RP2040/RP2350 core's missing
+  `BOOT_PIN` macro is supplied externally; see "Examples" above for detail
+  and for the parity gap this project did find and fix here (`Matter.h`
+  not aggregating the endpoint headers).
 - **Known release blocker: which `esp_matter` revision is normative is
   undecided.** `arduino-esp32` 3.3.8, whose class surface this library
   mirrors, bundles `esp_matter` 1.4.1. The Hearth firmware pins `v1.5.1`.

@@ -15,6 +15,21 @@
  * calls land here. It gets exactly the members upstream's Matter.h defines,
  * nothing more; see that class's own comment below for the two exceptions
  * and why they are not really exceptions.
+ *
+ * This header is also the umbrella upstream's own Matter.h is: upstream
+ * pulls in all twenty of its MatterEndpoints/Matter*.h headers so that a
+ * sketch's bare `#include <Matter.h>` is enough to declare a device object
+ * at file scope, without the sketch including any endpoint header itself.
+ * Task 9's compile pass found this file did not do the same (a gap the
+ * task's own file scope did not cover, since this file predates it), so a
+ * sketch built from nothing but `#include <Matter.h>` plus a file-scope
+ * `MatterOnOffLight light;` failed to compile: exactly the pattern every
+ * upstream example uses. Fixed by including MatterEndPoint.h and the four
+ * endpoint headers this library actually implements below. None of those
+ * headers includes this one back (checked: only the endpoint .cpp files and
+ * MatterEndPoint.cpp include Hearth.h, and .cpp files are leaves nothing
+ * else includes), so this is a one-way dependency, not a cycle broken only
+ * by #pragma once appearing to work.
  */
 #pragma once
 
@@ -22,6 +37,11 @@
 #include <Arduino.h>
 #include "HearthLink.h"
 #include "HearthCompat.h"
+#include "MatterEndPoint.h"
+#include "MatterEndpoints/MatterOnOffLight.h"
+#include "MatterEndpoints/MatterDimmableLight.h"
+#include "MatterEndpoints/MatterColorTemperatureLight.h"
+#include "MatterEndpoints/MatterTemperatureSensor.h"
 
 /*
  * Link used when begin() is skipped entirely. Serial1 is the documented
