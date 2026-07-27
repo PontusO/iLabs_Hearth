@@ -57,6 +57,10 @@ void HearthClass::hearthRaiseEvent(hearthEvent_t e) {
   }
 }
 
+void HearthClass::hearthReportProtocolError() {
+  hearthRaiseEvent(HEARTH_PROTOCOL_ERROR);
+}
+
 void HearthClass::poll() {
   hearthEnsureLink();
   /*
@@ -443,10 +447,31 @@ bool hearthQueryNet(HearthNetCtx *ctx) {
   return Hearth.hearthCommand("AT+MTNET?", hearthOnNetLine, ctx) == 0 && ctx->got;
 }
 
+/* Shared bail-out for every failure path in ArduinoMatter::begin() below:
+ * host-side timeout sentinel (-2, HearthLink::command()'s own convention
+ * for "nothing usable came back") plus HEARTH_PROTOCOL_ERROR, and the
+ * caller returns immediately afterwards with every endpoint ID still at 0. */
+void hearthAbortReconcile() {
+  Hearth.hearthSetError(-2);
+  Hearth.hearthReportProtocolError();
+}
+
+/*
+ * Ceiling on ArduinoMatter::begin()'s query/apply loop: one query that may
+ * discover a mismatch and apply, one re-query to confirm it took. A
+ * composition that still does not match after that is not going to start
+ * matching by looping again with the same inputs; something on the wire is
+ * rejecting a write (unknown device type, the firmware's 16-endpoint cap,
+ * ...), and every command in the path below is checked for exactly that
+ * reason. Retrying anyway would mean unbounded AT+MTEPCLEAR / AT+MTEPAPPLY
+ * cycles, i.e. unbounded NVS writes, on a state that cannot resolve itself.
+ */
+static const int kHearthMaxReconcileAttempts = 2;
+
 }  // namespace
 
 /*
- * ArduinoMatter::begin() - design spec S5.4, implemented exactly:
+ * ArduinoMatter::begin() - design spec S5.4:
  *
  *   1. AT+MTEP?, collecting (endpoint_id, devtype) pairs in order.
  *   2. Compare that devtype sequence, in order, against the sketch's
@@ -459,32 +484,37 @@ bool hearthQueryNet(HearthNetCtx *ctx) {
  *      endpoint and return. One query, zero writes: this is every boot
  *      after the first, where the sketch's declaration already matches
  *      what the C6 persisted.
- *   4. Different: AT+MTFABRICS?; a non-zero count means applying will
- *      invalidate a live fabric's caches, so warn on Serial and record it
- *      (Hearth.warnedAboutRecommission(), since Matter-named classes may
- *      not gain new members even for this). Then AT+MTEPCLEAR, one
- *      AT+MTEP=0x%04lX per declared endpoint in order, AT+MTEPAPPLY, wait
- *      up to 15000 ms for +MTREADY, and re-query (continue at step 3).
+ *   4. Different: AT+MTFABRICS?; a non-zero (or unknown) count means
+ *      applying might invalidate a live fabric's caches, so warn on Serial
+ *      and record it (Hearth.warnedAboutRecommission(), since Matter-named
+ *      classes may not gain new members even for this). Then AT+MTEPCLEAR,
+ *      one AT+MTEP=0x%04lX per declared endpoint in order, AT+MTEPAPPLY,
+ *      wait up to 15000 ms for +MTREADY, and re-query (continue at step 3).
+ *
+ * Bounded to kHearthMaxReconcileAttempts query rounds (see its comment) and
+ * every command's return code is checked; a failure anywhere in the apply
+ * sequence aborts immediately rather than continuing with a composition
+ * that is now known to be wrong on the wire.
  *
  * The expected-reboot arm (Hearth.hearthArmExpectedReboot()) is taken
- * before *every* AT+MTEP? in the loop, including the very first one, not
- * only around AT+MTEPAPPLY. begin() is itself the host's resynchronization
- * point: a +MTREADY arriving anywhere during it, including one already
- * sitting unread because the co-processor rebooted moments before begin()
- * was even called, reflects normal resync rather than trouble, so it must
- * not raise HEARTH_COPROCESSOR_REBOOTED. Only a +MTREADY arriving after a
- * successful, disarmed reconcile is genuinely unexpected. Disarming
- * happens the moment step 3 (identical) is reached, closing that window as
- * soon as reconcile is done rather than leaving it open for the arm's own
- * timeout.
+ * immediately before AT+MTEPAPPLY only, and nowhere else. Arming any
+ * earlier, e.g. before the query that decides whether an apply is even
+ * needed, would let a +MTREADY consumed during that query (or during
+ * AT+MTFABRICS?/AT+MTEPCLEAR/an AT+MTEP= write) satisfy
+ * hearthExpectedRebootSeen() before the apply's own reboot has actually
+ * happened, so the wait below would return immediately and re-query a
+ * co-processor still mid-reboot. Narrowing the arm to bracket only the
+ * apply is what makes hearthExpectedRebootSeen() actually mean "the reboot
+ * this AT+MTEPAPPLY triggered has completed."
  */
 void ArduinoMatter::begin() {
-  for (;;) {
-    Hearth.hearthArmExpectedReboot();
-
+  for (int attempt = 0; attempt < kHearthMaxReconcileAttempts; attempt++) {
     HearthEpQueryCtx ctx;
     ctx.count = 0;
-    Hearth.hearthCommand("AT+MTEP?", hearthOnEpLine, &ctx);
+    if (Hearth.hearthCommand("AT+MTEP?", hearthOnEpLine, &ctx) != 0) {
+      hearthAbortReconcile();
+      return;
+    }
 
     uint8_t declaredCount = MatterEndPoint::hearthDeclaredCount();
     bool identical = (ctx.count == declaredCount);
@@ -495,7 +525,6 @@ void ArduinoMatter::begin() {
     }
 
     if (identical) {
-      Hearth.hearthDisarmExpectedReboot();
       for (uint8_t i = 0; i < declaredCount; i++) {
         MatterEndPoint::hearthDeclaredAt(i)->setEndPointId(ctx.entries[i].endpoint_id);
       }
@@ -503,25 +532,58 @@ void ArduinoMatter::begin() {
       return;
     }
 
+    /* Still mismatched on the last permitted round: do not apply again,
+     * fall through to the shared abort below rather than looping forever. */
+    if (attempt == kHearthMaxReconcileAttempts - 1) {
+      break;
+    }
+
     long fabrics = 0;
-    hearthQueryFabricCount(&fabrics);
-    if (fabrics != 0) {
+    bool fabricsKnown = hearthQueryFabricCount(&fabrics);
+    if (!fabricsKnown || fabrics != 0) {
+      /* Fail closed: a link hiccup here must not read as "definitely zero
+       * fabrics, no warning needed" on what may be a live commissioned
+       * device. Warn in both cases; only the message differs. */
 #ifdef ARDUINO
-      Serial.println(
-        "Hearth: endpoint composition is changing on a device with an active fabric; "
-        "the commissioned controller's cached data model may need re-pairing to see it."
-      );
+      if (!fabricsKnown) {
+        Serial.println(
+          "Hearth: could not confirm the fabric count before changing the endpoint "
+          "composition; warning as a precaution in case the device is commissioned."
+        );
+      } else {
+        Serial.println(
+          "Hearth: endpoint composition is changing on a device with an active fabric; "
+          "the commissioned controller's cached data model may need re-pairing to see it."
+        );
+      }
 #endif
       Hearth.hearthSetWarnedAboutRecommission();
     }
 
-    Hearth.hearthCommand("AT+MTEPCLEAR");
+    if (Hearth.hearthCommand("AT+MTEPCLEAR") != 0) {
+      hearthAbortReconcile();
+      return;
+    }
+    bool writesOk = true;
     for (uint8_t i = 0; i < declaredCount; i++) {
       char cmd[24];
       snprintf(cmd, sizeof(cmd), "AT+MTEP=0x%04lX", (unsigned long)MatterEndPoint::hearthDeclaredTypeAt(i));
-      Hearth.hearthCommand(cmd);
+      if (Hearth.hearthCommand(cmd) != 0) {
+        writesOk = false;
+        break;
+      }
     }
-    Hearth.hearthCommand("AT+MTEPAPPLY");
+    if (!writesOk) {
+      hearthAbortReconcile();
+      return;
+    }
+
+    Hearth.hearthArmExpectedReboot();
+    if (Hearth.hearthCommand("AT+MTEPAPPLY") != 0) {
+      Hearth.hearthDisarmExpectedReboot();
+      hearthAbortReconcile();
+      return;
+    }
 
     uint32_t start = millis();
     while (!Hearth.hearthExpectedRebootSeen()) {
@@ -536,14 +598,18 @@ void ArduinoMatter::begin() {
          * write against it fails loudly instead of silently doing nothing
          * useful. */
         Hearth.hearthDisarmExpectedReboot();
-        Hearth.hearthSetError(-2); /* HearthLink's own "timeout" sentinel */
-        Hearth.hearthRaiseEvent(HEARTH_PROTOCOL_ERROR);
+        hearthAbortReconcile();
         return;
       }
       yield();
     }
     /* Loop back to step 1: re-query and confirm the apply took. */
   }
+  /* Exhausted kHearthMaxReconcileAttempts rounds without ever reaching the
+   * identical case: something on the wire keeps rejecting the composition
+   * (unknown device type, the endpoint cap, ...) rather than time or luck
+   * fixing it. */
+  hearthAbortReconcile();
 }
 
 String ArduinoMatter::getManualPairingCode() {

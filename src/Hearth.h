@@ -168,20 +168,22 @@ public:
   }
 
   /*
-   * Invoke the registered onLinkEvent() callback, if any. Public so the
-   * Matter-named layer (ArduinoMatter::begin(), below) can report protocol
-   * trouble it detects itself, e.g. HEARTH_PROTOCOL_ERROR when the
-   * +MTREADY that AT+MTEPAPPLY promises never arrives: that layer cannot
-   * hold the event callback itself (the naming rule bars adding anything,
-   * including private state, to a Matter-named class), and cannot be a
-   * friend of HearthClass without HearthClass naming a Matter-named class
-   * back, which is the same rule working the other way. A plain public
-   * method is the smallest surface that avoids both.
+   * Report protocol-level trouble the Matter-named layer detected itself,
+   * e.g. when the +MTREADY that AT+MTEPAPPLY promises never arrives. That
+   * layer cannot hold the event callback itself (the naming rule bars
+   * adding anything, including private state, to a Matter-named class), and
+   * cannot be a friend of HearthClass without HearthClass naming a
+   * Matter-named class back, which is the same rule working the other way.
+   * Deliberately narrower than a general "raise any event" method: it only
+   * ever raises HEARTH_PROTOCOL_ERROR, so an external caller cannot
+   * synthesize HEARTH_LINK_UP or HEARTH_COPROCESSOR_REBOOTED, which this
+   * class alone should ever assert really happened.
    */
-  void hearthRaiseEvent(hearthEvent_t e);
+  void hearthReportProtocolError();
 
 private:
   void hearthEnsureLink();
+  void hearthRaiseEvent(hearthEvent_t e);
   void hearthCheckExpectedRebootExpiry();
   static void hearthOnURCLine(const char *line, void *arg);
   static void hearthOnVerLine(const char *line, void *arg);
