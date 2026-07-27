@@ -5,7 +5,12 @@
 #include <string.h>
 
 HearthClass::HearthClass()
-  : _lastError(0), _warnedAboutRecommission(false), _expectingReboot(false), _expectedRebootSeen(false) {}
+  : _lastError(0),
+    _warnedAboutRecommission(false),
+    _expectingReboot(false),
+    _expectedRebootSeen(false),
+    _expectedRebootArmedAt(0),
+    _expectedRebootTimeoutMs(0) {}
 
 void HearthClass::begin(Stream &serial, unsigned long baud) {
   (void)baud;  // see the header: a caller-supplied Stream has no begin() of its own to call with it;
@@ -14,6 +19,8 @@ void HearthClass::begin(Stream &serial, unsigned long baud) {
   _link.onURC(hearthOnURCLine, this);
   _expectingReboot = false;
   _expectedRebootSeen = false;
+  _expectedRebootArmedAt = 0;
+  _expectedRebootTimeoutMs = 0;
 }
 
 /*
@@ -49,6 +56,7 @@ void HearthClass::hearthRaiseEvent(hearthEvent_t e) {
 
 void HearthClass::poll() {
   hearthEnsureLink();
+  hearthCheckExpectedRebootExpiry();
   _link.poll();
 }
 
@@ -70,6 +78,7 @@ String HearthClass::firmwareVersion() {
 
 int HearthClass::hearthCommand(const char *cmd, HearthLink::LineCb onLine, void *arg) {
   hearthEnsureLink();
+  hearthCheckExpectedRebootExpiry();
   int rc = _link.command(cmd, onLine, arg);
   _lastError = (rc > 0) ? rc : 0;
   return rc;
@@ -79,9 +88,34 @@ void HearthClass::hearthSetError(int code) {
   _lastError = code;
 }
 
-void HearthClass::hearthArmExpectedReboot() {
+void HearthClass::hearthArmExpectedReboot(uint32_t timeout_ms) {
   _expectingReboot = true;
   _expectedRebootSeen = false;
+  _expectedRebootArmedAt = millis();
+  _expectedRebootTimeoutMs = timeout_ms;
+}
+
+void HearthClass::hearthDisarmExpectedReboot() {
+  _expectingReboot = false;
+}
+
+/*
+ * Backstop for a caller that arms and then never disarms on its own
+ * timeout path: HEARTH_REBOOT_ARM_TIMEOUT_MS (or whatever was passed to
+ * hearthArmExpectedReboot()) after arming, the arm clears itself even
+ * though no +MTREADY arrived. Deliberately does not mark
+ * _expectedRebootSeen or raise any event: nothing is known to have
+ * happened yet, this only stops a stale arm from swallowing the *next*,
+ * unrelated spontaneous reboot as if it were the one that was expected.
+ */
+void HearthClass::hearthCheckExpectedRebootExpiry() {
+  if (!_expectingReboot) {
+    return;
+  }
+  uint32_t elapsed = millis() - _expectedRebootArmedAt;
+  if (elapsed >= _expectedRebootTimeoutMs) {
+    _expectingReboot = false;
+  }
 }
 
 /*

@@ -25,6 +25,18 @@
 #define HEARTH_DEFAULT_SERIAL Serial1
 #endif
 
+/*
+ * Safety-net ceiling on hearthArmExpectedReboot(): how long an arm may sit
+ * unconsumed before it self-clears. Not a tuned value, just generous enough
+ * to cover a full co-processor reboot and Matter stack reinit; its only job
+ * is to stop a caller that forgets to call hearthDisarmExpectedReboot() on
+ * its own timeout path from leaving the arm live to swallow an unrelated,
+ * later spontaneous reboot as if it were the expected one.
+ */
+#ifndef HEARTH_REBOOT_ARM_TIMEOUT_MS
+#define HEARTH_REBOOT_ARM_TIMEOUT_MS 20000
+#endif
+
 enum hearthEvent_t {
   HEARTH_LINK_UP = 0,
   HEARTH_LINK_DOWN,
@@ -87,8 +99,25 @@ public:
    * immediately before sending AT+MTEPAPPLY. While armed, the next
    * +MTREADY completes the arm silently instead of raising
    * HEARTH_COPROCESSOR_REBOOTED: see hearthExpectedRebootSeen().
+   *
+   * The arm cannot outlive its wait unattended: `timeout_ms` after arming,
+   * poll() and hearthCommand() self-clear it even if no +MTREADY ever
+   * arrives (the co-processor crashed or wedged mid-apply), so a later,
+   * unrelated spontaneous reboot is not silently swallowed as if it were
+   * this one. A caller that detects its own timeout first should still call
+   * hearthDisarmExpectedReboot() immediately rather than wait for this
+   * ceiling; the deadline is a backstop, not the primary mechanism.
    */
-  void hearthArmExpectedReboot();
+  void hearthArmExpectedReboot(uint32_t timeout_ms = HEARTH_REBOOT_ARM_TIMEOUT_MS);
+
+  /*
+   * Clear an arm from hearthArmExpectedReboot() without waiting for its
+   * +MTREADY or its deadline. Call this on the caller's own timeout path,
+   * so the very next spontaneous reboot (which is now what is happening,
+   * since the expected one did not show up in time) is reported rather than
+   * swallowed. A no-op if not currently armed.
+   */
+  void hearthDisarmExpectedReboot();
 
   /*
    * True once the +MTREADY armed by hearthArmExpectedReboot() has arrived.
@@ -98,7 +127,15 @@ public:
    * same pattern HearthLink::poll() already uses for URCs in general:
    *   Hearth.hearthArmExpectedReboot();
    *   Hearth.hearthCommand("AT+MTEPAPPLY");
-   *   while (!Hearth.hearthExpectedRebootSeen()) { Hearth.poll(); ... own timeout ... }
+   *   uint32_t start = millis();
+   *   while (!Hearth.hearthExpectedRebootSeen()) {
+   *     Hearth.poll();
+   *     if (millis() - start > OWN_TIMEOUT_MS) {
+   *       Hearth.hearthDisarmExpectedReboot();  // do not leave the arm live
+   *       break;
+   *     }
+   *     yield();
+   *   }
    */
   bool hearthExpectedRebootSeen() const {
     return _expectedRebootSeen;
@@ -124,6 +161,7 @@ public:
 private:
   void hearthEnsureLink();
   void hearthRaiseEvent(hearthEvent_t e);
+  void hearthCheckExpectedRebootExpiry();
   static void hearthOnURCLine(const char *line, void *arg);
   static void hearthOnVerLine(const char *line, void *arg);
 
@@ -132,6 +170,8 @@ private:
   bool _warnedAboutRecommission;
   bool _expectingReboot;
   bool _expectedRebootSeen;
+  uint32_t _expectedRebootArmedAt;
+  uint32_t _expectedRebootTimeoutMs;
   hearthEventCB _linkEventCB;
 };
 
