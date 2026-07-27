@@ -84,9 +84,9 @@ public:
    * the +MTATTR dispatcher that OnOff::Id / OnOff::Attributes::OnOff::Id is
    * a boolean and LevelControl::Id / LevelControl::Attributes::CurrentLevel::Id
    * is a uint8, so attributeChangeCB() above (and any sketch override of it)
-   * receives val->val.b / val->val.u already populated with the right type,
-   * matching upstream's own MatterDimmableLight::attributeChangeCB, which
-   * reads val->val.b and val->val.u8 respectively.
+   * receives val->val.b / val->val.u8 already populated with the right
+   * type, matching upstream's own MatterDimmableLight::attributeChangeCB,
+   * which reads val->val.b and val->val.u8 respectively.
    */
   esp_matter_val_type_t hearthAttrTypeFor(uint32_t cluster_id, uint32_t attribute_id) const override;
 

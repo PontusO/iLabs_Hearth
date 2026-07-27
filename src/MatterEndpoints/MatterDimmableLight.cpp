@@ -101,10 +101,12 @@ void MatterDimmableLight::operator=(bool newState) {
 /*
  * hearthAttrTypeFor() below tells hearthDispatchAttr() (Hearth.cpp) the
  * real type for each attribute this class owns, so by the time it calls
- * attributeChangeCB(), val->val.b / val->val.u are the members the wire's
- * value actually landed in. Reading val->val.i here, as MatterOnOffLight's
- * first revision mistakenly did, would read a union member the dispatcher
- * never wrote once the type stops being the generic INTEGER fallback.
+ * attributeChangeCB(), val->val.b / val->val.u8 are the members the wire's
+ * value actually landed in, matching upstream's own MatterDimmableLight.cpp
+ * exactly (it reads val->val.u8 for CurrentLevel). Reading val->val.i here,
+ * as MatterOnOffLight's first revision mistakenly did, would read a union
+ * member the dispatcher never wrote once the type stops being the generic
+ * INTEGER fallback.
  */
 bool MatterDimmableLight::attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *val) {
   bool ret = true;
@@ -125,7 +127,7 @@ bool MatterDimmableLight::attributeChangeCB(uint16_t endpoint_id, uint32_t clust
       onOffState = newState;
     }
   } else if (endpoint_id == getEndPointId() && cluster_id == kLevelControlClusterId && attribute_id == kCurrentLevelAttributeId) {
-    uint8_t newLevel = (uint8_t)val->val.u;
+    uint8_t newLevel = val->val.u8;
     if (_onChangeBrightnessCB != NULL) {
       ret &= _onChangeBrightnessCB(newLevel);
     }

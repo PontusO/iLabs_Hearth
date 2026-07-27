@@ -42,16 +42,25 @@ typedef enum {
  * attributeChangeCB is a virtual a sketch may override with upstream's own
  * body, so without these members present a sketch carrying that body fails
  * to compile: the premise of this library is that an unmodified sketch
- * builds. This port's codec (hearthAttrValFromLong below) still only ever
- * writes .b, .i or .u; the narrower members are not separately written, they
- * alias the same bytes as .i/.u. That is safe here because every value this
- * codec carries fits within the width the caller's type claims (a UINT8
- * never exceeds 255, an INT16 never exceeds its range), and two's-complement
- * plus little-endian byte order (true of both the RP2350 target and every
- * host this test suite builds on) means the low bytes of a correctly-signed
- * 32-bit write already equal the narrower type's own bit pattern. See
- * test_attrval.cpp's union member coverage tests, which assert this directly
- * rather than assuming it.
+ * builds. Some upstream implementations read a wide member (val->val.u32)
+ * unconditionally before ever branching on the attribute's real type (e.g.
+ * MatterColorTemperatureLight.cpp's opening log_d call), so a narrow write
+ * is not enough on its own.
+ *
+ * Invariant: every esp_matter_bool()/esp_matter_uint8()/.../hearthAttrValFromLong()
+ * write below fills the full 32-bit width (through .i or .u, including the
+ * boolean case, which writes .u rather than the single-byte .b), never a
+ * member narrower than that. Given that invariant, and two's-complement plus
+ * little-endian byte order (true of both the RP2350 target and every host
+ * this test suite builds on), any narrower member -- .b, .u8, .u16, .i16, and
+ * so on -- reads back the correct value: its bytes are a prefix of the wide
+ * write's own bytes. Do not "fix" a future write to target only the member
+ * matching its type instead; that direction is strictly worse, since a
+ * narrow write leaves every *wider* member's upper bytes indeterminate
+ * instead. test/host/test_attrval.cpp asserts the invariant directly
+ * (including a boolean write read back through .u16 and .u32, the case that
+ * broke before .val.b was widened to a full-width write), rather than
+ * trusting this comment alone.
  */
 typedef struct {
   esp_matter_val_type_t type;
@@ -71,7 +80,7 @@ typedef struct {
 inline esp_matter_attr_val_t esp_matter_bool(bool v) {
   esp_matter_attr_val_t a;
   a.type = ESP_MATTER_VAL_TYPE_BOOLEAN;
-  a.val.b = v;
+  a.val.u = v ? 1 : 0;  // full 32-bit width; see the union's header comment
   return a;
 }
 
@@ -142,7 +151,7 @@ inline esp_matter_attr_val_t hearthAttrValFromLong(esp_matter_val_type_t t, long
   a.type = t;
   switch (t) {
     case ESP_MATTER_VAL_TYPE_BOOLEAN:
-      a.val.b = (v != 0);
+      a.val.u = (v != 0) ? 1 : 0;  // full 32-bit width; see the union's header comment
       break;
     case ESP_MATTER_VAL_TYPE_INTEGER:
     case ESP_MATTER_VAL_TYPE_INT8:

@@ -50,6 +50,27 @@ static void test_narrow_union_members_read_back(void) {
   check("int16 -1234 rebuilds and reads back through .i16", i16v.type == ESP_MATTER_VAL_TYPE_INT16 && i16v.val.i16 == -1234);
 }
 
+/*
+ * The boolean branch is the one case that used to write only the single
+ * .val.b byte instead of the full 32-bit width, unlike every other branch
+ * which writes through .i or .u. Upstream's own attributeChangeCB
+ * implementations read val->val.u32 unconditionally near the top of the
+ * function (e.g. MatterColorTemperatureLight.cpp's opening log_d call),
+ * before ever branching on the attribute's real type, so a boolean write
+ * that leaves .u16/.u32's upper bytes indeterminate is a real parity break,
+ * not a theoretical one. Asserted via .val.u16 and .val.u32 specifically,
+ * not .val.u8, since a single-byte write already happens to satisfy .u8.
+ */
+static void test_bool_write_is_full_width(void) {
+  esp_matter_attr_val_t v1 = hearthAttrValFromLong(ESP_MATTER_VAL_TYPE_BOOLEAN, 1);
+  check("bool true rebuilds and reads back through .u16", v1.val.u16 == 1);
+  check("bool true rebuilds and reads back through .u32", v1.val.u32 == 1);
+
+  esp_matter_attr_val_t v0 = esp_matter_bool(false);
+  check("esp_matter_bool(false) reads back through .u16 too", v0.val.u16 == 0);
+  check("esp_matter_bool(false) reads back through .u32 too", v0.val.u32 == 0);
+}
+
 static void test_uncarryable(void) {
   long out = 0;
   esp_matter_attr_val_t v; v.type = ESP_MATTER_VAL_TYPE_INVALID; v.val.i = 0;
@@ -72,6 +93,7 @@ int main(void) {
   test_unsigned_roundtrip();
   test_signed_negative();
   test_narrow_union_members_read_back();
+  test_bool_write_is_full_width();
   test_uncarryable();
   test_rebuild_rejects_unknown_type();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);

@@ -266,11 +266,11 @@ static void test_sensor_failed_write_returns_false(void) {
 class TypeCheckingSensor : public MatterTemperatureSensor {
 public:
   esp_matter_val_type_t seenType = ESP_MATTER_VAL_TYPE_INVALID;
-  int32_t seenRaw = 0;
+  int16_t seenRaw = 0;
   bool attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *val) override {
     if (cluster_id == 1026 && attribute_id == 0) {
       seenType = val->type;
-      seenRaw = val->val.i;
+      seenRaw = val->val.i16;  // the member this task exists to add; not .i
     }
     return MatterTemperatureSensor::attributeChangeCB(endpoint_id, cluster_id, attribute_id, val);
   }
