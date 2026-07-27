@@ -35,10 +35,34 @@ typedef enum {
   ESP_MATTER_VAL_TYPE_BITMAP8,
 } esp_matter_val_type_t;
 
+/*
+ * The .i8/.u8/.i16/.u16/.i32/.u32 members exist for parity with upstream's
+ * own union, whose endpoint implementations (e.g. MatterColorTemperatureLight
+ * ::attributeChangeCB) read val->val.u8, val->val.u16, val->val.i16 directly.
+ * attributeChangeCB is a virtual a sketch may override with upstream's own
+ * body, so without these members present a sketch carrying that body fails
+ * to compile: the premise of this library is that an unmodified sketch
+ * builds. This port's codec (hearthAttrValFromLong below) still only ever
+ * writes .b, .i or .u; the narrower members are not separately written, they
+ * alias the same bytes as .i/.u. That is safe here because every value this
+ * codec carries fits within the width the caller's type claims (a UINT8
+ * never exceeds 255, an INT16 never exceeds its range), and two's-complement
+ * plus little-endian byte order (true of both the RP2350 target and every
+ * host this test suite builds on) means the low bytes of a correctly-signed
+ * 32-bit write already equal the narrower type's own bit pattern. See
+ * test_attrval.cpp's union member coverage tests, which assert this directly
+ * rather than assuming it.
+ */
 typedef struct {
   esp_matter_val_type_t type;
   union {
     bool b;
+    int8_t i8;
+    uint8_t u8;
+    int16_t i16;
+    uint16_t u16;
+    int32_t i32;
+    uint32_t u32;
     int32_t i;
     uint32_t u;
   } val;

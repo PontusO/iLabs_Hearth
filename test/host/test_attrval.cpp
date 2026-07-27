@@ -34,6 +34,22 @@ static void test_signed_negative(void) {
   check("-1234 rebuilds as int16", v.type == ESP_MATTER_VAL_TYPE_INT16 && v.val.i == -1234);
 }
 
+/*
+ * Parity gap closed post-Task-7: upstream's own endpoint implementations
+ * read val->val.u8 for a UINT8 attribute and val->val.i16 for an INT16 one
+ * (not .u/.i), because an unmodified sketch's own attributeChangeCB override
+ * carries that upstream body verbatim. This asserts the narrower members
+ * actually see the value hearthAttrValFromLong wrote via .u/.i, not just
+ * that the union compiles.
+ */
+static void test_narrow_union_members_read_back(void) {
+  esp_matter_attr_val_t u8v = hearthAttrValFromLong(ESP_MATTER_VAL_TYPE_UINT8, 200);
+  check("uint8 200 rebuilds and reads back through .u8", u8v.type == ESP_MATTER_VAL_TYPE_UINT8 && u8v.val.u8 == 200);
+
+  esp_matter_attr_val_t i16v = hearthAttrValFromLong(ESP_MATTER_VAL_TYPE_INT16, -1234);
+  check("int16 -1234 rebuilds and reads back through .i16", i16v.type == ESP_MATTER_VAL_TYPE_INT16 && i16v.val.i16 == -1234);
+}
+
 static void test_uncarryable(void) {
   long out = 0;
   esp_matter_attr_val_t v; v.type = ESP_MATTER_VAL_TYPE_INVALID; v.val.i = 0;
@@ -55,6 +71,7 @@ int main(void) {
   test_bool_roundtrip();
   test_unsigned_roundtrip();
   test_signed_negative();
+  test_narrow_union_members_read_back();
   test_uncarryable();
   test_rebuild_rejects_unknown_type();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
