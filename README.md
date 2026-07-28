@@ -408,6 +408,11 @@ real pin to the core's own implementation unchanged. No macros are involved:
 `arduino-pico` declares both functions as weak aliases, which is exactly the
 hook this needs.
 
+**Verified on hardware 2026-07-28**, not only at link time: an unmodified
+`MatterOnOffLight` on a Challenger toggles its light from the BOOTSEL button
+and reports the change to the fabric, so the override, the polarity and the
+cache interval all hold up against the example's real 250 ms debounce.
+
 Reading BOOTSEL is expensive, unlike a GPIO read: the core disables
 interrupts, idles the other core and busy-waits. The examples poll it twice
 per `loop()` with no delay, so the shim caches the reading for
