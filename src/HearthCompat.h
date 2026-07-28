@@ -21,6 +21,56 @@
 
 #include <stdint.h>
 
+/*
+ * BOOT_PIN: the strapping-button pin every arduino-esp32 example reads for
+ * its decommission-by-long-press. RP2040 and RP2350 have no such GPIO; the
+ * equivalent button is BOOTSEL, which arduino-pico exposes as an object
+ * rather than a pin. HEARTH_BOOTSEL_PIN is a reserved number outside any
+ * variant's GPIO range (RP2350B, the widest, has 48), and HearthBootPin.cpp
+ * teaches pinMode()/digitalRead() to route it to BOOTSEL.
+ *
+ * Only claimed if nothing else defined BOOT_PIN first, so -DBOOT_PIN=<gpio>
+ * still wins for a board with a real user button wired to one.
+ */
+/*
+ * CONFIG_ENABLE_CHIPOBLE: this device is commissioned over BLE, so a sketch
+ * must not try to join a WiFi network itself.
+ *
+ * Upstream's examples all guard their WiFi bring-up with
+ * `#if !CONFIG_ENABLE_CHIPOBLE`, because on an ESP32 the same chip runs both
+ * the sketch and the Matter stack: a build without BLE commissioning needs
+ * the sketch to supply credentials and connect. Undefined evaluates to 0, so
+ * leaving it unset compiles that block IN, and the sketch spins in
+ * `while (WiFi.status() != WL_CONNECTED)` forever, never reaching
+ * Matter.begin().
+ *
+ * On this platform that loop can never finish. The RP2350 has no radio; its
+ * WiFi library drives the C6 over either esp-at (UART) or esp-hosted (SPI),
+ * both selected by the board's "ESP WiFi type" menu, and the C6 is running
+ * Hearth instead of either of them. One co-processor, one personality. The
+ * host and the Matter stack want the same chip, so the host cannot have it.
+ *
+ * Nor does it need it. The Hearth firmware is built with
+ * CONFIG_ENABLE_CHIPOBLE=y and CONFIG_ENABLE_WIFI_STATION=y (sdkconfig):
+ * the C6 advertises over BLE, the commissioner hands it the WiFi credentials
+ * during commissioning, and the C6 joins the network on its own. So setting
+ * this to 1 is not a workaround, it is the accurate description of the build
+ * on the other side of the link, and it makes upstream's own switch do
+ * exactly what upstream meant by it.
+ *
+ * A sketch that genuinely wants host-side WiFi (with the C6 reflashed to
+ * esp-at or esp-hosted, and therefore no Matter) can set this to 0.
+ */
+#ifndef CONFIG_ENABLE_CHIPOBLE
+#define CONFIG_ENABLE_CHIPOBLE 1
+#endif
+
+#define HEARTH_BOOTSEL_PIN 200
+
+#if (defined(ARDUINO_ARCH_RP2040) || defined(ARDUINO_ARCH_RP2350)) && !defined(BOOT_PIN)
+#define BOOT_PIN HEARTH_BOOTSEL_PIN
+#endif
+
 typedef enum {
   ESP_MATTER_VAL_TYPE_INVALID = 0,
   ESP_MATTER_VAL_TYPE_BOOLEAN,
