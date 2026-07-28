@@ -44,14 +44,52 @@
 #include "MatterEndpoints/MatterTemperatureSensor.h"
 
 /*
- * Link used when begin() is skipped entirely. Serial1 is the documented
- * *assumption* for the Challenger's host <-> co-processor UART, not a
- * verified fact: a later task confirms the real wiring on hardware. A board
- * variant can override this with -DHEARTH_DEFAULT_SERIAL=... before this
- * header is first included.
+ * The board variant is the single source of truth for the link: which UART
+ * reaches the co-processor and which pins drive its reset and boot-mode
+ * lines. A sketch never names a serial port, exactly as in the sibling
+ * iLabs_ESP-NOW library, and for the same two reasons: the arduino-esp32
+ * Matter API this library mirrors has nowhere to name one, and the wiring
+ * is a property of the board rather than of the sketch.
+ *
+ * On a Challenger RP2350 WiFi6/BLE5 the variant supplies ESP_SERIAL_PORT =
+ * Serial2 (GP4 TX, GP5 RX), PIN_ESP_MODE = GP14 and PIN_ESP_RST = GP15.
+ * Serial1 there is the board's *external* UART on GP12/13 and is not the
+ * co-processor link; earlier revisions of this library assumed it was.
+ *
+ * A board that wires the C6 elsewhere overrides HEARTH_SERIAL_PORT with a
+ * build flag. Without either macro the library refuses to compile for the
+ * target: see hearthEnsureLink() in Hearth.cpp.
  */
-#ifndef HEARTH_DEFAULT_SERIAL
-#define HEARTH_DEFAULT_SERIAL Serial1
+#if !defined(HEARTH_SERIAL_PORT) && defined(ESP_SERIAL_PORT)
+#define HEARTH_SERIAL_PORT ESP_SERIAL_PORT
+#endif
+
+/*
+ * Baud for the AT link. Matches the firmware's boot baud, AT_UART_BAUD in
+ * at_core (shared with the ESP-NOW firmware).
+ *
+ * The firmware can be retuned at runtime with AT+MTBAUD, but this library
+ * deliberately does not: the rate is not persisted, so every co-processor
+ * reset returns the link to 115200, and hearthEnsureLink() resets the C6 on
+ * every host start. Nothing in the Matter parity surface needs a faster
+ * link. A sketch that wants one can drive AT+MTBAUD through
+ * Hearth.hearthCommand() and restart the host UART itself.
+ */
+#ifndef HEARTH_LINK_BAUD
+#define HEARTH_LINK_BAUD 115200
+#endif
+
+/*
+ * Max wait for +MTREADY after releasing the co-processor's reset.
+ *
+ * Deliberately far more generous than the 3000 ms the ESP-NOW library
+ * allows its own +ENREADY. Hearth raises the marker only after app_main has
+ * rebuilt the stored endpoint composition and run esp_matter::start(), a
+ * much heavier boot than a bare ESP-NOW image. The real figure has not been
+ * measured on hardware yet; tighten this once it has.
+ */
+#ifndef HEARTH_READY_TIMEOUT_MS
+#define HEARTH_READY_TIMEOUT_MS 10000
 #endif
 
 /*
@@ -80,15 +118,38 @@ public:
   HearthClass();
 
   /*
-   * Start the underlying link on `serial`, e.g. Hearth.begin(Serial1). The
-   * caller is responsible for having already started `serial` at the
-   * intended baud (Stream itself has no begin()); `baud` is accepted for
-   * interface parity and is the value the fallback below uses. begin() may
-   * be skipped entirely: the first use of the link then lazily starts
-   * HEARTH_DEFAULT_SERIAL at 115200 on its own (target builds only; there
-   * is no default serial port on the host test build).
+   * Escape hatch: run the link on a caller-supplied Stream instead of the
+   * variant's UART. For a board no variant describes, or a bench rig that
+   * puts something else in the middle. The caller owns that stream
+   * completely: it must already be started at the intended baud (Stream
+   * itself has no begin(), so `baud` is accepted for interface parity and
+   * ignored), and no automatic co-processor reset is performed, because the
+   * pins that would drive it are not implied by an arbitrary Stream. Call
+   * hearthResetCoprocessor() afterwards if the variant does define them.
+   *
+   * The normal path is not to call this at all. The first use of the link
+   * then brings up HEARTH_SERIAL_PORT at HEARTH_LINK_BAUD and resets the
+   * co-processor into a known state on its own. See hearthEnsureLink().
    */
-  void begin(Stream &serial, unsigned long baud = 115200);
+  void begin(Stream &serial, unsigned long baud = HEARTH_LINK_BAUD);
+
+  /*
+   * Drive the co-processor's boot-mode and reset lines to give it a clean,
+   * deterministic boot into run mode, then block until its +MTREADY (up to
+   * HEARTH_READY_TIMEOUT_MS), discarding the boot ROM chatter that shares
+   * this UART. The resulting boot marker is consumed as expected, so it
+   * raises no HEARTH_COPROCESSOR_REBOOTED.
+   *
+   * A no-op unless the board variant defines PIN_ESP_MODE and PIN_ESP_RST,
+   * and on the host test build. Called automatically by hearthEnsureLink()
+   * on the variant-driven path; public so a sketch can recover a wedged
+   * co-processor, and so the begin(Stream&) escape hatch has a way to ask
+   * for the same treatment.
+   *
+   * Safe with a device already commissioned: a reset does not touch the
+   * fabric or the stored composition (only AT+MTFRESET does).
+   */
+  void hearthResetCoprocessor();
 
   /* True if a bare AT probe round-trips OK. */
   bool linkUp();

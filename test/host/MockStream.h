@@ -14,6 +14,9 @@ public:
     _script.push_back({cmd, response});
   }
   void injectURC(const std::string &line) { _rx += line + "\r\n"; }
+  /* Bytes with no line terminator, so the reader is left holding a partial
+   * line. What a co-processor reset mid-transmission actually leaves behind. */
+  void injectRaw(const std::string &bytes) { _rx += bytes; }
 
   bool scriptDrained() const { return _script.empty(); }
   const std::vector<std::string> &unexpected() const { return _unexpected; }

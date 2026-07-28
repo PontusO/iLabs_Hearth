@@ -291,6 +291,108 @@ static void test_timeout(void) {
 static void test_not_started(void) {
   HearthLink link;
   check("command before begin returns -2", link.command("AT") == -2);
+  check("waitReady before begin returns false", !link.waitReady(10));
+}
+
+/*
+ * flushInput() exists for the hardware-reset path: bytes already on the wire
+ * when reset is asserted belong to the pre-reset firmware and must not be
+ * mistaken for the post-reset boot. A half-assembled line in the accumulator
+ * is part of that state, so it has to go too, otherwise the leading fragment
+ * of the discarded line would be glued onto the first real post-boot line.
+ */
+static void test_flush_input(void) {
+  MockStream s;
+  HearthLink link;
+  link.begin(s);
+  std::string urcs;
+  link.onURC(collect, &urcs);
+  s.injectURC("+MTEVT:3");
+  s.injectURC("+MTIDENT:1,0");
+  link.flushInput();
+  link.poll();
+  check("flushInput drops queued URCs", urcs.empty());
+  check("flushInput drains the stream", s.available() == 0);
+}
+
+static void test_flush_input_drops_partial_line(void) {
+  MockStream s;
+  HearthLink link;
+  link.begin(s);
+  std::string urcs;
+  link.onURC(collect, &urcs);
+  /* An unterminated fragment: poll() reads it into the accumulator and
+   * returns, leaving it there for the next call to finish. */
+  s.injectRaw("+MTEVT:");
+  link.poll();
+  link.flushInput();
+  /* Without the accumulator reset, this would assemble as "+MTEVT:+MTREADY". */
+  s.injectURC("+MTREADY");
+  link.poll();
+  check("a partial line does not survive flushInput", urcs == "+MTREADY;");
+}
+
+/*
+ * waitReady() is what turns "reset released" into "the firmware is up".
+ * The C6's boot ROM prints on the same UART as the AT link (it knows nothing
+ * about the custom console pin), so everything ahead of +MTREADY is noise
+ * that must be discarded rather than dispatched.
+ */
+static void test_wait_ready_finds_marker(void) {
+  MockStream s;
+  HearthLink link;
+  link.begin(s);
+  std::string urcs;
+  link.onURC(collect, &urcs);
+  s.injectURC("ESP-ROM:esp32c6-20220919");
+  s.injectURC("load:0x4086c410,len:0xb94");
+  s.injectURC("+MTREADY");
+  check("waitReady returns true on +MTREADY", link.waitReady(1000));
+  check("the boot marker is dispatched as a URC", urcs == "+MTREADY;");
+  check("ROM chatter is discarded, not dispatched",
+        urcs.find("ESP-ROM") == std::string::npos);
+}
+
+static void test_wait_ready_times_out(void) {
+  MockStream s;
+  HearthLink link;
+  link.begin(s);
+  std::string urcs;
+  link.onURC(collect, &urcs);
+  s.injectURC("ESP-ROM:esp32c6-20220919");
+  g_yieldAdvanceMs = 10;  // let the wait loop reach its deadline
+  check("waitReady returns false when no +MTREADY arrives", !link.waitReady(200));
+  g_yieldAdvanceMs = 0;
+  check("nothing was dispatched", urcs.empty());
+}
+
+/*
+ * waitReady() reads and dispatches, so it is a stream reader like command()
+ * and poll() and must refuse to run nested inside either for the same
+ * reason: one accumulator, one stream, and a nested reader steals the outer
+ * reader's lines.
+ */
+static HearthLink *g_readyLink = nullptr;
+static bool g_nestedWaitReady = false;
+
+static void waitReadyFromURC(const char *line, void *arg) {
+  ((std::string *)arg)->append(line).append(";");
+  g_nestedWaitReady = g_readyLink->waitReady(100);
+}
+
+static void test_reentrant_wait_ready_is_refused(void) {
+  MockStream s;
+  HearthLink link;
+  link.begin(s);
+  g_readyLink = &link;
+  g_nestedWaitReady = true;
+  std::string urcs;
+  link.onURC(waitReadyFromURC, &urcs);
+  s.injectURC("+MTEVT:3");
+  s.injectURC("+MTREADY");
+  link.poll();
+  check("waitReady from inside a dispatch returns false", !g_nestedWaitReady);
+  check("the outer poll still saw both URCs", urcs == "+MTEVT:3;+MTREADY;");
 }
 
 int main(void) {
@@ -308,6 +410,11 @@ int main(void) {
   test_reentrant_poll_during_a_poll_is_a_noop();
   test_timeout();
   test_not_started();
+  test_flush_input();
+  test_flush_input_drops_partial_line();
+  test_wait_ready_finds_marker();
+  test_wait_ready_times_out();
+  test_reentrant_wait_ready_is_refused();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

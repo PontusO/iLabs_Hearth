@@ -23,15 +23,31 @@ the mode-0 leg of `test_write_modes` (`test/host/test_endpoint.cpp`) need
 to be reverted, along with the README and `HearthLink.cpp` text this
 correction pass touched.
 
-## `Serial1` at 115200 is an unverified assumption
+## The link now comes from the variant, and the reset is automatic
 
-The library's default link (used when a sketch never calls
-`Hearth.begin()`) is `Serial1` at 115200 baud. This is what the Challenger's
-host-to-co-processor UART is believed to be wired to; it has not been
-confirmed against real hardware before this bring-up. If nothing arrives,
-or garbage arrives, confirm the pin mapping and baud before suspecting the
-protocol layer, and pass `Hearth.begin()` an explicit, confirmed `Serial`
-rather than relying on the default.
+The library no longer guesses a port. It uses the variant's
+`ESP_SERIAL_PORT` (`Serial2`, GP4/GP5 on a Challenger RP2350 WiFi6/BLE5) at
+`HEARTH_LINK_BAUD` = 115200, and drives `PIN_ESP_MODE` (GP14) and
+`PIN_ESP_RST` (GP15) to reset the C6 into run mode on first use. This is
+the same sequence `iLabs_ESP-NOW` already runs on this board, so if the
+ESP-NOW examples reset their C6 correctly and these do not, the fault is in
+this library rather than in the wiring.
+
+If nothing arrives, or garbage arrives, confirm the pin mapping and baud
+before suspecting the protocol layer.
+
+## `HEARTH_READY_TIMEOUT_MS` = 10000 is a guess
+
+`iLabs_ESP-NOW` allows 3000 ms for its `+ENREADY`. Hearth raises `+MTREADY`
+only after `app_main` has rebuilt the stored endpoint composition and run
+`esp_matter::start()`, a much heavier boot, so this library asks for 10 s
+instead. Nobody has measured the real figure.
+
+**Measure it here.** Time from releasing `PIN_ESP_RST` to `+MTREADY`, with
+a composition of a realistic size stored in NVS, and tighten the default to
+that plus a healthy margin. Too small turns a slow boot into a silent link
+failure inside `setup()`; too large only delays the diagnosis when the C6
+really is dead.
 
 ## A mode-0 write of an unchanged value is expected to fail today
 

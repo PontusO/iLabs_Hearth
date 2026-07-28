@@ -78,6 +78,32 @@ public:
    * the command in flight is waiting for. */
   void poll();
 
+  /*
+   * Discard every byte the co-processor has already sent, including a
+   * half-assembled line still sitting in the accumulator. Called on the
+   * hardware-reset path with reset asserted: everything buffered at that
+   * point belongs to the firmware that is about to disappear, and a
+   * surviving line fragment would be glued onto the first post-boot line.
+   */
+  void flushInput();
+
+  /*
+   * Block until the firmware's +MTREADY boot marker, discarding everything
+   * ahead of it. The C6's boot ROM prints on this same UART (it knows
+   * nothing about the custom console pin), so a reset is followed by
+   * ESP-ROM/load/entry chatter that is not AT protocol at all.
+   *
+   * The marker itself IS dispatched to the URC handler, unlike the chatter,
+   * so the Hearth layer's expected-reboot arm is consumed through the one
+   * code path that handles every other +MTREADY.
+   *
+   * Returns false on timeout, before begin(), or when called re-entrantly
+   * (from a URC callback, or from a callback running inside command()): this
+   * is a stream reader like command() and poll() and would steal the outer
+   * reader's lines. See HEARTH_CMD_REENTRANT.
+   */
+  bool waitReady(uint32_t timeout_ms);
+
   /* Register the asynchronous-URC handler (installed by the Hearth layer). */
   void onURC(LineCb cb, void *arg) {
     _urc_cb = cb;

@@ -190,3 +190,42 @@ void HearthLink::poll() {
     // ignore stray OK/ERROR/result lines outside a command
   }
 }
+
+void HearthLink::flushInput() {
+  if (_s) {
+    while (_s->available() > 0) {
+      _s->read();
+    }
+  }
+  _acc_len = 0;
+  _overflow = false;
+}
+
+bool HearthLink::waitReady(uint32_t timeout_ms) {
+  if (!_started || _busy) {
+    return false;
+  }
+  HearthBusyLatch busy(_busy);
+  uint32_t start = millis();
+  for (;;) {
+    uint32_t elapsed = millis() - start;
+    if (elapsed >= timeout_ms) {
+      return false;
+    }
+    const char *line = readLine(timeout_ms - elapsed);
+    if (!line) {
+      return false;
+    }
+    if (strncmp(line, "+MTREADY", 8) == 0) {
+      /* Dispatched, not swallowed: the Hearth layer's expected-reboot arm
+       * is cleared by its URC handler, and this marker is exactly the one
+       * that arm was placed for. */
+      dispatchURC(line);
+      return true;
+    }
+    /* Boot ROM chatter, or a URC the pre-reset firmware had already queued.
+     * Neither is worth dispatching: the composition and every cached
+     * endpoint id are about to be re-established from the post-boot state
+     * anyway, so an event from the old life is at best redundant. */
+  }
+}

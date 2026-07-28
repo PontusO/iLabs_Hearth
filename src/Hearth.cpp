@@ -23,7 +23,7 @@ HearthClass::HearthClass()
 
 void HearthClass::begin(Stream &serial, unsigned long baud) {
   (void)baud;  // see the header: a caller-supplied Stream has no begin() of its own to call with it;
-               // only the HEARTH_DEFAULT_SERIAL fallback in hearthEnsureLink() actually uses a baud.
+               // only the HEARTH_SERIAL_PORT path in hearthEnsureLink() actually uses a baud.
   _link.begin(serial);
   _link.onURC(hearthOnURCLine, this);
   _reconcileFailed = false;  // a new link is a new start; see hearthReconcileFailed()
@@ -34,19 +34,73 @@ void HearthClass::begin(Stream &serial, unsigned long baud) {
 }
 
 /*
- * begin() was never called: fall back to HEARTH_DEFAULT_SERIAL at 115200.
+ * begin() was never called, which is the normal case: bring the link up on
+ * the UART the board variant wires to the co-processor, then reset the
+ * co-processor into a known state.
+ *
+ * This is the whole reason a sketch never names a serial port. The API this
+ * library mirrors is arduino-esp32's, where Matter.begin() takes no port
+ * because the radio is on-die; there is no parameter to add without
+ * breaking the source compatibility the port exists for. So the wiring has
+ * to come from the variant, and the bring-up has to happen on first use.
+ *
  * Guarded on ARDUINO, which every Arduino core (including arduino-pico)
- * predefines and the host test build never does, because Serial1 does not
- * exist on the host and HEARTH_DEFAULT_SERIAL is Serial1 unless a board
- * variant overrides it.
+ * predefines and the host test build never does: no serial port object and
+ * no GPIO exist there, and the host tests inject a MockStream through
+ * begin(Stream&) instead.
  */
 void HearthClass::hearthEnsureLink() {
   if (_link.started()) {
     return;
   }
 #ifdef ARDUINO
-  HEARTH_DEFAULT_SERIAL.begin(115200);
-  begin(HEARTH_DEFAULT_SERIAL, 115200);
+#ifndef HEARTH_SERIAL_PORT
+#error "iLabs Hearth requires a board variant that defines ESP_SERIAL_PORT (the UART wired to the ESP32-C6 co-processor), e.g. an iLabs Challenger WiFi6 board. Override with -DHEARTH_SERIAL_PORT=... for a board no variant describes."
+#else
+  HEARTH_SERIAL_PORT.begin(HEARTH_LINK_BAUD);
+  begin(HEARTH_SERIAL_PORT, HEARTH_LINK_BAUD);
+  hearthResetCoprocessor();
+#endif
+#endif
+}
+
+/*
+ * The reset dance, lifted from the sibling iLabs_ESP-NOW library so the two
+ * behave identically on the same board. MODE high selects run mode rather
+ * than serial download; the input flush happens while reset is asserted, so
+ * that everything discarded belongs to the firmware that is going away and
+ * nothing from after the release is lost.
+ *
+ * Doing this at all (rather than trusting whatever state the co-processor
+ * happens to be in) is what makes a host reset and a power-on look the
+ * same to the sketch. Without it, a host-only reset leaves the C6 mid-
+ * conversation with a host that has forgotten every endpoint id it cached.
+ */
+void HearthClass::hearthResetCoprocessor() {
+#if defined(ARDUINO) && defined(PIN_ESP_MODE) && defined(PIN_ESP_RST)
+  if (!_link.started()) {
+    return;
+  }
+  pinMode(PIN_ESP_MODE, OUTPUT);
+  digitalWrite(PIN_ESP_MODE, HIGH);  /* run mode, not serial download */
+  pinMode(PIN_ESP_RST, OUTPUT);
+  digitalWrite(PIN_ESP_RST, LOW);    /* assert reset */
+  delay(5);
+  _link.flushInput();                /* drop pre-reset noise */
+  digitalWrite(PIN_ESP_RST, HIGH);   /* release: the C6 boots */
+
+  /* Arm first, then wait: waitReady() dispatches the marker through the
+   * ordinary URC path, and the arm is what stops that path from reporting
+   * this entirely expected boot as HEARTH_COPROCESSOR_REBOOTED. */
+  hearthArmExpectedReboot(HEARTH_READY_TIMEOUT_MS);
+  _link.waitReady(HEARTH_READY_TIMEOUT_MS);
+
+  /* Whether or not the marker arrived, this boot is over. Clearing the arm
+   * stops it swallowing a later, genuinely spontaneous reboot; clearing the
+   * seen flag stops the next AT+MTEPAPPLY from mistaking this boot's marker
+   * for the one its own reboot owes it. */
+  hearthDisarmExpectedReboot();
+  _expectedRebootSeen = false;
 #endif
 }
 
