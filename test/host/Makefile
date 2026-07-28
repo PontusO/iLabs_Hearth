@@ -4,7 +4,7 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_colortemp_sensor test_matter_umbrella test_no_global_instances
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_colortemp_sensor test_matter_umbrella test_no_global_instances test_preferences
 
 all: $(TESTS)
 
@@ -58,6 +58,14 @@ test_matter_umbrella: test_matter_umbrella.cpp ArduinoShim.cpp $(SRC) ../../src/
 # normally and linked the result, which could never see the failure.
 test_no_global_instances: test_no_global_instances.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp
 	$(CXX) $(CXXFLAGS) -DNO_GLOBAL_INSTANCES -o $@ $^
+
+# The Preferences shim. PrefsStoreFake.cpp replaces PreferencesEEPROM.cpp,
+# which is the only part of the shim that needs flash; everything interesting
+# (the record codec) is in Preferences.cpp and is plain logic. Note that
+# PreferencesEEPROM.cpp is deliberately NOT in this recipe: linking both would
+# define the store twice.
+test_preferences: test_preferences.cpp ArduinoShim.cpp PrefsStoreFake.cpp ../../src/Preferences.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all
 	@for t in $(TESTS); do ./$$t || exit 1; done

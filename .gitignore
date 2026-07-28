@@ -13,6 +13,7 @@ build/
 /test/host/test_colortemp_sensor
 /test/host/test_matter_umbrella
 /test/host/test_no_global_instances
+/test/host/test_preferences
 
 *.bin
 *.uf2
