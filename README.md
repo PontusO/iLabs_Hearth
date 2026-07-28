@@ -43,27 +43,54 @@ carries no trademark), is recorded in `iLabs_AT_Hearth`'s
 
 ## Wiring
 
-Call `Hearth.begin(serial)` in `setup()`, before `Matter.begin()`, to name
-the `Stream` the AT link runs over:
+**A sketch does not name a serial port.** The board variant is the single
+source of truth for which UART reaches the co-processor and which pins
+drive its reset and boot-mode lines, exactly as in the sibling
+`iLabs_ESP-NOW` library. There is nowhere to name a port in the
+arduino-esp32 API this library mirrors, and the wiring is a property of the
+board rather than of the sketch.
 
-```cpp
-Hearth.begin(Serial1);
-```
+On a Challenger RP2350 WiFi6/BLE5 the variant supplies:
 
-If a sketch skips `Hearth.begin()` entirely (true of every unmodified
-upstream example, since upstream has no such call), the library lazily
-starts a default link the first time it is needed. That default is
-`Serial1` at 115200 baud, `#define`d as `HEARTH_DEFAULT_SERIAL` in
-`src/Hearth.h` behind an `#ifndef` a board variant can override before that
-header is first included.
+| Variant macro | Value | What it is |
+|---|---|---|
+| `ESP_SERIAL_PORT` | `Serial2` (GP4 TX, GP5 RX) | the AT link to the C6 |
+| `PIN_ESP_MODE` | GP14 | boot mode: high selects run, low selects serial download |
+| `PIN_ESP_RST` | GP15 | co-processor reset, active low |
 
-**This default is a documented assumption, not a verified fact.** It is
-what the Challenger's host-to-co-processor UART is believed to be wired to;
-it has not yet been confirmed against real hardware. Until it is, an
-unmodified sketch that relies on the zero-configuration path should be
-treated as unverified on this point specifically, and a sketch that cares
-should call `Hearth.begin()` explicitly with whichever `Serial` it has
-confirmed reaches the C6.
+Note that `Serial1` on that board is the *external* UART on GP12/13, not
+the co-processor link. Earlier revisions of this library assumed it was.
+
+The first use of the library brings `ESP_SERIAL_PORT` up at
+`HEARTH_LINK_BAUD` (115200, matching the firmware's `AT_UART_BAUD`), then
+resets the C6 into run mode and waits
+up to `HEARTH_READY_TIMEOUT_MS` for its `+MTREADY`, discarding the boot ROM
+chatter that shares this UART. That gives every host start the same
+deterministic co-processor state, whether the host was power-cycled or
+reset on its own. The reset does not touch the Matter fabric or the stored
+endpoint composition; only `AT+MTFRESET` does.
+
+The library refuses to compile for a board whose variant defines no
+`ESP_SERIAL_PORT`. Override with `-DHEARTH_SERIAL_PORT=SerialN` for a board
+no variant describes, and `-DHEARTH_LINK_BAUD=` or
+`-DHEARTH_READY_TIMEOUT_MS=` to retune the other two.
+
+The firmware does accept `AT+MTBAUD` to retune the link at runtime, and this
+library deliberately does not use it. The rate is not persisted, so every
+co-processor reset returns it to 115200, and the library resets the C6 on
+every host start. Nothing in the Matter parity surface needs a faster link.
+A sketch that wants one can drive `AT+MTBAUD` through
+`Hearth.hearthCommand()` and restart the host UART itself.
+
+Hardware flow control is not available: no C6 board routes RTS/CTS, so
+`AT+MTFLOW` accepts only mode `0`. See §3.14 of `docs/AT_MT_SPEC.md` in the
+firmware repo.
+
+`Hearth.begin(stream)` remains as an escape hatch for a bench rig that puts
+something else in the middle. The caller then owns that stream completely:
+it must already be started at the right baud, and no automatic reset is
+performed. Call `Hearth.hearthResetCoprocessor()` afterwards if the variant
+does define the control pins.
 
 ## Minimal example
 
@@ -267,14 +294,32 @@ result.
 - `MatterDimmableLight`
 - `MatterTemperatureSensor`
 
-**They call `WiFi.begin()`.** On an ESP32 board that starts the same radio
-Matter's own network stack uses. On a Challenger it does not: the RP2350's
-`WiFi` (where present) is a wholly separate radio from the ESP32-C6's, and
-the C6 owns the Matter network connection on its own, independent of
-whatever the RP2350's `WiFi.begin()` call does or does not connect to. The
-call is inert for Matter's purposes on this platform. This is left as-is in
-the copied sketches rather than patched out, for the same byte-identity
-reason above.
+**They call `WiFi.begin()`, and on this platform that call can never
+succeed.** It is not merely redundant: the sketch would sit in
+`while (WiFi.status() != WL_CONNECTED)` forever and never reach
+`Matter.begin()`.
+
+The RP2350 has no radio of its own. Its `WiFi` library drives the C6, over
+either esp-at (UART) or esp-hosted (SPI), whichever the board's "ESP WiFi
+type" menu selects. The C6 is running Hearth instead of either of them. One
+co-processor, one personality: the host's WiFi and the Matter stack want the
+same chip, so the host cannot have it.
+
+Nor does it need it. **The library sets `CONFIG_ENABLE_CHIPOBLE` to 1**
+(`HearthCompat.h`), which is upstream's own switch for "this device is
+commissioned over BLE, so the sketch must not connect WiFi itself". Every
+one of these examples already guards its WiFi bring-up with
+`#if !CONFIG_ENABLE_CHIPOBLE`; undefined evaluates to 0, so leaving it unset
+compiled the block in. Setting it is not a workaround but an accurate
+description of the firmware on the other end of the link: Hearth is built
+with `CONFIG_ENABLE_CHIPOBLE=y` and `CONFIG_ENABLE_WIFI_STATION=y`, so the
+C6 advertises over BLE, receives the WiFi credentials from the commissioner,
+and joins the network on its own.
+
+So the sketches keep their byte-identity and the WiFi block simply compiles
+out, taking 43 KB of unusable WiFi stack with it. A sketch that genuinely
+wants host-side WiFi (with the C6 reflashed to esp-at or esp-hosted, and
+therefore no Matter) can `-DCONFIG_ENABLE_CHIPOBLE=0`.
 
 **Compiling them against `arduino-pico` found, and then closed, a real
 parity gap in this library.** `arduino-cli` compiles against a Challenger
@@ -307,20 +352,70 @@ translation unit whose only `iLabs Hearth` include is `Matter.h`,
 declaring all four device types at file scope; it fails to build if this
 aggregation ever regresses.
 
-With the fix in place, `MatterTemperatureSensor` (the one example that
-does not depend on `Preferences.h`) was recompiled. The `does not name a
-type` cascade is gone; only the pre-existing, external `BOOT_PIN` error
-remains. Supplying `BOOT_PIN` via a compiler flag rather than editing the
-sketch (`arduino-cli compile --build-property
-"compiler.cpp.extra_flags=-DBOOT_PIN=0" ...`, which is the same mechanism
-a board variant's own `pins_arduino.h` would use, not a sketch patch)
-makes `MatterTemperatureSensor` **compile and link cleanly**: zero errors
-attributable to this library. `MatterOnOffLight` and `MatterDimmableLight`
-remain blocked at their `#include <Preferences.h>` line, upstream of any
-Hearth-specific code, so that experiment does not extend to them; a real
-`Preferences.h` implementation for `arduino-pico`, not a define, would be
-needed to test them the same way, and none exists to test against. Full
-commands and output are in `iLabs_AT_Hearth`'s Task 9 report.
+**All three now compile and link with no build flags at all**, on
+`pico:rp2040:challenger_2350_wifi6_ble5`, still byte-identical to upstream.
+Items 1 and 2 were closed by filling the core's gaps underneath the sketches
+rather than editing them:
+
+- **`Preferences`** is implemented in `src/Preferences.{h,cpp}` over
+  arduino-pico's EEPROM. See "Preferences" below.
+- **`BOOT_PIN`** resolves to the BOOTSEL button. See "BOOT_PIN" below.
+
+Full commands and output for the original three-blocker analysis are in
+`iLabs_AT_Hearth`'s Task 9 report.
+
+## Preferences
+
+`arduino-pico` ships no `Preferences` and nothing equivalent, so every
+arduino-esp32 sketch that remembers state across a reboot fails to compile on
+a Challenger. This library supplies one, claiming the global `Preferences.h`
+include name so an unmodified `#include <Preferences.h>` resolves. The full
+upstream API is implemented, including the typed put/get pairs, `putBytes`/
+`getBytes`, `isKey`, `getType`, `clear`, `remove` and `freeEntries`.
+
+**It is backed by EEPROM, not a filesystem.** arduino-pico always reserves a
+4 KB flash sector for EEPROM whatever the board's flash menu says, whereas the
+default flash option for every Challenger is "8MB (no FS)", so a LittleFS
+store would fail to mount on a default install and every `get` would silently
+return its default.
+
+Where it differs from NVS on an ESP32:
+
+- The whole store is 4 KB for all namespaces together. A `put` that does not
+  fit fails and returns 0 rather than evicting anything.
+- No wear levelling: every `put` rewrites the sector. At the rate the examples
+  write (a light being switched) that is decades of flash life. A sketch that
+  writes in a loop will destroy the sector, exactly as it would using EEPROM
+  directly.
+- `partition_label` is accepted and ignored. One sector has no partitions.
+- Namespace and key names are capped at 15 characters, as NVS caps them, so a
+  name that would fail there fails here rather than working by accident.
+
+Move or shrink the region with `-DHEARTH_PREFS_OFFSET=` and
+`-DHEARTH_PREFS_SIZE=` if the sketch also uses EEPROM directly.
+
+## BOOT_PIN
+
+The upstream examples read `BOOT_PIN` to offer decommission-by-long-press. On
+RP2040 and RP2350 that button is BOOTSEL, which is not a GPIO: it is sampled
+by momentarily driving the QSPI chip select to Hi-Z. `arduino-pico` exposes it
+as a `BOOTSEL` object an unmodified sketch cannot reach.
+
+So `HearthCompat.h` defines `BOOT_PIN` as a reserved pin number outside any
+variant's GPIO range, and `HearthBootPin.cpp` defines `pinMode()` and
+`digitalRead()` to recognise it and route it to `BOOTSEL`, forwarding every
+real pin to the core's own implementation unchanged. No macros are involved:
+`arduino-pico` declares both functions as weak aliases, which is exactly the
+hook this needs.
+
+Reading BOOTSEL is expensive, unlike a GPIO read: the core disables
+interrupts, idles the other core and busy-waits. The examples poll it twice
+per `loop()` with no delay, so the shim caches the reading for
+`HEARTH_BOOTSEL_CACHE_MS` (default 5 ms, far below every example's 250 ms
+debounce). Set it to 0 to read through on every call.
+
+`-DBOOT_PIN=<gpio>` still wins, for a board with a real user button wired to
+one.
 
 ## Limitations
 
@@ -347,16 +442,24 @@ commands and output are in `iLabs_AT_Hearth`'s Task 9 report.
   Only `MatterOnOffLight`, `MatterDimmableLight`,
   `MatterColorTemperatureLight` and `MatterTemperatureSensor` are
   implemented; see "Supported device types" above.
-- **The default link (`Serial1`) is an assumption, not a verified fact.**
-  See "Wiring" above.
-- **Two of the three upstream examples still do not compile against
-  arduino-pico, for reasons outside this library.** `MatterOnOffLight` and
-  `MatterDimmableLight` both `#include <Preferences.h>`, which does not
-  exist anywhere in the `arduino-pico` core. `MatterTemperatureSensor`
-  compiles and links cleanly once the RP2040/RP2350 core's missing
-  `BOOT_PIN` macro is supplied externally; see "Examples" above for detail
-  and for the parity gap this project did find and fix here (`Matter.h`
-  not aggregating the endpoint headers).
+- **The automatic co-processor reset has not been exercised on hardware.**
+  The pins and the UART come from the board variant and the sequence is the
+  one `iLabs_ESP-NOW` already runs on the same board, but the
+  `HEARTH_READY_TIMEOUT_MS` default of 10 s is a guess: nobody has measured
+  how long the C6 takes to reach `+MTREADY` when it also has to rebuild a
+  stored endpoint composition and start the Matter stack. See "Wiring".
+- **This library claims two names it does not own: `Preferences.h` and the
+  weak `pinMode`/`digitalRead` symbols.** Both are what make an unmodified
+  sketch compile, and neither is scoped to Matter. A sketch that installs
+  another `Preferences` library gets the usual "Multiple libraries were
+  found" notice and one of the two wins; a library that also defines
+  `pinMode` or `digitalRead` strongly would be a duplicate-symbol link error.
+  Nothing in the ecosystem does the latter today, but it is a real cost of
+  keeping the examples byte-identical, and it belongs in a general
+  arduino-pico compatibility library rather than here if one ever exists.
+- **The `Preferences` store is 4 KB with no wear levelling**, against NVS's
+  tens of kilobytes with. See "Preferences" above for the full list of where
+  it diverges.
 - **Known release blocker: which `esp_matter` revision is normative is
   undecided.** `arduino-esp32` 3.3.8, whose class surface this library
   mirrors, bundles `esp_matter` 1.4.1. The Hearth firmware pins `v1.5.1`.

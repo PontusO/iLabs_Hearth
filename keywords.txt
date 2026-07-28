@@ -44,6 +44,12 @@ LineCb	KEYWORD1
 esp_matter_val_type_t	KEYWORD1
 esp_matter_attr_val_t	KEYWORD1
 
+# The Preferences compatibility shim (Preferences.h), supplying an API
+# arduino-pico has no equivalent of. Upstream names, kept because they are
+# interop symbols.
+Preferences	KEYWORD1
+PreferenceType	KEYWORD1
+
 #######################################
 # Methods and Functions (KEYWORD2)
 #######################################
@@ -66,6 +72,7 @@ hearthReconcileFailed	KEYWORD2
 hearthSetReconcileFailed	KEYWORD2
 link	KEYWORD2
 hearthReportProtocolError	KEYWORD2
+hearthResetCoprocessor	KEYWORD2
 
 # ArduinoMatter (the Matter global): upstream's closed surface, verbatim.
 onEvent	KEYWORD2
@@ -86,6 +93,8 @@ started	KEYWORD2
 stream	KEYWORD2
 command	KEYWORD2
 onURC	KEYWORD2
+flushInput	KEYWORD2
+waitReady	KEYWORD2
 isAsyncURC	KEYWORD2
 hearthIsAttrRead	KEYWORD2
 
@@ -196,11 +205,38 @@ ESP_MATTER_VAL_TYPE_BITMAP8	LITERAL1
 
 # Hearth's own tunables (Hearth.h / HearthLink.h / MatterEndPoint.h),
 # overridable with a -D before the header is first included.
-HEARTH_DEFAULT_SERIAL	LITERAL1
+HEARTH_SERIAL_PORT	LITERAL1
+HEARTH_LINK_BAUD	LITERAL1
+HEARTH_READY_TIMEOUT_MS	LITERAL1
 HEARTH_REBOOT_ARM_TIMEOUT_MS	LITERAL1
 HEARTH_MAX_ENDPOINTS	LITERAL1
 HEARTH_LINE_MAX	LITERAL1
 HEARTH_CMD_TIMEOUT_MS	LITERAL1
+HEARTH_PREFS_OFFSET	LITERAL1
+HEARTH_PREFS_SIZE	LITERAL1
+HEARTH_BOOTSEL_CACHE_MS	LITERAL1
+
+# The BOOT_PIN mapping (HearthCompat.h / HearthBootPin.cpp): BOOT_PIN is
+# upstream's name, HEARTH_BOOTSEL_PIN the reserved number it resolves to.
+BOOT_PIN	LITERAL1
+HEARTH_BOOTSEL_PIN	LITERAL1
+
+# Upstream's own switch, set to 1 here: this device commissions over BLE, so
+# a sketch must not try to join WiFi itself. See README.md, "Examples".
+CONFIG_ENABLE_CHIPOBLE	LITERAL1
+
+# PreferenceType (Preferences.h), upstream's own enumerators.
+PT_I8	LITERAL1
+PT_U8	LITERAL1
+PT_I16	LITERAL1
+PT_U16	LITERAL1
+PT_I32	LITERAL1
+PT_U32	LITERAL1
+PT_I64	LITERAL1
+PT_U64	LITERAL1
+PT_STR	LITERAL1
+PT_BLOB	LITERAL1
+PT_INVALID	LITERAL1
 
 # HearthLink::command()'s refusal code for a re-entrant call, and the
 # opt-out for the Hearth global (the Matter global honours upstream's own
