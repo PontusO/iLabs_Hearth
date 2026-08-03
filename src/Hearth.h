@@ -109,6 +109,12 @@ enum hearthEvent_t {
   HEARTH_LINK_DOWN,
   HEARTH_COPROCESSOR_REBOOTED,
   HEARTH_PROTOCOL_ERROR,
+  /* Firmware +MTEVT:27 (AT_MT_SPEC.md S3.12.1): the device holds a fabric
+   * but its active transport is not provisioned, so it opened a
+   * commissioning window. Hearth-specific, so it arrives here and not on
+   * the upstream-parity ArduinoMatter::onEvent() surface. Poll
+   * Hearth.transportMismatch() for the same state on demand. */
+  HEARTH_TRANSPORT_MISMATCH,
 };
 
 class HearthClass {
@@ -299,9 +305,14 @@ public:
    */
   void hearthReportProtocolError();
 
+  /* Internal dispatch mechanisms use this to deliver events to the
+   * link-event callback. Not for external use; external callers should
+   * use hearthReportProtocolError() if they have protocol errors to
+   * report. */
+  void hearthRaiseEvent(hearthEvent_t e);
+
 private:
   void hearthEnsureLink();
-  void hearthRaiseEvent(hearthEvent_t e);
   void hearthCheckExpectedRebootExpiry();
   static void hearthOnURCLine(const char *line, void *arg);
   static void hearthOnVerLine(const char *line, void *arg);

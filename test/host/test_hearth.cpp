@@ -143,6 +143,38 @@ static void test_net_four_fields_mismatch(void) {
   check("script drained", ms.scriptDrained());
 }
 
+static void test_evt27_raises_link_event(void) {
+  MockStream ms;
+  Hearth.begin(ms);
+  static int gotHearthEvt;
+  static int gotMatterEvt;
+  gotHearthEvt = -1;
+  gotMatterEvt = 0;
+  Hearth.onLinkEvent([](hearthEvent_t e) { gotHearthEvt = (int)e; });
+  Matter.onEvent([](matterEvent_t, const chip::DeviceLayer::ChipDeviceEvent *) { gotMatterEvt++; });
+  ms.injectURC("+MTEVT:27");
+  Hearth.poll();
+  check("evt27 raised HEARTH_TRANSPORT_MISMATCH",
+        gotHearthEvt == (int)HEARTH_TRANSPORT_MISMATCH);
+  check("evt27 did not hit the parity callback", gotMatterEvt == 0);
+  Matter.onEvent(nullptr);
+  Hearth.onLinkEvent(nullptr);
+}
+
+static void test_evt28_still_dropped(void) {
+  MockStream ms;
+  Hearth.begin(ms);
+  static int gotAny;
+  gotAny = 0;
+  Hearth.onLinkEvent([](hearthEvent_t) { gotAny++; });
+  Matter.onEvent([](matterEvent_t, const chip::DeviceLayer::ChipDeviceEvent *) { gotAny++; });
+  ms.injectURC("+MTEVT:28");
+  Hearth.poll();
+  check("evt28 dropped silently", gotAny == 0);
+  Matter.onEvent(nullptr);
+  Hearth.onLinkEvent(nullptr);
+}
+
 int main(void) {
   printf("\n===== Hearth link tests =====\n");
   test_version();
@@ -155,6 +187,8 @@ int main(void) {
   test_expected_reboot_reply_already_buffered_before_late_poll();
   test_net_three_fields_still_parses();
   test_net_four_fields_mismatch();
+  test_evt27_raises_link_event();
+  test_evt28_still_dropped();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

@@ -267,14 +267,24 @@ static const matterEvent_t kEventForBit[27] = {
 namespace {
 
 /* Parses "<bit>[,<detail>]" (the text after "+MTEVT:") and, if a sketch has
- * registered one, calls ArduinoMatter's event callback. Out-of-table bits
- * (27-31, reserved per S3.11, or outright malformed input) are dropped
- * silently, the same policy the brief gives for an unrecognised endpoint in
- * hearthDispatchAttr()/hearthDispatchIdent() below. */
-void hearthDispatchEvt(const char *rest) {
+ * registered one, calls ArduinoMatter's event callback. Bit 27 is a
+ * Hearth-specific transport-mismatch event that goes to the link-event
+ * callback instead. Bits 28-31 (reserved per S3.11) and malformed input
+ * are dropped silently, the same policy the brief gives for an unrecognised
+ * endpoint in hearthDispatchAttr()/hearthDispatchIdent() below. */
+void hearthDispatchEvt(const char *rest, HearthClass *self) {
   char *end;
   long bit = strtol(rest, &end, 10);
-  if (end == rest || bit < 0 || bit >= 27) {
+  if (end == rest || bit < 0) {
+    return;
+  }
+  if (bit == 27) {
+    /* Transport mismatch is a Hearth extension with no upstream
+     * matterEvent_t; it goes to the link-event callback. */
+    self->hearthRaiseEvent(HEARTH_TRANSPORT_MISMATCH);
+    return;
+  }
+  if (bit >= 27) {
     return;
   }
   int detail = 0;
@@ -407,7 +417,7 @@ void HearthClass::hearthOnURCLine(const char *line, void *arg) {
     return;
   }
   if (strncmp(line, "+MTEVT:", 7) == 0) {
-    hearthDispatchEvt(line + 7);
+    hearthDispatchEvt(line + 7, self);
     return;
   }
   if (strncmp(line, "+MTATTR:", 8) == 0) {
