@@ -929,6 +929,15 @@ bool ArduinoMatter::isDeviceConnected() {
   return hearthQueryNet(&ctx) && ctx.connected == 1;
 }
 
+/*
+ * Remove the device from its fabric. AT+MTRESET is the firmware's Matter
+ * reset (AT_MT_SPEC.md S3.10): it erases the fabrics, credentials and
+ * attribute persistence, then reboots. That erasure IS the mechanism
+ * here, not a side effect of rebooting. The endpoint composition and,
+ * on the combined image, the stored transport selection survive. Note
+ * that on the combined image network credentials are erased only for
+ * the ACTIVE transport; a dormant transport's credentials survive.
+ */
 void ArduinoMatter::decommission() {
   Hearth.hearthCommand("AT+MTRESET");
 }

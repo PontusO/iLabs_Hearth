@@ -68,7 +68,9 @@ up to `HEARTH_READY_TIMEOUT_MS` for its `+MTREADY`, discarding the boot ROM
 chatter that shares this UART. That gives every host start the same
 deterministic co-processor state, whether the host was power-cycled or
 reset on its own. The reset does not touch the Matter fabric or the stored
-endpoint composition; only `AT+MTFRESET` does.
+endpoint composition; those are erased by the `AT+MTRESET` and
+`AT+MTFRESET` commands (the latter also erases the composition), not by
+a reboot.
 
 The library refuses to compile for a board whose variant defines no
 `ESP_SERIAL_PORT`. Override with `-DHEARTH_SERIAL_PORT=SerialN` for a board

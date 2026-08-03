@@ -190,6 +190,19 @@ static void test_evt27_reaches_link_even_when_matter_unregistered(void) {
   Hearth.onLinkEvent(nullptr);
 }
 
+/* Pins what decommission() claims to do in its doc comment: it removes the
+ * device from its fabric by sending AT+MTRESET, the firmware's Matter
+ * reset, and depends on that command's erasure of fabrics and credentials
+ * rather than on any side effect of a reboot. */
+static void test_decommission_sends_matter_reset() {
+  MockStream ms;
+  Hearth.begin(ms);
+  ms.expect("AT+MTRESET", "OK\r\n");
+  Matter.decommission();
+  check("decommission sent AT+MTRESET", ms.scriptDrained());
+  check("nothing unexpected", ms.unexpected().empty());
+}
+
 int main(void) {
   printf("\n===== Hearth link tests =====\n");
   test_version();
@@ -205,6 +218,7 @@ int main(void) {
   test_evt27_raises_link_event();
   test_evt28_still_dropped();
   test_evt27_reaches_link_even_when_matter_unregistered();
+  test_decommission_sends_matter_reset();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

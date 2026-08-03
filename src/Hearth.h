@@ -159,8 +159,9 @@ public:
    * co-processor, and so the begin(Stream&) escape hatch has a way to ask
    * for the same treatment.
    *
-   * Safe with a device already commissioned: a reset does not touch the
-   * fabric or the stored composition (only AT+MTFRESET does).
+   * Safe with a device already commissioned: this pin reset does not touch
+   * the fabric or the stored composition (the AT+MTRESET and AT+MTFRESET
+   * commands do that; the latter also erases the composition).
    */
   void hearthResetCoprocessor();
 
