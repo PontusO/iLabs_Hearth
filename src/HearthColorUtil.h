@@ -1,4 +1,26 @@
 /*
+ *
+ *    Copyright (c) 2021 Project CHIP Authors
+ *    All rights reserved.
+ *
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *    Unless required by applicable law or agreed to in writing, software
+ *    distributed under the License is distributed on an "AS IS" BASIS,
+ *    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *    See the License for the specific language governing permissions and
+ *    limitations under the License.
+ *
+ * The notice block above is copied verbatim from the top of the upstream
+ * file this header ports from (see below); it is not this library's own
+ * copyright statement, and is kept as-is rather than folded into Hearth's
+ * own file-header convention.
+ */
+/*
  * HearthColorUtil.h - the RGB<->HSV color types and conversions
  * MatterEnhancedColorLight needs.
  *
