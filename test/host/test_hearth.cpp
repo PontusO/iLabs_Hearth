@@ -175,6 +175,21 @@ static void test_evt28_still_dropped(void) {
   Hearth.onLinkEvent(nullptr);
 }
 
+static void test_evt27_reaches_link_even_when_matter_unregistered(void) {
+  MockStream ms;
+  Hearth.begin(ms);
+  static int gotHearthEvt;
+  gotHearthEvt = -1;
+  Hearth.onLinkEvent([](hearthEvent_t e) { gotHearthEvt = (int)e; });
+  /* Leave Matter.onEvent unregistered (nullptr) to ensure bit 27 is
+   * special-cased BEFORE the !ArduinoMatter::_matterEventCB check. */
+  ms.injectURC("+MTEVT:27");
+  Hearth.poll();
+  check("evt27 raised HEARTH_TRANSPORT_MISMATCH with no Matter.onEvent",
+        gotHearthEvt == (int)HEARTH_TRANSPORT_MISMATCH);
+  Hearth.onLinkEvent(nullptr);
+}
+
 int main(void) {
   printf("\n===== Hearth link tests =====\n");
   test_version();
@@ -189,6 +204,7 @@ int main(void) {
   test_net_four_fields_mismatch();
   test_evt27_raises_link_event();
   test_evt28_still_dropped();
+  test_evt27_reaches_link_even_when_matter_unregistered();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }
