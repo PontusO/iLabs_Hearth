@@ -9,7 +9,9 @@ build/
 /test/host/test_hearth
 /test/host/test_reconcile
 /test/host/test_onofflight
+/test/host/test_onoffplugin
 /test/host/test_dimmable
+/test/host/test_dimmableplugin
 /test/host/test_colortemp_sensor
 /test/host/test_matter_umbrella
 /test/host/test_no_global_instances
