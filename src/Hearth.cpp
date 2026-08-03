@@ -646,6 +646,65 @@ bool HearthClass::transportMismatch() {
   return hearthQueryNet(&ctx) && ctx.mismatch == 1;
 }
 
+/* "WIFI" / "THREAD" to the enum; wire names are upper-case exact. */
+static bool hearthTransportFromName(const char *s, size_t len, HearthTransport *out) {
+  if (len == 4 && strncmp(s, "WIFI", 4) == 0) {
+    *out = HEARTH_TRANSPORT_WIFI;
+    return true;
+  }
+  if (len == 6 && strncmp(s, "THREAD", 6) == 0) {
+    *out = HEARTH_TRANSPORT_THREAD;
+    return true;
+  }
+  return false;
+}
+
+struct HearthTransportCtx {
+  HearthTransport active;
+  HearthTransport stored;
+  bool got;
+};
+
+void hearthOnTransportLine(const char *line, void *arg) {
+  HearthTransportCtx *ctx = (HearthTransportCtx *)arg;
+  if (strncmp(line, "+MTTRANSPORT:", 13) != 0) {
+    return;
+  }
+  const char *p = line + 13;
+  const char *c1 = strchr(p, ',');
+  if (!c1) {
+    return;
+  }
+  HearthTransport a, s;
+  if (!hearthTransportFromName(p, (size_t)(c1 - p), &a)) {
+    return;
+  }
+  if (!hearthTransportFromName(c1 + 1, strlen(c1 + 1), &s)) {
+    return;
+  }
+  ctx->active = a;
+  ctx->stored = s;
+  ctx->got = true;
+}
+
+bool HearthClass::setTransport(HearthTransport t) {
+  const char *name = (t == HEARTH_TRANSPORT_THREAD) ? "THREAD" : "WIFI";
+  char cmd[32];
+  snprintf(cmd, sizeof(cmd), "AT+MTTRANSPORT=%s", name);
+  return hearthCommand(cmd) == 0;
+}
+
+bool HearthClass::transport(HearthTransport *active, HearthTransport *stored) {
+  HearthTransportCtx ctx;
+  ctx.got = false;
+  if (hearthCommand("AT+MTTRANSPORT?", hearthOnTransportLine, &ctx) != 0 || !ctx.got) {
+    return false;
+  }
+  *active = ctx.active;
+  *stored = ctx.stored;
+  return true;
+}
+
 /*
  * ArduinoMatter::begin() - design spec S5.4:
  *

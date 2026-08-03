@@ -104,6 +104,13 @@
 #define HEARTH_REBOOT_ARM_TIMEOUT_MS 20000
 #endif
 
+#define HEARTH_ERR_NOT_SUPPORTED 8
+
+typedef enum {
+  HEARTH_TRANSPORT_WIFI = 0,
+  HEARTH_TRANSPORT_THREAD = 1,
+} HearthTransport;
+
 enum hearthEvent_t {
   HEARTH_LINK_UP = 0,
   HEARTH_LINK_DOWN,
@@ -166,6 +173,22 @@ public:
    * in this library. Older firmware never reports it, so this is false
    * there. */
   bool transportMismatch();
+
+  /*
+   * Stage the network transport for the NEXT boot (combined-image
+   * firmware, AT_MT_SPEC.md S3.12.2). Returns true when the firmware
+   * confirms the setting is stored; nothing changes until the
+   * co-processor reboots, and the host owns that reboot. On
+   * single-transport firmware the command does not exist and this
+   * returns false with lastError() == HEARTH_ERR_NOT_SUPPORTED.
+   */
+  bool setTransport(HearthTransport t);
+
+  /*
+   * Read the active and stored transport. A pending switch shows as
+   * active != stored. Same not-supported behavior as setTransport().
+   */
+  bool transport(HearthTransport *active, HearthTransport *stored);
 
   /* Last +MTERR code any layer above HearthLink reported; 0 if none. */
   int lastError() const {
