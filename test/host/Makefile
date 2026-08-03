@@ -4,7 +4,7 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_colortemp_sensor test_matter_umbrella test_no_global_instances test_preferences
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_colortemp_sensor test_matter_umbrella test_no_global_instances test_preferences test_transport
 
 all: $(TESTS)
 
@@ -65,6 +65,9 @@ test_no_global_instances: test_no_global_instances.cpp ArduinoShim.cpp $(SRC) ..
 # PreferencesEEPROM.cpp is deliberately NOT in this recipe: linking both would
 # define the store twice.
 test_preferences: test_preferences.cpp ArduinoShim.cpp PrefsStoreFake.cpp ../../src/Preferences.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_transport: test_transport.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all

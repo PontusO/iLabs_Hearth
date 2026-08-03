@@ -68,7 +68,9 @@ up to `HEARTH_READY_TIMEOUT_MS` for its `+MTREADY`, discarding the boot ROM
 chatter that shares this UART. That gives every host start the same
 deterministic co-processor state, whether the host was power-cycled or
 reset on its own. The reset does not touch the Matter fabric or the stored
-endpoint composition; only `AT+MTFRESET` does.
+endpoint composition; those are erased by the `AT+MTRESET` and
+`AT+MTFRESET` commands (the latter also erases the composition), not by
+a reboot.
 
 The library refuses to compile for a board whose variant defines no
 `ESP_SERIAL_PORT`. Override with `-DHEARTH_SERIAL_PORT=SerialN` for a board
@@ -447,12 +449,10 @@ one.
   Only `MatterOnOffLight`, `MatterDimmableLight`,
   `MatterColorTemperatureLight` and `MatterTemperatureSensor` are
   implemented; see "Supported device types" above.
-- **The automatic co-processor reset has not been exercised on hardware.**
-  The pins and the UART come from the board variant and the sequence is the
-  one `iLabs_ESP-NOW` already runs on the same board, but the
-  `HEARTH_READY_TIMEOUT_MS` default of 10 s is a guess: nobody has measured
-  how long the C6 takes to reach `+MTREADY` when it also has to rebuild a
-  stored endpoint composition and start the Matter stack. See "Wiring".
+- **The automatic co-processor reset has been exercised on hardware.** Verified
+  during C4 end-to-end tests (2026-07-28 commissioning cycle, 2026-08-03
+  transport smoke check against both single-stack and combined firmware). See
+  "Wiring".
 - **This library claims two names it does not own: `Preferences.h` and the
   weak `pinMode`/`digitalRead` symbols.** Both are what make an unmodified
   sketch compile, and neither is scoped to Matter. A sketch that installs
@@ -486,6 +486,7 @@ one.
 
 Host-side (`test/host/`) coverage exercises the transport, the attribute
 codec, endpoint declaration and reconciliation, and the composition apply
-sequence without any hardware. Hardware verification (the default link, the
-examples above, and a real commissioning flow) has not happened yet. See
-`HARDWARE-BRINGUP.md` for what to check first once it does.
+sequence without any hardware. Hardware verification: the automatic reset
+path and the transport API were verified during C4 end-to-end (2026-07-28)
+and transport smoke tests (2026-08-03). See `HARDWARE-BRINGUP.md` for
+additional commissioning flows and coverage.

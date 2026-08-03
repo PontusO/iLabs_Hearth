@@ -266,30 +266,6 @@ static const matterEvent_t kEventForBit[27] = {
 
 namespace {
 
-/* Parses "<bit>[,<detail>]" (the text after "+MTEVT:") and, if a sketch has
- * registered one, calls ArduinoMatter's event callback. Out-of-table bits
- * (27-31, reserved per S3.11, or outright malformed input) are dropped
- * silently, the same policy the brief gives for an unrecognised endpoint in
- * hearthDispatchAttr()/hearthDispatchIdent() below. */
-void hearthDispatchEvt(const char *rest) {
-  char *end;
-  long bit = strtol(rest, &end, 10);
-  if (end == rest || bit < 0 || bit >= 27) {
-    return;
-  }
-  int detail = 0;
-  if (*end == ',') {
-    detail = atoi(end + 1);
-  }
-  if (!ArduinoMatter::_matterEventCB) {
-    return;
-  }
-  chip::DeviceLayer::ChipDeviceEvent ev;
-  ev.bit = (uint8_t)bit;
-  ev.detail = detail;
-  ArduinoMatter::_matterEventCB(kEventForBit[bit], &ev);
-}
-
 /*
  * Parses "<ep>,<cl>,<attr>,<val>" (the text after "+MTATTR:") and routes it
  * to that endpoint's attributeChangeCB, if the endpoint is one the sketch
@@ -384,6 +360,40 @@ void hearthDispatchIdent(const char *rest) {
 
 }  // namespace
 
+/* Parses "<bit>[,<detail>]" (the text after "+MTEVT:") and, if a sketch has
+ * registered one, calls ArduinoMatter's event callback. Bit 27 is a
+ * Hearth-specific transport-mismatch event that goes to the link-event
+ * callback instead. Bits 28-31 (reserved per S3.11) and malformed input
+ * are dropped silently, the same policy given for an unrecognised endpoint
+ * in hearthDispatchAttr()/hearthDispatchIdent() in the anonymous namespace. */
+void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
+  char *end;
+  long bit = strtol(rest, &end, 10);
+  if (end == rest || bit < 0) {
+    return;
+  }
+  if (bit == 27) {
+    /* Transport mismatch is a Hearth extension with no upstream
+     * matterEvent_t; it goes to the link-event callback. */
+    self->hearthRaiseEvent(HEARTH_TRANSPORT_MISMATCH);
+    return;
+  }
+  if (bit >= 27) {
+    return;
+  }
+  int detail = 0;
+  if (*end == ',') {
+    detail = atoi(end + 1);
+  }
+  if (!ArduinoMatter::_matterEventCB) {
+    return;
+  }
+  chip::DeviceLayer::ChipDeviceEvent ev;
+  ev.bit = (uint8_t)bit;
+  ev.detail = detail;
+  ArduinoMatter::_matterEventCB(kEventForBit[bit], &ev);
+}
+
 /*
  * The URC handler installed on HearthLink. +MTREADY is the one link-level
  * concern: an unexpected one means the co-processor rebooted under us, so
@@ -407,7 +417,7 @@ void HearthClass::hearthOnURCLine(const char *line, void *arg) {
     return;
   }
   if (strncmp(line, "+MTEVT:", 7) == 0) {
-    hearthDispatchEvt(line + 7);
+    hearthDispatchEvt(line + 7, self);
     return;
   }
   if (strncmp(line, "+MTATTR:", 8) == 0) {
@@ -537,13 +547,17 @@ bool hearthQueryCodes(HearthCodesCtx *ctx) {
   return Hearth.hearthCommand("AT+MTCODES?", hearthOnCodesLine, ctx) == 0 && ctx->got;
 }
 
-/* "+MTNET:<transport>,<enabled>,<connected>" (AT_MT_SPEC.md S3.12). One
- * line: transport is fixed at build time, so there is never a WIFI line and
- * a THREAD line to choose between. */
+/* "+MTNET:<transport>,<enabled>,<connected>[,<mismatch>]" (AT_MT_SPEC.md
+ * S3.12). One line per query: one transport is active per BOOT. On the
+ * single-stack images that choice is fixed at build time; on the combined
+ * image it follows the persisted AT+MTTRANSPORT setting. The fourth field
+ * (0.2.0 firmware) is the transport-mismatch flag of S3.12.1; older
+ * firmware sends three fields and the flag defaults to 0. */
 struct HearthNetCtx {
   char transport[8];
   int enabled;
   int connected;
+  int mismatch;
   bool got;
 };
 
@@ -569,7 +583,8 @@ void hearthOnNetLine(const char *line, void *arg) {
   if (*end != ',') {
     return;
   }
-  ctx->connected = (int)strtol(end + 1, nullptr, 10);
+  ctx->connected = (int)strtol(end + 1, &end, 10);
+  ctx->mismatch = (*end == ',') ? (int)strtol(end + 1, nullptr, 10) : 0;
   ctx->got = true;
 }
 
@@ -619,7 +634,76 @@ void hearthAbortReconcile(int rc) {
  */
 static const int kHearthMaxReconcileAttempts = 2;
 
+/* "WIFI" / "THREAD" to the enum; wire names are upper-case exact. */
+bool hearthTransportFromName(const char *s, size_t len, HearthTransport *out) {
+  if (len == 4 && strncmp(s, "WIFI", 4) == 0) {
+    *out = HEARTH_TRANSPORT_WIFI;
+    return true;
+  }
+  if (len == 6 && strncmp(s, "THREAD", 6) == 0) {
+    *out = HEARTH_TRANSPORT_THREAD;
+    return true;
+  }
+  return false;
+}
+
+struct HearthTransportCtx {
+  HearthTransport active;
+  HearthTransport stored;
+  bool got;
+};
+
+void hearthOnTransportLine(const char *line, void *arg) {
+  HearthTransportCtx *ctx = (HearthTransportCtx *)arg;
+  if (strncmp(line, "+MTTRANSPORT:", 13) != 0) {
+    return;
+  }
+  const char *p = line + 13;
+  const char *c1 = strchr(p, ',');
+  if (!c1) {
+    return;
+  }
+  HearthTransport a, s;
+  if (!hearthTransportFromName(p, (size_t)(c1 - p), &a)) {
+    return;
+  }
+  if (!hearthTransportFromName(c1 + 1, strlen(c1 + 1), &s)) {
+    return;
+  }
+  ctx->active = a;
+  ctx->stored = s;
+  ctx->got = true;
+}
+
 }  // namespace
+
+/* The S3.12.1 transport-mismatch flag from a live AT+MTNET? round-trip:
+ * true when the device holds a fabric but its active transport is not
+ * provisioned. Always a fresh query, like every other network predicate
+ * in this library. Older firmware never reports it, so this is false
+ * there. */
+bool HearthClass::transportMismatch() {
+  HearthNetCtx ctx;
+  return hearthQueryNet(&ctx) && ctx.mismatch == 1;
+}
+
+bool HearthClass::setTransport(HearthTransport t) {
+  const char *name = (t == HEARTH_TRANSPORT_THREAD) ? "THREAD" : "WIFI";
+  char cmd[32];
+  snprintf(cmd, sizeof(cmd), "AT+MTTRANSPORT=%s", name);
+  return hearthCommand(cmd) == 0;
+}
+
+bool HearthClass::transport(HearthTransport *active, HearthTransport *stored) {
+  HearthTransportCtx ctx;
+  ctx.got = false;
+  if (hearthCommand("AT+MTTRANSPORT?", hearthOnTransportLine, &ctx) != 0 || !ctx.got) {
+    return false;
+  }
+  *active = ctx.active;
+  *stored = ctx.stored;
+  return true;
+}
 
 /*
  * ArduinoMatter::begin() - design spec S5.4:
@@ -845,6 +929,15 @@ bool ArduinoMatter::isDeviceConnected() {
   return hearthQueryNet(&ctx) && ctx.connected == 1;
 }
 
+/*
+ * Remove the device from its fabric. AT+MTRESET is the firmware's Matter
+ * reset (AT_MT_SPEC.md S3.10): it erases the fabrics, credentials and
+ * attribute persistence, then reboots. That erasure IS the mechanism
+ * here, not a side effect of rebooting. The endpoint composition and,
+ * on the combined image, the stored transport selection survive. Note
+ * that on the combined image network credentials are erased only for
+ * the ACTIVE transport; a dormant transport's credentials survive.
+ */
 void ArduinoMatter::decommission() {
   Hearth.hearthCommand("AT+MTRESET");
 }

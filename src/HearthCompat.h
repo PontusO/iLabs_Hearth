@@ -50,13 +50,17 @@
  * Hearth instead of either of them. One co-processor, one personality. The
  * host and the Matter stack want the same chip, so the host cannot have it.
  *
- * Nor does it need it. The Hearth firmware is built with
- * CONFIG_ENABLE_CHIPOBLE=y and CONFIG_ENABLE_WIFI_STATION=y (sdkconfig):
- * the C6 advertises over BLE, the commissioner hands it the WiFi credentials
- * during commissioning, and the C6 joins the network on its own. So setting
- * this to 1 is not a workaround, it is the accurate description of the build
- * on the other side of the link, and it makes upstream's own switch do
- * exactly what upstream meant by it.
+ * Nor does it need it. The Hearth firmware ships as three variants:
+ * WiFi-only, Thread-only, and a combined image that carries both stacks
+ * but runs exactly one transport per boot, selected by AT+MTTRANSPORT.
+ * BLE commissioning is resident on all three: whichever transport is
+ * active, the C6 advertises over BLE, the commissioner hands it that
+ * transport's credentials during commissioning (WiFi credentials, or
+ * a Thread operational dataset), and the C6 joins the network on its
+ * own. So setting this to 1 is not a workaround, it is the accurate
+ * description of the build on the other side of the link regardless of
+ * which transport that build speaks, and it makes upstream's own switch
+ * do exactly what upstream meant by it.
  *
  * A sketch that genuinely wants host-side WiFi (with the C6 reflashed to
  * esp-at or esp-hosted, and therefore no Matter) can set this to 0.

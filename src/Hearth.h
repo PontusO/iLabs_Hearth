@@ -104,11 +104,24 @@
 #define HEARTH_REBOOT_ARM_TIMEOUT_MS 20000
 #endif
 
+#define HEARTH_ERR_NOT_SUPPORTED 8  /* the wire's +MTERR:8, named */
+
+typedef enum {
+  HEARTH_TRANSPORT_WIFI = 0,
+  HEARTH_TRANSPORT_THREAD = 1,
+} HearthTransport;
+
 enum hearthEvent_t {
   HEARTH_LINK_UP = 0,
   HEARTH_LINK_DOWN,
   HEARTH_COPROCESSOR_REBOOTED,
   HEARTH_PROTOCOL_ERROR,
+  /* Firmware +MTEVT:27 (AT_MT_SPEC.md S3.12.1): the device holds a fabric
+   * but its active transport is not provisioned, so it opened a
+   * commissioning window. Hearth-specific, so it arrives here and not on
+   * the upstream-parity ArduinoMatter::onEvent() surface. Poll
+   * Hearth.transportMismatch() for the same state on demand. */
+  HEARTH_TRANSPORT_MISMATCH,
 };
 
 class HearthClass {
@@ -146,13 +159,37 @@ public:
    * co-processor, and so the begin(Stream&) escape hatch has a way to ask
    * for the same treatment.
    *
-   * Safe with a device already commissioned: a reset does not touch the
-   * fabric or the stored composition (only AT+MTFRESET does).
+   * Safe with a device already commissioned: this pin reset does not touch
+   * the fabric or the stored composition (the AT+MTRESET and AT+MTFRESET
+   * commands do that; the latter also erases the composition).
    */
   void hearthResetCoprocessor();
 
   /* True if a bare AT probe round-trips OK. */
   bool linkUp();
+
+  /* The S3.12.1 transport-mismatch flag from a live AT+MTNET? round-trip:
+   * true when the device holds a fabric but its active transport is not
+   * provisioned. Always a fresh query, like every other network predicate
+   * in this library. Older firmware never reports it, so this is false
+   * there. */
+  bool transportMismatch();
+
+  /*
+   * Stage the network transport for the NEXT boot (combined-image
+   * firmware, AT_MT_SPEC.md S3.12.2). Returns true when the firmware
+   * confirms the setting is stored; nothing changes until the
+   * co-processor reboots, and the host owns that reboot. On
+   * single-transport firmware the command does not exist and this
+   * returns false with lastError() == HEARTH_ERR_NOT_SUPPORTED.
+   */
+  bool setTransport(HearthTransport t);
+
+  /*
+   * Read the active and stored transport. A pending switch shows as
+   * active != stored. Same not-supported behavior as setTransport().
+   */
+  bool transport(HearthTransport *active, HearthTransport *stored);
 
   /* Last +MTERR code any layer above HearthLink reported; 0 if none. */
   int lastError() const {
@@ -298,6 +335,7 @@ private:
   void hearthCheckExpectedRebootExpiry();
   static void hearthOnURCLine(const char *line, void *arg);
   static void hearthOnVerLine(const char *line, void *arg);
+  static void hearthDispatchEvt(const char *rest, HearthClass *self);
 
   HearthLink _link;
   int _lastError;

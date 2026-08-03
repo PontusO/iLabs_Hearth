@@ -120,6 +120,91 @@ static void test_expected_reboot_reply_already_buffered_before_late_poll(void) {
   check("hearthExpectedRebootSeen still reports the reply arrived", Hearth.hearthExpectedRebootSeen());
 }
 
+static void test_net_three_fields_still_parses(void) {
+  /* Old firmware: no mismatch field. Must behave exactly as before. */
+  MockStream ms;
+  Hearth.begin(ms);
+  ms.expect("AT+MTNET?", "+MTNET:WIFI,1,1\r\nOK\r\n");
+  check("3-field isWiFiConnected", Matter.isWiFiConnected());
+  ms.expect("AT+MTNET?", "+MTNET:WIFI,1,1\r\nOK\r\n");
+  check("3-field no mismatch reported", !Hearth.transportMismatch());
+  check("script drained", ms.scriptDrained());
+}
+
+static void test_net_four_fields_mismatch(void) {
+  MockStream ms;
+  Hearth.begin(ms);
+  ms.expect("AT+MTNET?", "+MTNET:THREAD,1,0,1\r\nOK\r\n");
+  check("4-field mismatch seen", Hearth.transportMismatch());
+  ms.expect("AT+MTNET?", "+MTNET:THREAD,1,0,1\r\nOK\r\n");
+  check("4-field connected still parses", !Matter.isThreadConnected());
+  ms.expect("AT+MTNET?", "+MTNET:THREAD,1,1,0\r\nOK\r\n");
+  check("4-field connected positive", Matter.isThreadConnected());
+  ms.expect("AT+MTNET?", "+MTNET:THREAD,1,1,0\r\nOK\r\n");
+  check("4-field mismatch clear", !Hearth.transportMismatch());
+  check("script drained", ms.scriptDrained());
+}
+
+static void test_evt27_raises_link_event(void) {
+  MockStream ms;
+  Hearth.begin(ms);
+  static int gotHearthEvt;
+  static int gotMatterEvt;
+  gotHearthEvt = -1;
+  gotMatterEvt = 0;
+  Hearth.onLinkEvent([](hearthEvent_t e) { gotHearthEvt = (int)e; });
+  Matter.onEvent([](matterEvent_t, const chip::DeviceLayer::ChipDeviceEvent *) { gotMatterEvt++; });
+  ms.injectURC("+MTEVT:27");
+  Hearth.poll();
+  check("evt27 raised HEARTH_TRANSPORT_MISMATCH",
+        gotHearthEvt == (int)HEARTH_TRANSPORT_MISMATCH);
+  check("evt27 did not hit the parity callback", gotMatterEvt == 0);
+  Matter.onEvent(nullptr);
+  Hearth.onLinkEvent(nullptr);
+}
+
+static void test_evt28_still_dropped(void) {
+  MockStream ms;
+  Hearth.begin(ms);
+  static int gotAny;
+  gotAny = 0;
+  Hearth.onLinkEvent([](hearthEvent_t) { gotAny++; });
+  Matter.onEvent([](matterEvent_t, const chip::DeviceLayer::ChipDeviceEvent *) { gotAny++; });
+  ms.injectURC("+MTEVT:28");
+  Hearth.poll();
+  check("evt28 dropped silently", gotAny == 0);
+  Matter.onEvent(nullptr);
+  Hearth.onLinkEvent(nullptr);
+}
+
+static void test_evt27_reaches_link_even_when_matter_unregistered(void) {
+  MockStream ms;
+  Hearth.begin(ms);
+  static int gotHearthEvt;
+  gotHearthEvt = -1;
+  Hearth.onLinkEvent([](hearthEvent_t e) { gotHearthEvt = (int)e; });
+  /* Leave Matter.onEvent unregistered (nullptr) to ensure bit 27 is
+   * special-cased BEFORE the !ArduinoMatter::_matterEventCB check. */
+  ms.injectURC("+MTEVT:27");
+  Hearth.poll();
+  check("evt27 raised HEARTH_TRANSPORT_MISMATCH with no Matter.onEvent",
+        gotHearthEvt == (int)HEARTH_TRANSPORT_MISMATCH);
+  Hearth.onLinkEvent(nullptr);
+}
+
+/* Pins what decommission() claims to do in its doc comment: it removes the
+ * device from its fabric by sending AT+MTRESET, the firmware's Matter
+ * reset, and depends on that command's erasure of fabrics and credentials
+ * rather than on any side effect of a reboot. */
+static void test_decommission_sends_matter_reset() {
+  MockStream ms;
+  Hearth.begin(ms);
+  ms.expect("AT+MTRESET", "OK\r\n");
+  Matter.decommission();
+  check("decommission sent AT+MTRESET", ms.scriptDrained());
+  check("nothing unexpected", ms.unexpected().empty());
+}
+
 int main(void) {
   printf("\n===== Hearth link tests =====\n");
   test_version();
@@ -130,6 +215,12 @@ int main(void) {
   test_expected_reboot_disarmed_then_spontaneous_reboot_raises();
   test_expected_reboot_expires_then_spontaneous_reboot_raises();
   test_expected_reboot_reply_already_buffered_before_late_poll();
+  test_net_three_fields_still_parses();
+  test_net_four_fields_mismatch();
+  test_evt27_raises_link_event();
+  test_evt28_still_dropped();
+  test_evt27_reaches_link_even_when_matter_unregistered();
+  test_decommission_sends_matter_reset();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }
