@@ -634,20 +634,8 @@ void hearthAbortReconcile(int rc) {
  */
 static const int kHearthMaxReconcileAttempts = 2;
 
-}  // namespace
-
-/* The S3.12.1 transport-mismatch flag from a live AT+MTNET? round-trip:
- * true when the device holds a fabric but its active transport is not
- * provisioned. Always a fresh query, like every other network predicate
- * in this library. Older firmware never reports it, so this is false
- * there. */
-bool HearthClass::transportMismatch() {
-  HearthNetCtx ctx;
-  return hearthQueryNet(&ctx) && ctx.mismatch == 1;
-}
-
 /* "WIFI" / "THREAD" to the enum; wire names are upper-case exact. */
-static bool hearthTransportFromName(const char *s, size_t len, HearthTransport *out) {
+bool hearthTransportFromName(const char *s, size_t len, HearthTransport *out) {
   if (len == 4 && strncmp(s, "WIFI", 4) == 0) {
     *out = HEARTH_TRANSPORT_WIFI;
     return true;
@@ -685,6 +673,18 @@ void hearthOnTransportLine(const char *line, void *arg) {
   ctx->active = a;
   ctx->stored = s;
   ctx->got = true;
+}
+
+}  // namespace
+
+/* The S3.12.1 transport-mismatch flag from a live AT+MTNET? round-trip:
+ * true when the device holds a fabric but its active transport is not
+ * provisioned. Always a fresh query, like every other network predicate
+ * in this library. Older firmware never reports it, so this is false
+ * there. */
+bool HearthClass::transportMismatch() {
+  HearthNetCtx ctx;
+  return hearthQueryNet(&ctx) && ctx.mismatch == 1;
 }
 
 bool HearthClass::setTransport(HearthTransport t) {

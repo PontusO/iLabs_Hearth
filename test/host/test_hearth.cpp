@@ -139,6 +139,8 @@ static void test_net_four_fields_mismatch(void) {
   ms.expect("AT+MTNET?", "+MTNET:THREAD,1,0,1\r\nOK\r\n");
   check("4-field connected still parses", !Matter.isThreadConnected());
   ms.expect("AT+MTNET?", "+MTNET:THREAD,1,1,0\r\nOK\r\n");
+  check("4-field connected positive", Matter.isThreadConnected());
+  ms.expect("AT+MTNET?", "+MTNET:THREAD,1,1,0\r\nOK\r\n");
   check("4-field mismatch clear", !Hearth.transportMismatch());
   check("script drained", ms.scriptDrained());
 }

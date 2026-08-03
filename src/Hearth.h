@@ -104,7 +104,7 @@
 #define HEARTH_REBOOT_ARM_TIMEOUT_MS 20000
 #endif
 
-#define HEARTH_ERR_NOT_SUPPORTED 8
+#define HEARTH_ERR_NOT_SUPPORTED 8  /* the wire's +MTERR:8, named */
 
 typedef enum {
   HEARTH_TRANSPORT_WIFI = 0,
