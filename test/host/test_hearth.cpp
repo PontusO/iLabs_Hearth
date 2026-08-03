@@ -120,6 +120,29 @@ static void test_expected_reboot_reply_already_buffered_before_late_poll(void) {
   check("hearthExpectedRebootSeen still reports the reply arrived", Hearth.hearthExpectedRebootSeen());
 }
 
+static void test_net_three_fields_still_parses(void) {
+  /* Old firmware: no mismatch field. Must behave exactly as before. */
+  MockStream ms;
+  Hearth.begin(ms);
+  ms.expect("AT+MTNET?", "+MTNET:WIFI,1,1\r\nOK\r\n");
+  check("3-field isWiFiConnected", Matter.isWiFiConnected());
+  ms.expect("AT+MTNET?", "+MTNET:WIFI,1,1\r\nOK\r\n");
+  check("3-field no mismatch reported", !Hearth.transportMismatch());
+  check("script drained", ms.scriptDrained());
+}
+
+static void test_net_four_fields_mismatch(void) {
+  MockStream ms;
+  Hearth.begin(ms);
+  ms.expect("AT+MTNET?", "+MTNET:THREAD,1,0,1\r\nOK\r\n");
+  check("4-field mismatch seen", Hearth.transportMismatch());
+  ms.expect("AT+MTNET?", "+MTNET:THREAD,1,0,1\r\nOK\r\n");
+  check("4-field connected still parses", !Matter.isThreadConnected());
+  ms.expect("AT+MTNET?", "+MTNET:THREAD,1,1,0\r\nOK\r\n");
+  check("4-field mismatch clear", !Hearth.transportMismatch());
+  check("script drained", ms.scriptDrained());
+}
+
 int main(void) {
   printf("\n===== Hearth link tests =====\n");
   test_version();
@@ -130,6 +153,8 @@ int main(void) {
   test_expected_reboot_disarmed_then_spontaneous_reboot_raises();
   test_expected_reboot_expires_then_spontaneous_reboot_raises();
   test_expected_reboot_reply_already_buffered_before_late_poll();
+  test_net_three_fields_still_parses();
+  test_net_four_fields_mismatch();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

@@ -154,6 +154,13 @@ public:
   /* True if a bare AT probe round-trips OK. */
   bool linkUp();
 
+  /* The S3.12.1 transport-mismatch flag from a live AT+MTNET? round-trip:
+   * true when the device holds a fabric but its active transport is not
+   * provisioned. Always a fresh query, like every other network predicate
+   * in this library. Older firmware never reports it, so this is false
+   * there. */
+  bool transportMismatch();
+
   /* Last +MTERR code any layer above HearthLink reported; 0 if none. */
   int lastError() const {
     return _lastError;

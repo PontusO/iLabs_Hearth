@@ -537,13 +537,17 @@ bool hearthQueryCodes(HearthCodesCtx *ctx) {
   return Hearth.hearthCommand("AT+MTCODES?", hearthOnCodesLine, ctx) == 0 && ctx->got;
 }
 
-/* "+MTNET:<transport>,<enabled>,<connected>" (AT_MT_SPEC.md S3.12). One
- * line: transport is fixed at build time, so there is never a WIFI line and
- * a THREAD line to choose between. */
+/* "+MTNET:<transport>,<enabled>,<connected>[,<mismatch>]" (AT_MT_SPEC.md
+ * S3.12). One line per query: one transport is active per BOOT. On the
+ * single-stack images that choice is fixed at build time; on the combined
+ * image it follows the persisted AT+MTTRANSPORT setting. The fourth field
+ * (0.2.0 firmware) is the transport-mismatch flag of S3.12.1; older
+ * firmware sends three fields and the flag defaults to 0. */
 struct HearthNetCtx {
   char transport[8];
   int enabled;
   int connected;
+  int mismatch;
   bool got;
 };
 
@@ -569,7 +573,8 @@ void hearthOnNetLine(const char *line, void *arg) {
   if (*end != ',') {
     return;
   }
-  ctx->connected = (int)strtol(end + 1, nullptr, 10);
+  ctx->connected = (int)strtol(end + 1, &end, 10);
+  ctx->mismatch = (*end == ',') ? (int)strtol(end + 1, nullptr, 10) : 0;
   ctx->got = true;
 }
 
@@ -620,6 +625,16 @@ void hearthAbortReconcile(int rc) {
 static const int kHearthMaxReconcileAttempts = 2;
 
 }  // namespace
+
+/* The S3.12.1 transport-mismatch flag from a live AT+MTNET? round-trip:
+ * true when the device holds a fabric but its active transport is not
+ * provisioned. Always a fresh query, like every other network predicate
+ * in this library. Older firmware never reports it, so this is false
+ * there. */
+bool HearthClass::transportMismatch() {
+  HearthNetCtx ctx;
+  return hearthQueryNet(&ctx) && ctx.mismatch == 1;
+}
 
 /*
  * ArduinoMatter::begin() - design spec S5.4:
