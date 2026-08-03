@@ -21,6 +21,8 @@ build/
 /test/host/test_transport
 /test/host/test_fan
 /test/host/test_windowcovering
+/test/host/test_thermostat
+/test/host/test_enhancedcolor
 
 *.bin
 *.uf2
