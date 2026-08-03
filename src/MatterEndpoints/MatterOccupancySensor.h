@@ -67,6 +67,15 @@ public:
     return false;
   }
 
+  /* User callback for HoldTime changes - deferred to firmware, stored but never fired */
+  using HoldTimeChangeCB = std::function<bool(uint16_t holdTime_seconds)>;
+  void onHoldTimeChange(HoldTimeChangeCB onHoldTimeChangeCB) {
+    /* HoldTime change notifications are managed by the firmware's AttributeAccessInterface
+     * (design spec section 3). The callback is stored for parity with upstream, but Hearth
+     * never fires it since changes are not exposed over AT+MTATTR. */
+    _onHoldTimeChangeCB = onHoldTimeChangeCB;
+  }
+
   /* bool conversion operator */
   void operator=(bool _occupancyState) {
     setOccupancy(_occupancyState);
@@ -97,6 +106,7 @@ protected:
   bool occupancyState = false;
   uint16_t holdTime_seconds = 0;
 
-  /* User callback */
+  /* User callbacks */
   OccupancyChangeCB _onChangeCB = nullptr;
+  HoldTimeChangeCB _onHoldTimeChangeCB = nullptr;
 };

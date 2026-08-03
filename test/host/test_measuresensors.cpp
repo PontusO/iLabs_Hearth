@@ -246,6 +246,15 @@ static void test_occupancy_sensor_set_hold_time_limits_deferred(void) {
   check("no AT traffic issued", s.scriptDrained());
 }
 
+static void test_occupancy_sensor_on_hold_time_change_callback(void) {
+  MockStream s; MatterOccupancySensor sensor;
+  bringUpOccupancySensor(s, sensor);
+  int callbackSeen = 0;
+  sensor.onHoldTimeChange([&](uint16_t holdTime) { (void)holdTime; callbackSeen++; return true; });
+  check("onHoldTimeChange() registration succeeds and issues no AT traffic", callbackSeen == 0 && s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 int main(void) {
   printf("\n===== MatterHumiditySensor, MatterPressureSensor, MatterOccupancySensor tests =====\n");
 
@@ -275,6 +284,7 @@ int main(void) {
   test_occupancy_sensor_set_hold_time_deferred();
   test_occupancy_sensor_get_hold_time_returns_zero();
   test_occupancy_sensor_set_hold_time_limits_deferred();
+  test_occupancy_sensor_on_hold_time_change_callback();
 
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
