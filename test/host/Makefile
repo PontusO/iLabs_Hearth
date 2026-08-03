@@ -4,7 +4,7 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_colortemp_sensor test_matter_umbrella test_no_global_instances test_preferences test_transport
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_matter_umbrella test_no_global_instances test_preferences test_transport
 
 all: $(TESTS)
 
@@ -31,6 +31,12 @@ test_onofflight: test_onofflight.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 test_dimmable: test_dimmable.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_onoffplugin: test_onoffplugin.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffPlugin.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_dimmableplugin: test_dimmableplugin.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterDimmablePlugin.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 test_colortemp_sensor: test_colortemp_sensor.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp
