@@ -19,6 +19,8 @@ build/
 /test/host/test_no_global_instances
 /test/host/test_preferences
 /test/host/test_transport
+/test/host/test_fan
+/test/host/test_windowcovering
 
 *.bin
 *.uf2
