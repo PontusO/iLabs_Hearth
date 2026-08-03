@@ -56,23 +56,25 @@ bool MatterOccupancySensor::setOccupancy(bool _occupancyState) {
 /*
  * This endpoint is read-direction: the sketch pushes readings up to the fabric.
  * When attributeChangeCB is called (which happens on controller-driven changes),
- * we update the cache and call the user callback if set.
+ * we call the user callback and only update the cache if it accepts the
+ * change, matching every other Hearth endpoint's attributeChangeCB (match
+ * endpoint_id, gate the cache update on the callback's return).
  */
 bool MatterOccupancySensor::attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *val) {
-  (void)endpoint_id;
+  bool ret = true;
   if (!started) {
     return false;
   }
-  if (cluster_id == kOccupancySensingClusterId && attribute_id == kOccupancyAttributeId) {
-    if (val) {
-      occupancyState = (val->val.u8 != 0);
-      if (_onChangeCB) {
-        bool occupancy = (val->val.u8 != 0);
-        return _onChangeCB(occupancy);
-      }
+  if (endpoint_id == getEndPointId() && cluster_id == kOccupancySensingClusterId && attribute_id == kOccupancyAttributeId) {
+    bool newState = (val->val.u8 != 0);
+    if (_onChangeCB != NULL) {
+      ret &= _onChangeCB(newState);
+    }
+    if (ret) {
+      occupancyState = newState;
     }
   }
-  return true;
+  return ret;
 }
 
 esp_matter_val_type_t MatterOccupancySensor::hearthAttrTypeFor(uint32_t cluster_id, uint32_t attribute_id) const {

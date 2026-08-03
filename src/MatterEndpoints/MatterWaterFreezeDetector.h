@@ -21,6 +21,17 @@
  * updateAttributeVal would be an infinite loop with the real device. This is
  * the entire reason AT+MTATTR has a silent write mode; see
  * MatterEndPoint.h's header comment.
+ *
+ * DEVIATION FROM VERBATIM: `using EndPointCB = std::function<bool(bool)>`
+ * and `onChange(EndPointCB)` below (and the `_onChangeCB` protected member)
+ * are a Hearth addition, not present in upstream's
+ * MatterWaterFreezeDetector.h public section. Every boolean-state sensor in
+ * this library (also MatterContactSensor, MatterRainSensor,
+ * MatterWaterLeakDetector) carries the same addition, for the same reason:
+ * a sketch needs some way to learn about a controller-driven change, and
+ * upstream's own class exposes none. The name is provisional pending a
+ * decision on whether to align it with a future upstream addition; see
+ * README's "Supported device types" section. Nothing existing is renamed.
  */
 #pragma once
 

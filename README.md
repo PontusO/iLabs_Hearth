@@ -294,6 +294,19 @@ matching the firmware's own device type table (`iLabs_AT_Hearth`'s
 Declaring an unimplemented device type in a sketch fails to link, the same
 as any other undefined symbol.
 
+Seven of these classes carry a documented Hearth-side addition beyond
+upstream's own public API: `MatterContactSensor`, `MatterRainSensor`,
+`MatterWaterFreezeDetector` and `MatterWaterLeakDetector` each add
+`onChange(EndPointCB)`; `MatterHumiditySensor` and `MatterPressureSensor`
+each add `onChange(...ChangeCB)` plus a public `getRaw*()`/`setRaw*()` pair
+(`setRaw*` is protected upstream, `getRaw*` does not exist upstream at
+all); `MatterOccupancySensor` adds `onChange(OccupancyChangeCB)`. All seven
+exist because upstream's own class gives a sketch no way to learn about a
+controller-driven change on that attribute. Naming (`onChange`, `EndPointCB`,
+the `ChangeCB` typedefs) is provisional pending a decision on whether to
+align it with a future upstream addition; see each class's header comment
+for the exact members added. Nothing upstream is renamed.
+
 ### Parked
 
 Three of arduino-esp32's twenty classes remain out of scope, each for a

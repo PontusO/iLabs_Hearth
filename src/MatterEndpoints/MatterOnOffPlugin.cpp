@@ -6,7 +6,8 @@
 #include "MatterEndpoints/MatterOnOffPlugin.h"
 
 namespace {
-/* on_off_plugin_unit (esp_matter_endpoint.h), chip::app::Clusters::OnOff::Id and
+/* on_off_plug_in_unit (esp_matter_endpoint.h, the pinned esp-matter v1.5.1 name;
+ * 1.4.1 called it on_off_plugin_unit), chip::app::Clusters::OnOff::Id and
  * OnOff::Attributes::OnOff::Id. Given as plain integers: there is no
  * connectedhomeip header on a host build to pull the named constants from. */
 const uint32_t kOnOffPluginDeviceType = 0x010A;

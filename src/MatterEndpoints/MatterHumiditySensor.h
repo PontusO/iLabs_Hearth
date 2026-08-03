@@ -14,6 +14,19 @@
  * begin(double) delegates to the private begin(uint16_t) exactly as upstream
  * does, converting via `static_cast<uint16_t>(humidityPercent * 100.0f)`.
  * setHumidity follows the same conversion through setRawHumidity.
+ *
+ * DEVIATION FROM VERBATIM: three public members below are Hearth additions,
+ * not present in upstream's MatterHumiditySensor.h public section.
+ * `onChange(HumidityChangeCB)` (and the `_onChangeCB` member) has no
+ * upstream equivalent at all: upstream's class exposes no way for a sketch
+ * to learn about a controller-driven change. `setRawHumidity()` is public
+ * here; upstream declares it protected. `getRawHumidity()` does not exist
+ * upstream at all; it exists here only so hearthAttrTypeFor()'s doc comment
+ * has something concrete to point at. Naming is provisional pending a
+ * decision on whether to align it with a future upstream addition; see
+ * README's "Supported device types" section. Nothing existing is renamed.
+ * MatterPressureSensor carries the identical pattern (onChange, a promoted
+ * setRaw*, and a new getRaw*), for the same reason.
  */
 #pragma once
 

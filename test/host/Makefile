@@ -50,10 +50,12 @@ test_measuresensors: test_measuresensors.cpp ArduinoShim.cpp $(SRC) ../../src/He
 
 # Regression test for the Task 9 fix round: a translation unit whose only
 # iLabs Hearth include is "Matter.h", exactly what an unmodified upstream
-# sketch includes, must be enough to declare all four implemented device
-# types at file scope. Needs every endpoint .cpp linked in, since it
-# exercises all four.
-test_matter_umbrella: test_matter_umbrella.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp ../../src/MatterEndpoints/MatterContactSensor.cpp ../../src/MatterEndpoints/MatterRainSensor.cpp ../../src/MatterEndpoints/MatterWaterFreezeDetector.cpp ../../src/MatterEndpoints/MatterWaterLeakDetector.cpp ../../src/MatterEndpoints/MatterHumiditySensor.cpp ../../src/MatterEndpoints/MatterPressureSensor.cpp ../../src/MatterEndpoints/MatterOccupancySensor.cpp
+# sketch includes, must be enough to declare a device object at file scope.
+# Needs every endpoint .cpp linked in: the original four are brought up and
+# exercised over AT+MTATTR, the devtype expansion's other thirteen (final-
+# review finding M1) are declared file-scope only, a compile/link guard
+# against a dropped umbrella include.
+test_matter_umbrella: test_matter_umbrella.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp ../../src/MatterEndpoints/MatterOnOffPlugin.cpp ../../src/MatterEndpoints/MatterDimmablePlugin.cpp ../../src/MatterEndpoints/MatterContactSensor.cpp ../../src/MatterEndpoints/MatterRainSensor.cpp ../../src/MatterEndpoints/MatterWaterFreezeDetector.cpp ../../src/MatterEndpoints/MatterWaterLeakDetector.cpp ../../src/MatterEndpoints/MatterHumiditySensor.cpp ../../src/MatterEndpoints/MatterPressureSensor.cpp ../../src/MatterEndpoints/MatterOccupancySensor.cpp ../../src/MatterEndpoints/MatterFan.cpp ../../src/MatterEndpoints/MatterWindowCovering.cpp ../../src/MatterEndpoints/MatterThermostat.cpp ../../src/MatterEndpoints/MatterEnhancedColorLight.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 # Regression test for the final-review MINOR 1 fix: the Matter and Hearth

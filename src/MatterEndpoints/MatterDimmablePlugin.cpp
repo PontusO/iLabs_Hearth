@@ -6,7 +6,8 @@
 #include "MatterEndpoints/MatterDimmablePlugin.h"
 
 namespace {
-/* dimmable_plugin_unit (esp_matter_endpoint.h), chip::app::Clusters::OnOff::Id,
+/* dimmable_plug_in_unit (esp_matter_endpoint.h, the pinned esp-matter v1.5.1 name;
+ * 1.4.1 called it dimmable_plugin_unit), chip::app::Clusters::OnOff::Id,
  * OnOff::Attributes::OnOff::Id, chip::app::Clusters::LevelControl::Id and
  * LevelControl::Attributes::CurrentLevel::Id. Given as plain integers:
  * there is no connectedhomeip header on a host build to pull the named

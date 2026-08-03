@@ -96,6 +96,16 @@
  * precondition, exactly as it is for every other console print an example
  * makes; a sketch that has not called it yet loses the message the same way
  * a plain Serial.printf() would.
+ *
+ * The Serial.println() call is gated on ARDUINO, matching Hearth.cpp's own
+ * guard around its Serial.println() warnings: this header is unconditionally
+ * pulled in by every host test binary through Hearth.h, and test/host's
+ * ArduinoShim.h carries no Serial. Left unguarded, hearthLogE()'s body still
+ * has to type-check even when never called (it is not a template), so every
+ * one of test/host's binaries failed with "'Serial' was not declared in this
+ * scope" before this guard existed. On host, log_e() formats into the buffer
+ * and drops it: parity with the message never reaching a real Serial
+ * console, not a missing feature to add here.
  */
 #ifndef log_e
 #include <Arduino.h>
@@ -106,7 +116,11 @@ inline void hearthLogE(const char *format, ...) {
   va_start(args, format);
   vsnprintf(buf, sizeof(buf), format, args);
   va_end(args);
+#ifdef ARDUINO
   Serial.println(buf);
+#else
+  (void)buf;
+#endif
 }
 #define log_e(format, ...) hearthLogE(format, ##__VA_ARGS__)
 #endif

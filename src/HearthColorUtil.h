@@ -212,3 +212,12 @@ inline espRgbColor_t espCTToRgbColor(uint16_t ct) {
   espCtColor_t ctColor = { ct };
   return espCTColorToRgbColor(ctColor);
 }
+
+/* Undefine once the inline bodies above are parsed: a lowercase, function-like
+ * clamp macro leaking into every translation unit that includes this header
+ * (transitively, any sketch that includes Matter.h) shadows std::clamp and
+ * breaks any other clamp(a, b, c) call or identifier a sketch happens to
+ * have. Safe here: nothing below this line needs the macro, and everything
+ * above it has already been macro-expanded by the time the preprocessor
+ * reaches this #undef. */
+#undef clamp

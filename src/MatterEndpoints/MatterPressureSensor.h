@@ -19,6 +19,19 @@
  * plus little-endian byte order means the low 16 bits still read back correctly
  * through .val.i16, which is what an upstream sketch's own attributeChangeCB
  * override would read.
+ *
+ * DEVIATION FROM VERBATIM: three public members below are Hearth additions,
+ * not present in upstream's MatterPressureSensor.h public section.
+ * `onChange(PressureChangeCB)` (and the `_onChangeCB` member) has no
+ * upstream equivalent at all: upstream's class exposes no way for a sketch
+ * to learn about a controller-driven change. `setRawPressure()` is public
+ * here; upstream declares it protected. `getRawPressure()` does not exist
+ * upstream at all; it exists here only so hearthAttrTypeFor()'s doc comment
+ * has something concrete to point at. Naming is provisional pending a
+ * decision on whether to align it with a future upstream addition; see
+ * README's "Supported device types" section. Nothing existing is renamed.
+ * MatterHumiditySensor carries the identical pattern (onChange, a promoted
+ * setRaw*, and a new getRaw*), for the same reason.
  */
 #pragma once
 

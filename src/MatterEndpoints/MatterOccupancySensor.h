@@ -16,6 +16,17 @@
  * firmware (design spec section 3) and deferred: the methods exist for parity
  * but return false, with doc comments explaining why. Test asserts the false
  * return.
+ *
+ * DEVIATION FROM VERBATIM: `using OccupancyChangeCB = std::function<bool(bool)>`
+ * and `onChange(OccupancyChangeCB)` below (and the `_onChangeCB` protected
+ * member) are a Hearth addition, not present in upstream's
+ * MatterOccupancySensor.h public section. Upstream exposes
+ * onHoldTimeChange() for HoldTime but nothing for the Occupancy attribute
+ * itself; Hearth adds onChange() so a sketch can learn about a
+ * controller-driven occupancy change the same way every other sensor class
+ * in this library does. The name is provisional pending a decision on
+ * whether to align it with a future upstream addition; see README's
+ * "Supported device types" section. Nothing existing is renamed.
  */
 #pragma once
 

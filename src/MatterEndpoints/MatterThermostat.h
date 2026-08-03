@@ -51,6 +51,12 @@
  *    multi_mode_thermostat::create()). An invalid combination therefore
  *    consumes no registry slot / endpoint id, exactly as upstream consumes
  *    no C6 endpoint for the same rejected call.
+ *    Correction: upstream's actual FIRST gate is not the auto-mode check,
+ *    it is the already-created guard (getEndPointId() != 0). Hearth's
+ *    equivalent of that guard lives inside hearthDeclare() itself, called
+ *    second here, after the auto-mode check; the two checks are therefore
+ *    in the opposite order from upstream, even though both still land
+ *    before anything is created on the wire.
  * 2. setMode() and setRawTemperature() skip upstream's read-before-write
  *    via getAttributeVal(): on this stack that is a real AT+MTATTR round
  *    trip, and every sibling class relies on the cache equality check
