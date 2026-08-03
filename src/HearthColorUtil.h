@@ -35,32 +35,51 @@
  * family: reproduce only what the class this library ports actually calls.
  *
  * Ported: the two struct definitions (RgbColor_t/espRgbColor_t and
- * HsvColor_t/espHsvColor_t; XyColor_t and CtColor_t are NOT ported, nothing
- * in MatterEnhancedColorLight's API touches xy chromaticity or
- * color-temperature-to-RGB conversion) and the two conversion functions
- * MatterEnhancedColorLight.cpp actually calls: espHsvColorToRgbColor()
- * (from getColorRGB()) and espRgbColorToHsvColor() (from setColorRGB()).
- * The scalar-argument overloads (espHsvToRgbColor()/espRgbToHsvColor()) and
- * every XY/CT function and constant (espXYToRgbColor, espCTToRgbColor,
- * HSV_BLACK, RGB_WHITE, WARM_WHITE_COLOR_TEMPERATURE, ...) are not ported:
- * the class never calls them.
+ * HsvColor_t/espHsvColor_t; XyColor_t is NOT ported, nothing in
+ * MatterEnhancedColorLight's API or any shipped example touches xy
+ * chromaticity) and the three conversion functions actually called: the
+ * class's own espHsvColorToRgbColor() (from getColorRGB()) and
+ * espRgbColorToHsvColor() (from setColorRGB()), plus espCTToRgbColor() (and
+ * the espCtColor_t struct and espCTColorToRgbColor() it delegates to),
+ * needed not by the class itself but by the upstream
+ * `examples/MatterEnhancedColorLight` sketch's own temperature simulation
+ * (`espRgbColorToHsvColor(espCTToRgbColor(colorTemperature))`), found the
+ * same way `Preferences` and `BOOT_PIN` were: the devtype expansion's
+ * `arduino-cli` compile pass over that example failed on
+ * `'espCTToRgbColor' was not declared in this scope`. The scalar-argument
+ * overloads (espHsvToRgbColor()/espRgbToHsvColor()), espXYToRgbColor() and
+ * its xy-space siblings, and every named color/temperature constant
+ * (HSV_BLACK, RGB_WHITE, WARM_WHITE_COLOR_TEMPERATURE, ...) are still not
+ * ported: neither the class nor any of the sixteen shipped examples calls
+ * them.
  *
  * Names and signatures match upstream exactly, including HsvColor_t's h
  * field being a uint16_t despite CurrentHue being a wire uint8: that is
  * upstream's own struct, transcribed as-is, not narrowed. The function
  * bodies are transcribed as-is too, so the arithmetic (and any of its
- * edge-case behaviour, such as a case/default fallthrough for region 5, or
- * assigning a possibly-negative int expression into hsv.h) matches
- * upstream bit for bit; this is a port, not a rewrite.
+ * edge-case behaviour, such as a case/default fallthrough for region 5, an
+ * assigning a possibly-negative int expression into hsv.h, or
+ * espCTColorToRgbColor()'s Tanner Helland approximation with its own
+ * documented seams at centiKelvin 66 and 19) matches upstream bit for bit;
+ * this is a port, not a rewrite.
  *
  * Kept as inline functions in this header, matching HearthCompat.h's own
  * esp_matter_bool()/esp_matter_uint8()/etc. pattern, so no new .cpp (and no
- * new test/host/Makefile compilation unit) is needed for it.
+ * new test/host/Makefile compilation unit) is needed for it. <math.h>'s
+ * pow()/log() (espCTColorToRgbColor() only) are the one new dependency this
+ * adds over the two original conversions.
  */
 
 #pragma once
 
+#include <math.h>
 #include <stdint.h>
+
+/* Substitute for std::clamp, available from C++17 onwards; upstream's own
+ * ColorFormat.c defines this same macro under this same name. */
+#ifndef clamp
+#define clamp(a, min, max) ((a) < (min) ? (min) : ((a) > (max) ? (max) : (a)))
+#endif
 
 struct RgbColor_t {
   uint8_t r;
@@ -74,8 +93,13 @@ struct HsvColor_t {
   uint8_t v;
 };
 
+struct CtColor_t {
+  uint16_t ctMireds;
+};
+
 typedef struct RgbColor_t espRgbColor_t;
 typedef struct HsvColor_t espHsvColor_t;
+typedef struct CtColor_t espCtColor_t;
 
 inline espRgbColor_t espHsvColorToRgbColor(espHsvColor_t hsv) {
   espRgbColor_t rgb;
@@ -135,4 +159,56 @@ inline espHsvColor_t espRgbColorToHsvColor(espRgbColor_t rgb) {
     hsv.h = 171 + 43 * (rgb.r - rgb.g) / (rgbMax - rgbMin);
   }
   return hsv;
+}
+
+/* Transcribed as-is from upstream's ColorFormat.c; see this file's own
+ * header comment for why it is here (an example, not the class, needs it)
+ * and for the Tanner Helland credit upstream itself carries. */
+inline espRgbColor_t espCTColorToRgbColor(espCtColor_t ct) {
+  espRgbColor_t rgb = { 0, 0, 0 };
+  float r, g, b;
+
+  if (ct.ctMireds == 0) {
+    return rgb;
+  }
+  /* Algorithm credits to Tanner Helland:
+   * https://tannerhelland.com/2012/09/18/convert-temperature-rgb-algorithm-code.html */
+
+  /* Convert Mireds to centiKelvins. k = 1,000,000/mired */
+  float ctCentiKelvin = 10000 / ct.ctMireds;
+
+  /* Red */
+  if (ctCentiKelvin <= 66) {
+    r = 255;
+  } else {
+    r = 329.698727446f * pow(ctCentiKelvin - 60, -0.1332047592f);
+  }
+
+  /* Green */
+  if (ctCentiKelvin <= 66) {
+    g = 99.4708025861f * log(ctCentiKelvin) - 161.1195681661f;
+  } else {
+    g = 288.1221695283f * pow(ctCentiKelvin - 60, -0.0755148492f);
+  }
+
+  /* Blue */
+  if (ctCentiKelvin >= 66) {
+    b = 255;
+  } else {
+    if (ctCentiKelvin <= 19) {
+      b = 0;
+    } else {
+      b = 138.5177312231 * log(ctCentiKelvin - 10) - 305.0447927307;
+    }
+  }
+  rgb.r = (uint8_t)clamp(r, 0, 255);
+  rgb.g = (uint8_t)clamp(g, 0, 255);
+  rgb.b = (uint8_t)clamp(b, 0, 255);
+
+  return rgb;
+}
+
+inline espRgbColor_t espCTToRgbColor(uint16_t ct) {
+  espCtColor_t ctColor = { ct };
+  return espCTColorToRgbColor(ctColor);
 }
