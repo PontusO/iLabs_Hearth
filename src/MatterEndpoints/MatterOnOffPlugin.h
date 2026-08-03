@@ -1,5 +1,5 @@
 /*
- * MatterOnOffPlugin.h - the third concrete Hearth endpoint type.
+ * MatterOnOffPlugin.h - the fifth concrete Hearth endpoint type.
  *
  * Mirrors arduino-esp32's Matter library MatterOnOffPlugin (see
  * ~/.arduino15/packages/esp32/hardware/esp32/3.3.8/libraries/Matter/src/MatterEndpoints/MatterOnOffPlugin.h):

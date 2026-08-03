@@ -1,5 +1,5 @@
 /*
- * MatterDimmablePlugin.h - the fourth concrete Hearth endpoint type.
+ * MatterDimmablePlugin.h - the sixth concrete Hearth endpoint type.
  *
  * Mirrors arduino-esp32's Matter library MatterDimmablePlugin (see
  * ~/.arduino15/packages/esp32/hardware/esp32/3.3.8/libraries/Matter/src/MatterEndpoints/MatterDimmablePlugin.h):

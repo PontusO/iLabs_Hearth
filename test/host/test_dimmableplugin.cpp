@@ -161,6 +161,26 @@ public:
   }
 };
 
+static void test_rebegin_after_reconcile_does_not_desync_the_cache(void) {
+  MockStream s; MatterDimmablePlugin plugin;
+  bringUp(s, plugin, true, 128);
+
+  check("a second begin() after Matter.begin() is refused", !plugin.begin(false, 64));
+  check("and reports the composition-rejected code", Hearth.lastError() == 10);
+  check("the cached on/off state was not overwritten", plugin.getOnOff() == true);
+  check("the cached level was not overwritten", plugin.getLevel() == 128);
+  check("the refused begin() issued no AT traffic", s.scriptDrained());
+
+  s.expect("AT+MTATTR=1,6,0,0,1", "+MTATTR:1,6,0,0\r\nOK\r\n");
+  check("so the next setOnOff(false) really does turn the plugin off", plugin.setOnOff(false));
+  check("and the write happened", s.scriptDrained());
+
+  s.expect("AT+MTATTR=1,8,0,64,1", "+MTATTR:1,8,0,64\r\nOK\r\n");
+  check("and setLevel changes the level", plugin.setLevel(64));
+  check("and that write happened", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 static void test_controller_change_delivers_typed_onoff_and_level(void) {
   MockStream s; TypeCheckingPlugin plugin;
   bringUp(s, plugin, false, 64);
@@ -188,6 +208,7 @@ int main(void) {
   test_controller_change_level_fires_callback();
   test_failed_onoff_write_returns_false();
   test_failed_level_write_returns_false();
+  test_rebegin_after_reconcile_does_not_desync_the_cache();
   test_controller_change_delivers_typed_onoff_and_level();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
