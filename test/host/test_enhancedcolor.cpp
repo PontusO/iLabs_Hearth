@@ -279,6 +279,69 @@ static void test_color_hsv_from_controller(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
+/*
+ * Bench smoke (real chip-tool MoveToHueAndSaturation against hardware)
+ * found CurrentSaturation alone never updating the cache/callback, with
+ * hue on the exact same command working. Sibling check: a saturation URC
+ * with NO accompanying hue URC in the loop.
+ */
+static void test_saturation_only_from_controller(void) {
+  MockStream s; MatterEnhancedColorLight light;
+  bringUp(s, light);  /* default HSV is (21,216,25) */
+  int seen = 0; espHsvColor_t seenHsv = { 0, 0, 0 };
+  light.onChangeColorHSV([&](espHsvColor_t v) { seen++; seenHsv = v; return true; });
+  s.injectURC("+MTATTR:1,768,1,210");  /* CurrentSaturation alone, the bench's own value */
+  Hearth.poll();
+  check("onChangeColorHSV fired for a saturation-only URC", seen == 1);
+  check("callback carried the new saturation, hue/value unchanged", seenHsv.h == 21 && seenHsv.s == 210 && seenHsv.v == 25);
+  check("cached saturation updated", light.getColorHSV().s == 210);
+  check("cached hue untouched", light.getColorHSV().h == 21);
+  check("no echo", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/* Sibling check, the other direction: a hue URC with no accompanying
+ * saturation URC. */
+static void test_hue_only_from_controller(void) {
+  MockStream s; MatterEnhancedColorLight light;
+  bringUp(s, light);
+  int seen = 0; espHsvColor_t seenHsv = { 0, 0, 0 };
+  light.onChangeColorHSV([&](espHsvColor_t v) { seen++; seenHsv = v; return true; });
+  s.injectURC("+MTATTR:1,768,0,100");  /* CurrentHue alone */
+  Hearth.poll();
+  check("onChangeColorHSV fired for a hue-only URC", seen == 1);
+  check("callback carried the new hue, saturation/value unchanged", seenHsv.h == 100 && seenHsv.s == 216 && seenHsv.v == 25);
+  check("cached hue updated", light.getColorHSV().h == 100);
+  check("cached saturation untouched", light.getColorHSV().s == 216);
+  check("no echo", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/*
+ * The exact shape a real MoveToHueAndSaturation command produces: TWO
+ * +MTATTR lines land in the same read burst (both injected before a
+ * single poll(), unlike test_color_hsv_from_controller()'s
+ * poll-between-each pattern), because the C6 raises hue's and
+ * saturation's POST_UPDATE URCs back to back for one Matter command, and
+ * HearthLink::poll() drains every buffered line in one call (the for(;;)
+ * loop in HearthLink.cpp), not just the first.
+ */
+static void test_move_to_hue_and_saturation_two_urcs_in_one_poll(void) {
+  MockStream s; MatterEnhancedColorLight light;
+  bringUp(s, light);  /* default HSV is (21,216,25) */
+  int seen = 0; espHsvColor_t seenHsv = { 0, 0, 0 };
+  light.onChangeColorHSV([&](espHsvColor_t v) { seen++; seenHsv = v; return true; });
+  s.injectURC("+MTATTR:1,768,0,90");   /* CurrentHue */
+  s.injectURC("+MTATTR:1,768,1,210");  /* CurrentSaturation, both queued before poll() runs */
+  Hearth.poll();
+  check("onChangeColorHSV fired twice, once per attribute", seen == 2);
+  check("the second (saturation) callback carried both new values", seenHsv.h == 90 && seenHsv.s == 210);
+  check("cached hue updated", light.getColorHSV().h == 90);
+  check("cached saturation updated", light.getColorHSV().s == 210);
+  check("no echo", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 static void test_color_temperature_from_controller(void) {
   MockStream s; MatterEnhancedColorLight light;
   bringUp(s, light);
@@ -368,6 +431,9 @@ int main(void) {
   test_controller_onoff_change_fires_callback();
   test_brightness_from_controller();
   test_color_hsv_from_controller();
+  test_saturation_only_from_controller();
+  test_hue_only_from_controller();
+  test_move_to_hue_and_saturation_two_urcs_in_one_poll();
   test_color_temperature_from_controller();
   test_controller_change_delivers_typed_values();
   test_rebegin_after_reconcile_does_not_desync_the_cache();
