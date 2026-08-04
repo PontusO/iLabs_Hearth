@@ -75,6 +75,56 @@
 #define BOOT_PIN HEARTH_BOOTSEL_PIN
 #endif
 
+/*
+ * log_e(): the `esp32` core's `esp32-hal-log.h` gives every sketch this
+ * printf-style error-logging macro (and its log_w/log_i/log_d/log_v
+ * siblings), and `arduino-pico` has no equivalent at all. Found the same way
+ * `Preferences` and `BOOT_PIN` were (see the README's "Compiling them
+ * against arduino-pico" section): the devtype expansion's `arduino-cli`
+ * compile pass over `examples/MatterThermostat` failed on
+ * `'log_e' was not declared in this scope`, an unmodified upstream example
+ * calling a macro this platform never had a reason to define before.
+ *
+ * Only log_e is reproduced, not the full log_w/log_i/log_d/log_v family:
+ * a survey of the thirteen examples this task added found log_e as the only
+ * one any of them calls (`MatterThermostat.ino`'s default case in its
+ * mode-name switch). Upstream's own macro is far more elaborate
+ * (component/task/line tagging, `ARDUHAL_LOG_COLORS`, a choice of three
+ * backends selected by `CORE_DEBUG_LEVEL`); this reproduces only its
+ * observable behaviour an example can depend on, printf-formatted output on
+ * the console `Serial`, not its exact wire format. `Serial.begin()` is a
+ * precondition, exactly as it is for every other console print an example
+ * makes; a sketch that has not called it yet loses the message the same way
+ * a plain Serial.printf() would.
+ *
+ * The Serial.println() call is gated on ARDUINO, matching Hearth.cpp's own
+ * guard around its Serial.println() warnings: this header is unconditionally
+ * pulled in by every host test binary through Hearth.h, and test/host's
+ * ArduinoShim.h carries no Serial. Left unguarded, hearthLogE()'s body still
+ * has to type-check even when never called (it is not a template), so every
+ * one of test/host's binaries failed with "'Serial' was not declared in this
+ * scope" before this guard existed. On host, log_e() formats into the buffer
+ * and drops it: parity with the message never reaching a real Serial
+ * console, not a missing feature to add here.
+ */
+#ifndef log_e
+#include <Arduino.h>
+#include <stdarg.h>
+inline void hearthLogE(const char *format, ...) {
+  char buf[160];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+#ifdef ARDUINO
+  Serial.println(buf);
+#else
+  (void)buf;
+#endif
+}
+#define log_e(format, ...) hearthLogE(format, ##__VA_ARGS__)
+#endif
+
 typedef enum {
   ESP_MATTER_VAL_TYPE_INVALID = 0,
   ESP_MATTER_VAL_TYPE_BOOLEAN,

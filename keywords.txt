@@ -25,6 +25,21 @@ MatterDimmableLight	KEYWORD1
 MatterColorTemperatureLight	KEYWORD1
 MatterTemperatureSensor	KEYWORD1
 
+# The thirteen device types added in the devtype expansion (Tasks L1-L5).
+MatterOnOffPlugin	KEYWORD1
+MatterDimmablePlugin	KEYWORD1
+MatterContactSensor	KEYWORD1
+MatterRainSensor	KEYWORD1
+MatterWaterFreezeDetector	KEYWORD1
+MatterWaterLeakDetector	KEYWORD1
+MatterHumiditySensor	KEYWORD1
+MatterPressureSensor	KEYWORD1
+MatterOccupancySensor	KEYWORD1
+MatterFan	KEYWORD1
+MatterWindowCovering	KEYWORD1
+MatterThermostat	KEYWORD1
+MatterEnhancedColorLight	KEYWORD1
+
 # Event and callback types.
 hearthEvent_t	KEYWORD1
 hearthEventCB	KEYWORD1
@@ -38,11 +53,47 @@ EndPointTemperatureCB	KEYWORD1
 EndPointIdentifyCB	KEYWORD1
 LineCb	KEYWORD1
 
+# Callback typedefs the thirteen new device types add.
+HoldTimeChangeCB	KEYWORD1
+OccupancyChangeCB	KEYWORD1
+HumidityChangeCB	KEYWORD1
+PressureChangeCB	KEYWORD1
+EndPointModeCB	KEYWORD1
+EndPointSpeedCB	KEYWORD1
+EndPointLevelCB	KEYWORD1
+EndPointCoolingSetpointCB	KEYWORD1
+EndPointHeatingSetpointCB	KEYWORD1
+EndPointOpenCB	KEYWORD1
+EndPointCloseCB	KEYWORD1
+EndPointLiftCB	KEYWORD1
+EndPointTiltCB	KEYWORD1
+EndPointStopCB	KEYWORD1
+EndPointRGBColorCB	KEYWORD1
+
+# Enum types the thirteen new device types add.
+OccupancySensorType_t	KEYWORD1
+FanMode_t	KEYWORD1
+FanModeSequence_t	KEYWORD1
+WindowCoveringType_t	KEYWORD1
+OperationalState_t	KEYWORD1
+OperationalStatusField_t	KEYWORD1
+ControlSequenceOfOperation_t	KEYWORD1
+ThermostatMode_t	KEYWORD1
+ThermostatAutoMode_t	KEYWORD1
+
 # The esp_matter attribute-value shim (HearthCompat.h). Public because
 # getAttributeVal/setAttributeVal/updateAttributeVal and attributeChangeCB
 # all carry it.
 esp_matter_val_type_t	KEYWORD1
 esp_matter_attr_val_t	KEYWORD1
+
+# The RGB<->HSV color types (HearthColorUtil.h), public because
+# MatterEnhancedColorLight's setColorRGB/getColorRGB/setColorHSV/getColorHSV
+# carry them. espCtColor_t is used only by examples/MatterEnhancedColorLight
+# itself, not by the class; see HearthColorUtil.h's header comment.
+espHsvColor_t	KEYWORD1
+espRgbColor_t	KEYWORD1
+espCtColor_t	KEYWORD1
 
 # The Preferences compatibility shim (Preferences.h), supplying an API
 # arduino-pico has no equivalent of. Upstream names, kept because they are
@@ -138,6 +189,112 @@ onChangeBrightness	KEYWORD2
 onChangeColorTemperature	KEYWORD2
 updateAccessory	KEYWORD2
 
+# The thirteen device types added in the devtype expansion (Tasks L1-L5):
+# MatterOnOffPlugin, MatterDimmablePlugin, MatterContactSensor,
+# MatterRainSensor, MatterWaterFreezeDetector, MatterWaterLeakDetector,
+# MatterHumiditySensor, MatterPressureSensor, MatterOccupancySensor,
+# MatterFan, MatterWindowCovering, MatterThermostat,
+# MatterEnhancedColorLight. Names already listed above (setOnOff, toggle,
+# onChange, updateAccessory, ...) are not repeated here.
+setLevel	KEYWORD2
+getLevel	KEYWORD2
+onChangeLevel	KEYWORD2
+setContact	KEYWORD2
+getContact	KEYWORD2
+setRain	KEYWORD2
+getRain	KEYWORD2
+setFreeze	KEYWORD2
+getFreeze	KEYWORD2
+setLeak	KEYWORD2
+getLeak	KEYWORD2
+setHumidity	KEYWORD2
+getHumidity	KEYWORD2
+setRawHumidity	KEYWORD2
+getRawHumidity	KEYWORD2
+setPressure	KEYWORD2
+getPressure	KEYWORD2
+setRawPressure	KEYWORD2
+getRawPressure	KEYWORD2
+setOccupancy	KEYWORD2
+getOccupancy	KEYWORD2
+setHoldTime	KEYWORD2
+getHoldTime	KEYWORD2
+setHoldTimeLimits	KEYWORD2
+onHoldTimeChange	KEYWORD2
+getFanModeString	KEYWORD2
+setSpeedPercent	KEYWORD2
+getSpeedPercent	KEYWORD2
+setMode	KEYWORD2
+getMode	KEYWORD2
+onChangeMode	KEYWORD2
+onChangeSpeedPercent	KEYWORD2
+setLiftPosition	KEYWORD2
+getLiftPosition	KEYWORD2
+setLiftPercentage	KEYWORD2
+getLiftPercentage	KEYWORD2
+setTargetLiftPercent100ths	KEYWORD2
+getTargetLiftPercent100ths	KEYWORD2
+setInstalledOpenLimitLift	KEYWORD2
+getInstalledOpenLimitLift	KEYWORD2
+setInstalledClosedLimitLift	KEYWORD2
+getInstalledClosedLimitLift	KEYWORD2
+setTiltPosition	KEYWORD2
+getTiltPosition	KEYWORD2
+setTiltPercentage	KEYWORD2
+getTiltPercentage	KEYWORD2
+setTargetTiltPercent100ths	KEYWORD2
+getTargetTiltPercent100ths	KEYWORD2
+setInstalledOpenLimitTilt	KEYWORD2
+getInstalledOpenLimitTilt	KEYWORD2
+setInstalledClosedLimitTilt	KEYWORD2
+getInstalledClosedLimitTilt	KEYWORD2
+setCoveringType	KEYWORD2
+getCoveringType	KEYWORD2
+setOperationalStatus	KEYWORD2
+getOperationalStatus	KEYWORD2
+setOperationalState	KEYWORD2
+getOperationalState	KEYWORD2
+onOpen	KEYWORD2
+onClose	KEYWORD2
+onGoToLiftPercentage	KEYWORD2
+onGoToTiltPercentage	KEYWORD2
+onStop	KEYWORD2
+getThermostatModeString	KEYWORD2
+getControlSequence	KEYWORD2
+getMinHeatSetpoint	KEYWORD2
+getMaxHeatSetpoint	KEYWORD2
+getMinCoolSetpoint	KEYWORD2
+getMaxCoolSetpoint	KEYWORD2
+getDeadBand	KEYWORD2
+setCoolingHeatingSetpoints	KEYWORD2
+setHeatingSetpoint	KEYWORD2
+getHeatingSetpoint	KEYWORD2
+setCoolingSetpoint	KEYWORD2
+getCoolingSetpoint	KEYWORD2
+setLocalTemperature	KEYWORD2
+getLocalTemperature	KEYWORD2
+onChangeLocalTemperature	KEYWORD2
+onChangeCoolingSetpoint	KEYWORD2
+onChangeHeatingSetpoint	KEYWORD2
+setColorRGB	KEYWORD2
+getColorRGB	KEYWORD2
+setColorHSV	KEYWORD2
+getColorHSV	KEYWORD2
+onChangeColorHSV	KEYWORD2
+
+# HearthColorUtil.h conversions, called out from MatterEnhancedColorLight's
+# getColorRGB()/setColorRGB(), and from examples/MatterEnhancedColorLight's
+# own temperature simulation (espCTToRgbColor/espCTColorToRgbColor).
+espHsvColorToRgbColor	KEYWORD2
+espRgbColorToHsvColor	KEYWORD2
+espCTToRgbColor	KEYWORD2
+espCTColorToRgbColor	KEYWORD2
+
+# HearthCompat.h's log_e(), the esp32 core's printf-style error logger,
+# reproduced because examples/MatterThermostat calls it. See HearthCompat.h's
+# header comment.
+log_e	KEYWORD2
+
 #######################################
 # Constants (LITERAL1)
 #######################################
@@ -198,6 +355,84 @@ ATTR_UPDATE	LITERAL1
 MAX_BRIGHTNESS	LITERAL1
 MAX_COLOR_TEMPERATURE	LITERAL1
 MIN_COLOR_TEMPERATURE	LITERAL1
+MAX_LEVEL	LITERAL1
+MAX_SPEED	LITERAL1
+MIN_SPEED	LITERAL1
+OFF_SPEED	LITERAL1
+
+# OccupancySensorType_t (MatterOccupancySensor.h), upstream's own
+# enumerators.
+OCCUPANCY_SENSOR_TYPE_PIR	LITERAL1
+OCCUPANCY_SENSOR_TYPE_ULTRASONIC	LITERAL1
+OCCUPANCY_SENSOR_TYPE_PIR_AND_ULTRASONIC	LITERAL1
+OCCUPANCY_SENSOR_TYPE_PHYSICAL_CONTACT	LITERAL1
+
+# FanMode_t (MatterFan.h), upstream's own enumerators.
+FAN_MODE_OFF	LITERAL1
+FAN_MODE_LOW	LITERAL1
+FAN_MODE_MEDIUM	LITERAL1
+FAN_MODE_HIGH	LITERAL1
+FAN_MODE_ON	LITERAL1
+FAN_MODE_AUTO	LITERAL1
+FAN_MODE_SMART	LITERAL1
+
+# FanModeSequence_t (MatterFan.h), upstream's own enumerators.
+FAN_MODE_SEQ_OFF_LOW_MED_HIGH	LITERAL1
+FAN_MODE_SEQ_OFF_LOW_HIGH	LITERAL1
+FAN_MODE_SEQ_OFF_LOW_MED_HIGH_AUTO	LITERAL1
+FAN_MODE_SEQ_OFF_LOW_HIGH_AUTO	LITERAL1
+FAN_MODE_SEQ_OFF_HIGH_AUTO	LITERAL1
+FAN_MODE_SEQ_OFF_HIGH	LITERAL1
+
+# WindowCoveringType_t (MatterWindowCovering.h), upstream's own
+# enumerators.
+ROLLERSHADE	LITERAL1
+ROLLERSHADE_2_MOTOR	LITERAL1
+ROLLERSHADE_EXTERIOR	LITERAL1
+ROLLERSHADE_EXTERIOR_2_MOTOR	LITERAL1
+DRAPERY	LITERAL1
+AWNING	LITERAL1
+SHUTTER	LITERAL1
+BLIND_TILT_ONLY	LITERAL1
+BLIND_LIFT_AND_TILT	LITERAL1
+PROJECTOR_SCREEN	LITERAL1
+
+# OperationalState_t (MatterWindowCovering.h), upstream's own enumerators.
+STALL	LITERAL1
+MOVING_UP_OR_OPEN	LITERAL1
+MOVING_DOWN_OR_CLOSE	LITERAL1
+
+# OperationalStatusField_t (MatterWindowCovering.h), upstream's own
+# enumerators.
+GLOBAL	LITERAL1
+LIFT	LITERAL1
+TILT	LITERAL1
+
+# ControlSequenceOfOperation_t (MatterThermostat.h), upstream's own
+# enumerators.
+THERMOSTAT_SEQ_OP_COOLING	LITERAL1
+THERMOSTAT_SEQ_OP_COOLING_REHEAT	LITERAL1
+THERMOSTAT_SEQ_OP_HEATING	LITERAL1
+THERMOSTAT_SEQ_OP_HEATING_REHEAT	LITERAL1
+THERMOSTAT_SEQ_OP_COOLING_HEATING	LITERAL1
+THERMOSTAT_SEQ_OP_COOLING_HEATING_REHEAT	LITERAL1
+
+# ThermostatMode_t (MatterThermostat.h), upstream's own enumerators. Note
+# the gap: THERMOSTAT_MODE_COOL is 3, not 2 (see MatterThermostat.h's
+# header comment).
+THERMOSTAT_MODE_OFF	LITERAL1
+THERMOSTAT_MODE_AUTO	LITERAL1
+THERMOSTAT_MODE_COOL	LITERAL1
+THERMOSTAT_MODE_HEAT	LITERAL1
+THERMOSTAT_MODE_EMERGENCY_HEAT	LITERAL1
+THERMOSTAT_MODE_PRECOOLING	LITERAL1
+THERMOSTAT_MODE_FAN_ONLY	LITERAL1
+THERMOSTAT_MODE_DRY	LITERAL1
+THERMOSTAT_MODE_SLEEP	LITERAL1
+
+# ThermostatAutoMode_t (MatterThermostat.h), upstream's own enumerators.
+THERMOSTAT_AUTO_MODE_DISABLED	LITERAL1
+THERMOSTAT_AUTO_MODE_ENABLED	LITERAL1
 
 # esp_matter_val_type_t (HearthCompat.h).
 ESP_MATTER_VAL_TYPE_INVALID	LITERAL1

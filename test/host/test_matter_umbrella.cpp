@@ -38,6 +38,28 @@ MatterDimmableLight umbrellaDimmable;
 MatterColorTemperatureLight umbrellaColorTemp;
 MatterTemperatureSensor umbrellaTempSensor;
 
+/*
+ * The remaining thirteen device types Hearth.h's own include list carries
+ * (the devtype expansion, Tasks L1-L6): declared here too, file-scope, so
+ * dropping any one of them from Hearth.h's include list fails this host
+ * build, not only a slower arduino-cli compile pass against real examples.
+ * Compile-time guard only: these are not brought up or exercised, unlike
+ * the four above, which also prove the AT+MTATTR path resolves and links.
+ */
+MatterOnOffPlugin umbrellaOnOffPlugin;
+MatterDimmablePlugin umbrellaDimmablePlugin;
+MatterContactSensor umbrellaContactSensor;
+MatterRainSensor umbrellaRainSensor;
+MatterWaterFreezeDetector umbrellaWaterFreezeDetector;
+MatterWaterLeakDetector umbrellaWaterLeakDetector;
+MatterHumiditySensor umbrellaHumiditySensor;
+MatterPressureSensor umbrellaPressureSensor;
+MatterOccupancySensor umbrellaOccupancySensor;
+MatterFan umbrellaFan;
+MatterWindowCovering umbrellaWindowCovering;
+MatterThermostat umbrellaThermostat;
+MatterEnhancedColorLight umbrellaEnhancedColorLight;
+
 static int g_pass = 0, g_fail = 0;
 static void check(const char *name, bool cond) {
   printf("  [%s] %s\n", cond ? "PASS" : "FAIL", name);

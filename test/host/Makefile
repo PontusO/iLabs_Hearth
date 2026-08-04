@@ -4,7 +4,7 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_colortemp_sensor test_matter_umbrella test_no_global_instances test_preferences test_transport
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor
 
 all: $(TESTS)
 
@@ -33,15 +33,29 @@ test_onofflight: test_onofflight.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp
 test_dimmable: test_dimmable.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
+test_onoffplugin: test_onoffplugin.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffPlugin.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_dimmableplugin: test_dimmableplugin.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterDimmablePlugin.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
 test_colortemp_sensor: test_colortemp_sensor.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_boolsensors: test_boolsensors.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterContactSensor.cpp ../../src/MatterEndpoints/MatterRainSensor.cpp ../../src/MatterEndpoints/MatterWaterFreezeDetector.cpp ../../src/MatterEndpoints/MatterWaterLeakDetector.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_measuresensors: test_measuresensors.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterHumiditySensor.cpp ../../src/MatterEndpoints/MatterPressureSensor.cpp ../../src/MatterEndpoints/MatterOccupancySensor.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 # Regression test for the Task 9 fix round: a translation unit whose only
 # iLabs Hearth include is "Matter.h", exactly what an unmodified upstream
-# sketch includes, must be enough to declare all four implemented device
-# types at file scope. Needs every endpoint .cpp linked in, since it
-# exercises all four.
-test_matter_umbrella: test_matter_umbrella.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp
+# sketch includes, must be enough to declare a device object at file scope.
+# Needs every endpoint .cpp linked in: the original four are brought up and
+# exercised over AT+MTATTR, the devtype expansion's other thirteen (final-
+# review finding M1) are declared file-scope only, a compile/link guard
+# against a dropped umbrella include.
+test_matter_umbrella: test_matter_umbrella.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp ../../src/MatterEndpoints/MatterOnOffPlugin.cpp ../../src/MatterEndpoints/MatterDimmablePlugin.cpp ../../src/MatterEndpoints/MatterContactSensor.cpp ../../src/MatterEndpoints/MatterRainSensor.cpp ../../src/MatterEndpoints/MatterWaterFreezeDetector.cpp ../../src/MatterEndpoints/MatterWaterLeakDetector.cpp ../../src/MatterEndpoints/MatterHumiditySensor.cpp ../../src/MatterEndpoints/MatterPressureSensor.cpp ../../src/MatterEndpoints/MatterOccupancySensor.cpp ../../src/MatterEndpoints/MatterFan.cpp ../../src/MatterEndpoints/MatterWindowCovering.cpp ../../src/MatterEndpoints/MatterThermostat.cpp ../../src/MatterEndpoints/MatterEnhancedColorLight.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 # Regression test for the final-review MINOR 1 fix: the Matter and Hearth
@@ -56,7 +70,7 @@ test_matter_umbrella: test_matter_umbrella.cpp ArduinoShim.cpp $(SRC) ../../src/
 # own translation units are compiled with it too, and those are the ones that
 # used not to build. Defining it in the test TU alone compiled the library
 # normally and linked the result, which could never see the failure.
-test_no_global_instances: test_no_global_instances.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp
+test_no_global_instances: test_no_global_instances.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp ../../src/MatterEndpoints/MatterContactSensor.cpp ../../src/MatterEndpoints/MatterRainSensor.cpp ../../src/MatterEndpoints/MatterWaterFreezeDetector.cpp ../../src/MatterEndpoints/MatterWaterLeakDetector.cpp ../../src/MatterEndpoints/MatterHumiditySensor.cpp ../../src/MatterEndpoints/MatterPressureSensor.cpp ../../src/MatterEndpoints/MatterOccupancySensor.cpp
 	$(CXX) $(CXXFLAGS) -DNO_GLOBAL_INSTANCES -o $@ $^
 
 # The Preferences shim. PrefsStoreFake.cpp replaces PreferencesEEPROM.cpp,
@@ -68,6 +82,18 @@ test_preferences: test_preferences.cpp ArduinoShim.cpp PrefsStoreFake.cpp ../../
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 test_transport: test_transport.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_fan: test_fan.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterFan.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_windowcovering: test_windowcovering.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterWindowCovering.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_thermostat: test_thermostat.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterThermostat.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_enhancedcolor: test_enhancedcolor.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterEnhancedColorLight.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all

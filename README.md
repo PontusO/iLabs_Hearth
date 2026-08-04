@@ -267,7 +267,9 @@ Two smaller differences in the same area, for completeness:
 
 ## Supported device types
 
-Four of arduino-esp32's twenty `Matter*` endpoint classes exist today:
+Seventeen of arduino-esp32's twenty `Matter*` endpoint classes exist today,
+matching the firmware's own device type table (`iLabs_AT_Hearth`'s
+`docs/AT_MT_SPEC.md`, "Supported device types"):
 
 | Class | Device type ID |
 |---|---|
@@ -275,26 +277,95 @@ Four of arduino-esp32's twenty `Matter*` endpoint classes exist today:
 | `MatterDimmableLight` | `0x0101` |
 | `MatterColorTemperatureLight` | `0x010C` |
 | `MatterTemperatureSensor` | `0x0302` |
+| `MatterOnOffPlugin` | `0x010A` |
+| `MatterDimmablePlugin` | `0x010B` |
+| `MatterContactSensor` | `0x0015` |
+| `MatterOccupancySensor` | `0x0107` |
+| `MatterHumiditySensor` | `0x0307` |
+| `MatterPressureSensor` | `0x0305` |
+| `MatterRainSensor` | `0x0044` |
+| `MatterWaterFreezeDetector` | `0x0041` |
+| `MatterWaterLeakDetector` | `0x0043` |
+| `MatterFan` | `0x002B` |
+| `MatterWindowCovering` | `0x0202` |
+| `MatterThermostat` | `0x0301` |
+| `MatterEnhancedColorLight` | `0x010D` |
 
-The remaining sixteen (`MatterColorLight`, `MatterFan`, `MatterThermostat`,
-`MatterWindowCovering`, the various sensor and plug classes, and so on) are
-not implemented. Declaring one of them in a sketch fails to link, the same
+Declaring an unimplemented device type in a sketch fails to link, the same
 as any other undefined symbol.
+
+Seven of these classes carry a documented Hearth-side addition beyond
+upstream's own public API: `MatterContactSensor`, `MatterRainSensor`,
+`MatterWaterFreezeDetector` and `MatterWaterLeakDetector` each add
+`onChange(EndPointCB)`; `MatterHumiditySensor` and `MatterPressureSensor`
+each add `onChange(...ChangeCB)` plus a public `getRaw*()`/`setRaw*()` pair
+(`setRaw*` is protected upstream, `getRaw*` does not exist upstream at
+all); `MatterOccupancySensor` adds `onChange(OccupancyChangeCB)`. All seven
+exist because upstream's own class gives a sketch no way to learn about a
+controller-driven change on that attribute. Naming (`onChange`, `EndPointCB`,
+the `ChangeCB` typedefs) is provisional pending a decision on whether to
+align it with a future upstream addition; see each class's header comment
+for the exact members added. Nothing upstream is renamed.
+
+### Parked
+
+Three of arduino-esp32's twenty classes remain out of scope, each for a
+different, specific reason rather than "not gotten to yet":
+
+- **`MatterGenericSwitch`** needs an AT event surface this protocol does not
+  have. A switch reports its actions (single press, multi-press, long
+  press) as CHIP events, not attribute changes, and `AT+MTEVT` has no frame
+  for that shape today. Adding it is a protocol design task, not a
+  mechanical port.
+- **`MatterTemperatureControlledCabinet`** needs `AT+MTATTRX`, the
+  firmware's command for opaque (non-integer, non-boolean) attribute
+  types. It is specified but unimplemented; see "Limitations" below.
+- **`MatterColorLight`** has no firmware device type to declare against at
+  all: the device type table above is exhaustive, and a base RGB color
+  light without color temperature is not in it. `MatterEnhancedColorLight`
+  (`0x010D`) is the only color class the firmware exposes.
+
+Two further, narrower deferrals inside classes that are otherwise
+implemented:
+
+- **`MatterOccupancySensor::setHoldTime()` and `setHoldTimeLimits()` return
+  `false`.** HoldTime and HoldTimeLimits are AttributeAccessInterface
+  territory in the firmware, not attributes reachable over `AT+MTATTR`.
+- **`MatterWindowCovering`'s absolute-position API returns `false`
+  (`setLiftPosition`/`setTiltPosition`) or `0`** (the InstalledOpenLimit/
+  InstalledClosedLimit pairs). esp-matter 1.5.1 carries no absolute-position
+  attributes for the WindowCovering cluster; only the percent100ths lift/
+  tilt attributes are live on the wire.
 
 ## Examples
 
-`examples/` holds three of `arduino-esp32`'s own Matter example sketches,
+`examples/` holds sixteen of `arduino-esp32`'s own Matter example sketches,
 copied **byte-identical** from
 `libraries/Matter/examples/` in the `esp32` Arduino core (3.3.8), and
-verified with `diff` against that source. Byte-identity is the point: these
+verified with `cmp` against that source. Byte-identity is the point: these
 sketches are the actual evidence that an unmodified sketch is in scope, and
 editing even one line to make it compile would remove that evidence. See
-`iLabs_AT_Hearth`'s Task 9 report for the exact `diff` invocation and
-result.
+`iLabs_AT_Hearth`'s Task 9 report for the original three, and its Task 6
+report (devtype expansion) for the thirteen added alongside this table.
 
 - `MatterOnOffLight`
 - `MatterDimmableLight`
 - `MatterTemperatureSensor`
+- `MatterOnOffPlugin`
+- `MatterDimmablePlugin`
+- `MatterContactSensor`
+- `MatterRainSensor`
+- `MatterWaterFreezeDetector`
+- `MatterWaterLeakDetector`
+- `MatterHumiditySensor`
+- `MatterPressureSensor`
+- `MatterOccupancySensor` (upstream's basic example; the `HoldTime` variant
+  is out of scope along with `setHoldTime()`/`setHoldTimeLimits()`
+  themselves, see "Parked" above)
+- `MatterFan`
+- `MatterWindowCovering`
+- `MatterThermostat`
+- `MatterEnhancedColorLight`
 
 **They call `WiFi.begin()`, and on this platform that call can never
 succeed.** It is not merely redundant: the sketch would sit in
@@ -445,10 +516,12 @@ one.
   specified but unimplemented.** The attribute surface this library can
   read or write is integers and booleans only; string, array and float
   attributes are unsupported and any attempt reports `+MTERR:5`.
-- **Sixteen of arduino-esp32's twenty endpoint classes do not exist yet.**
-  Only `MatterOnOffLight`, `MatterDimmableLight`,
-  `MatterColorTemperatureLight` and `MatterTemperatureSensor` are
-  implemented; see "Supported device types" above.
+- **Three of arduino-esp32's twenty endpoint classes remain out of scope**:
+  `MatterGenericSwitch`, `MatterTemperatureControlledCabinet` and
+  `MatterColorLight`, each for a distinct reason. See "Parked" under
+  "Supported device types" above, including the two narrower deferrals
+  inside otherwise-implemented classes (`MatterOccupancySensor` HoldTime,
+  `MatterWindowCovering` absolute position).
 - **The automatic co-processor reset has been exercised on hardware.** Verified
   during C4 end-to-end tests (2026-07-28 commissioning cycle, 2026-08-03
   transport smoke check against both single-stack and combined firmware). See
@@ -471,16 +544,27 @@ one.
   Several device-type namespaces were renamed between those two revisions,
   and three of arduino-esp32's classes (`MatterColorLight`,
   `MatterEnhancedColorLight`, `MatterThermostat`) call namespaces present in
-  **neither**. This is acceptable while prototyping and is not acceptable
-  to ship: a host library whose class surface is fixed to one `esp_matter`
-  revision, talking to firmware pinned to a different one, means a future
-  core or SDK bump can silently rename a namespace out from under a device
-  type that used to work. The naming design settles the mechanism (host
-  class names are frozen to arduino-esp32's surface regardless of what any
-  `esp_matter` revision calls the underlying namespace; the mapping becomes
-  a versioned table), but not the revision-drift question itself. See
-  `iLabs_AT_Hearth`'s `docs/superpowers/specs/2026-07-26-at-mt-full-api-design.md`
-  §6.3 for the full namespace table.
+  **neither**, in upstream's own implementation. Two of those three are
+  implemented here anyway: this library never calls `esp_matter` directly
+  (it drives the C6 over `AT+MTATTR`), so `MatterEnhancedColorLight` and
+  `MatterThermostat`'s cluster/attribute IDs are plain integers, verified
+  directly against connectedhomeip's zap-generated headers rather than
+  against either `esp_matter` revision's namespace names, and the firmware
+  independently confirms both device types on the wire (`docs/AT_MT_SPEC.md`).
+  `MatterColorLight` is not implemented at all, so it does not currently
+  test this gap either way; see "Parked" above for why. The underlying
+  question this bullet is really about is still open: a host library whose
+  class surface is fixed to one `esp_matter` revision, talking to firmware
+  pinned to a different one, means a future core or SDK bump can silently
+  rename a namespace out from under a device type that used to work, for
+  whichever class is next ported this way rather than by verifying plain
+  IDs against connectedhomeip source directly. The naming design settles the
+  mechanism (host class names are frozen to arduino-esp32's surface
+  regardless of what any `esp_matter` revision calls the underlying
+  namespace; the mapping becomes a versioned table), but not the
+  revision-drift question itself. See `iLabs_AT_Hearth`'s
+  `docs/superpowers/specs/2026-07-26-at-mt-full-api-design.md` §6.3 for the
+  full namespace table.
 
 ## Status
 

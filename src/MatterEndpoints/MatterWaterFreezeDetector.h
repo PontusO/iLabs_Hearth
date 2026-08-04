@@ -1,0 +1,67 @@
+/*
+ * MatterWaterFreezeDetector.h - a boolean-state sensor.
+ *
+ * Mirrors arduino-esp32's Matter library MatterWaterFreezeDetector (see
+ * ~/.arduino15/packages/esp32/hardware/esp32/3.3.8/libraries/Matter/src/MatterEndpoints/MatterWaterFreezeDetector.h):
+ * the public section below is reproduced verbatim, protected members
+ * included. Device type 0x0041 is water_freeze_detector, cluster 0x0045 is BooleanState,
+ * attribute 0x0000 is BooleanState::Attributes::StateValue::Id
+ * (chip::app::Clusters::BooleanState), the same IDs upstream's .cpp reads from
+ * connectedhomeip; there is no such header on a host build, so they are
+ * given as the plain integers here instead.
+ *
+ * begin() calls hearthDeclare(this, 0x0041) and caches initialState. It
+ * issues no AT traffic: the endpoint ID is not known until Matter.begin()
+ * reconciles the declared registry against the C6, which is why upstream's
+ * own examples call Matter.begin() last, after every endpoint's begin().
+ *
+ * attributeChangeCB deliberately does not write back to the fabric: the
+ * change already arrived from a +MTATTR URC (Hearth.cpp's hearthDispatchAttr,
+ * see Task 5's report), and echoing it through setAttributeVal/
+ * updateAttributeVal would be an infinite loop with the real device. This is
+ * the entire reason AT+MTATTR has a silent write mode; see
+ * MatterEndPoint.h's header comment.
+ *
+ * DEVIATION FROM VERBATIM: `using EndPointCB = std::function<bool(bool)>`
+ * and `onChange(EndPointCB)` below (and the `_onChangeCB` protected member)
+ * are a Hearth addition, not present in upstream's
+ * MatterWaterFreezeDetector.h public section. Every boolean-state sensor in
+ * this library (also MatterContactSensor, MatterRainSensor,
+ * MatterWaterLeakDetector) carries the same addition, for the same reason:
+ * a sketch needs some way to learn about a controller-driven change, and
+ * upstream's own class exposes none. The name is provisional pending a
+ * decision on whether to align it with a future upstream addition; see
+ * README's "Supported device types" section. Nothing existing is renamed.
+ */
+#pragma once
+
+#include <cstddef>
+#include "MatterEndPoint.h"
+
+class MatterWaterFreezeDetector : public MatterEndPoint {
+public:
+  MatterWaterFreezeDetector();
+  ~MatterWaterFreezeDetector();
+  virtual bool begin(bool initialState = false);
+  void end();
+
+  bool setFreeze(bool newState);
+  bool getFreeze();
+
+  using EndPointCB = std::function<bool(bool)>;
+  void onChange(EndPointCB onChangeCB) {
+    _onChangeCB = onChangeCB;
+  }
+
+  void operator=(bool state);
+  operator bool();
+
+  bool attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *val);
+
+  esp_matter_val_type_t hearthAttrTypeFor(uint32_t cluster_id, uint32_t attribute_id) const override;
+
+protected:
+  bool started = false;
+  bool freezeState = false;
+  EndPointCB _onChangeCB = NULL;
+};

@@ -24,12 +24,14 @@
  * task's own file scope did not cover, since this file predates it), so a
  * sketch built from nothing but `#include <Matter.h>` plus a file-scope
  * `MatterOnOffLight light;` failed to compile: exactly the pattern every
- * upstream example uses. Fixed by including MatterEndPoint.h and the four
- * endpoint headers this library actually implements below. None of those
- * headers includes this one back (checked: only the endpoint .cpp files and
- * MatterEndPoint.cpp include Hearth.h, and .cpp files are leaves nothing
- * else includes), so this is a one-way dependency, not a cycle broken only
- * by #pragma once appearing to work.
+ * upstream example uses. Fixed by including MatterEndPoint.h and, below,
+ * every endpoint header this library implements: the original four, plus
+ * the thirteen the devtype expansion (Tasks L1-L6) added, seventeen of
+ * upstream's twenty in total. None of those headers includes this one back
+ * (checked: only the endpoint .cpp files and MatterEndPoint.cpp include
+ * Hearth.h, and .cpp files are leaves nothing else includes), so this is a
+ * one-way dependency, not a cycle broken only by #pragma once appearing to
+ * work.
  */
 #pragma once
 
@@ -42,6 +44,19 @@
 #include "MatterEndpoints/MatterDimmableLight.h"
 #include "MatterEndpoints/MatterColorTemperatureLight.h"
 #include "MatterEndpoints/MatterTemperatureSensor.h"
+#include "MatterEndpoints/MatterOnOffPlugin.h"
+#include "MatterEndpoints/MatterDimmablePlugin.h"
+#include "MatterEndpoints/MatterContactSensor.h"
+#include "MatterEndpoints/MatterRainSensor.h"
+#include "MatterEndpoints/MatterWaterFreezeDetector.h"
+#include "MatterEndpoints/MatterWaterLeakDetector.h"
+#include "MatterEndpoints/MatterHumiditySensor.h"
+#include "MatterEndpoints/MatterPressureSensor.h"
+#include "MatterEndpoints/MatterOccupancySensor.h"
+#include "MatterEndpoints/MatterFan.h"
+#include "MatterEndpoints/MatterWindowCovering.h"
+#include "MatterEndpoints/MatterThermostat.h"
+#include "MatterEndpoints/MatterEnhancedColorLight.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART
