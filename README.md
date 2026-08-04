@@ -269,7 +269,9 @@ Two smaller differences in the same area, for completeness:
 
 Nineteen of arduino-esp32's twenty `Matter*` endpoint classes exist today,
 matching the firmware's own device type table (`iLabs_AT_Hearth`'s
-`docs/AT_MT_SPEC.md`, "Supported device types"):
+`docs/AT_MT_SPEC.md`, "Supported device types"). These nineteen classes resolve
+to eighteen device type IDs, as `MatterColorLight` and `MatterEnhancedColorLight`
+both address the same `0x010D` wire endpoint:
 
 | Class | Device type ID |
 |---|---|
@@ -385,9 +387,8 @@ Task S4 report for the last two.
 - `MatterWindowCovering`
 - `MatterThermostat`
 - `MatterEnhancedColorLight`
-- `MatterGenericSwitch` (upstream's own sketch directory is
-  `MatterSmartButton`; renamed here to match the class it declares, the
-  same one-folder-per-class convention every entry above follows)
+- `MatterGenericSwitch` (upstream ships it as `MatterSmartButton`; renamed
+  here to match the class name)
 - `MatterColorLight`
 
 **They call `WiFi.begin()`, and on this platform that call can never
