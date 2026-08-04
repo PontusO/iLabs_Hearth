@@ -44,10 +44,18 @@ void MatterGenericSwitch::end() {
  * endpoint_id stays 0 until Matter.begin() reconciles this endpoint against
  * the C6, and 0 is the Root Node, a real endpoint that must never receive
  * traffic meant for this one. That helper is private to the base class, so
- * the check is repeated here rather than reused.
+ * the check is repeated here rather than reused, error code included:
+ * hearthEndPointAddressable() sets +MTERR's own code 2 for exactly this
+ * condition, and every sibling write path leaves lastError() carrying it,
+ * so a caller inspecting Hearth.lastError() after a failed click() must
+ * not see a stale value from some earlier call.
  */
 bool MatterGenericSwitch::click() {
-  if (!started || getEndPointId() == 0) {
+  if (!started) {
+    return false;
+  }
+  if (getEndPointId() == 0) {
+    Hearth.hearthSetError(2);
     return false;
   }
   char cmd[24];

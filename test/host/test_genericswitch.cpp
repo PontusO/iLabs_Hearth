@@ -56,7 +56,10 @@ static void test_click_mterr3_returns_false(void) {
  * called in that window must fail without putting anything on the wire,
  * the same "endpoint 0 is unaddressable" reasoning MatterEndPoint's own
  * write helpers use, just enforced locally since click() does not go
- * through updateAttributeVal().
+ * through updateAttributeVal(). That reasoning includes the error code:
+ * hearthEndPointAddressable() sets +MTERR's own code 2 for exactly this
+ * condition, and every sibling write path leaves lastError() carrying it
+ * for a caller that checks after a failed call, so click() must too.
  */
 static void test_click_before_reconcile_returns_false_without_traffic(void) {
   MockStream s; MatterGenericSwitch sw;
@@ -64,6 +67,7 @@ static void test_click_before_reconcile_returns_false_without_traffic(void) {
   Hearth.begin(s);
   check("begin() declares", sw.begin());
   check("click() before reconcile fails", !sw.click());
+  check("and reports the unaddressable-endpoint code", Hearth.lastError() == 2);
   check("no traffic issued", s.scriptDrained());
   check("no unexpected commands", s.unexpected().empty());
 }
