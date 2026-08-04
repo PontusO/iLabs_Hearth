@@ -40,6 +40,10 @@ MatterWindowCovering	KEYWORD1
 MatterThermostat	KEYWORD1
 MatterEnhancedColorLight	KEYWORD1
 
+# The last two device types (Task S4).
+MatterGenericSwitch	KEYWORD1
+MatterColorLight	KEYWORD1
+
 # Event and callback types.
 hearthEvent_t	KEYWORD1
 hearthEventCB	KEYWORD1
@@ -281,6 +285,10 @@ getColorRGB	KEYWORD2
 setColorHSV	KEYWORD2
 getColorHSV	KEYWORD2
 onChangeColorHSV	KEYWORD2
+
+# MatterGenericSwitch (Task S4): the one command that is an event, not an
+# attribute write. See the class header for why it returns bool.
+click	KEYWORD2
 
 # HearthColorUtil.h conversions, called out from MatterEnhancedColorLight's
 # getColorRGB()/setColorRGB(), and from examples/MatterEnhancedColorLight's

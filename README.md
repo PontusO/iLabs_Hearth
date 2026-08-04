@@ -267,7 +267,7 @@ Two smaller differences in the same area, for completeness:
 
 ## Supported device types
 
-Seventeen of arduino-esp32's twenty `Matter*` endpoint classes exist today,
+Nineteen of arduino-esp32's twenty `Matter*` endpoint classes exist today,
 matching the firmware's own device type table (`iLabs_AT_Hearth`'s
 `docs/AT_MT_SPEC.md`, "Supported device types"):
 
@@ -290,9 +290,23 @@ matching the firmware's own device type table (`iLabs_AT_Hearth`'s
 | `MatterWindowCovering` | `0x0202` |
 | `MatterThermostat` | `0x0301` |
 | `MatterEnhancedColorLight` | `0x010D` |
+| `MatterGenericSwitch` | `0x000F` |
+| `MatterColorLight` | `0x010D` |
 
 Declaring an unimplemented device type in a sketch fails to link, the same
 as any other undefined symbol.
+
+The last two are worth a note each. `MatterGenericSwitch` is event-driven,
+not attribute-driven: `click()` sends `AT+MTSWITCH` and the firmware raises
+an `InitialPress` CHIP event on the fabric; nothing comes back to the host
+over that path, so there is no attribute cache to read and no `onChange` to
+register. `MatterColorLight` rides the identical `0x010D` wire endpoint
+`MatterEnhancedColorLight` does rather than a device type of its own; the
+two are host-side views over the same firmware endpoint that differ only in
+which of its clusters each class drives, and `MatterColorLight`'s is an
+HS-only API: OnOff, CurrentLevel and CurrentHue/CurrentSaturation, with no
+`setColorTemperature()` and no separate brightness accessor (brightness
+lives in `colorHSV.v`, exactly as upstream has it).
 
 Seven of these classes carry a documented Hearth-side addition beyond
 upstream's own public API: `MatterContactSensor`, `MatterRainSensor`,
@@ -307,23 +321,27 @@ the `ChangeCB` typedefs) is provisional pending a decision on whether to
 align it with a future upstream addition; see each class's header comment
 for the exact members added. Nothing upstream is renamed.
 
+`MatterGenericSwitch` carries a deviation of a different shape:
+**`click()` returns `bool`, not upstream's `void`.** Upstream's `click()`
+schedules a CHIP event locally and cannot fail in any way a caller could
+observe; this port's `click()` is a real `AT+MTSWITCH` round trip that can
+come back `+MTERR:2` (unknown endpoint) or `+MTERR:3` (no Switch cluster on
+that endpoint), so silently discarding the result would hide a real failure
+mode every other write-capable class already surfaces this way. The S3
+review weighed this against `DE102`, the decision that keeps this project's
+documented Hearth-side additions (the seven `onChange()` additions above)
+rather than hiding them behind upstream-identical signatures, and upheld
+the widening on the same reasoning: a signature difference, honestly
+documented in the header and here, keeps the parity story truthful; a
+silent `void` that swallowed a real error would not.
+
 ### Parked
 
-Three of arduino-esp32's twenty classes remain out of scope, each for a
-different, specific reason rather than "not gotten to yet":
+One of arduino-esp32's twenty classes remains out of scope:
 
-- **`MatterGenericSwitch`** needs an AT event surface this protocol does not
-  have. A switch reports its actions (single press, multi-press, long
-  press) as CHIP events, not attribute changes, and `AT+MTEVT` has no frame
-  for that shape today. Adding it is a protocol design task, not a
-  mechanical port.
 - **`MatterTemperatureControlledCabinet`** needs `AT+MTATTRX`, the
   firmware's command for opaque (non-integer, non-boolean) attribute
   types. It is specified but unimplemented; see "Limitations" below.
-- **`MatterColorLight`** has no firmware device type to declare against at
-  all: the device type table above is exhaustive, and a base RGB color
-  light without color temperature is not in it. `MatterEnhancedColorLight`
-  (`0x010D`) is the only color class the firmware exposes.
 
 Two further, narrower deferrals inside classes that are otherwise
 implemented:
@@ -339,14 +357,15 @@ implemented:
 
 ## Examples
 
-`examples/` holds sixteen of `arduino-esp32`'s own Matter example sketches,
+`examples/` holds eighteen of `arduino-esp32`'s own Matter example sketches,
 copied **byte-identical** from
 `libraries/Matter/examples/` in the `esp32` Arduino core (3.3.8), and
 verified with `cmp` against that source. Byte-identity is the point: these
 sketches are the actual evidence that an unmodified sketch is in scope, and
 editing even one line to make it compile would remove that evidence. See
-`iLabs_AT_Hearth`'s Task 9 report for the original three, and its Task 6
-report (devtype expansion) for the thirteen added alongside this table.
+`iLabs_AT_Hearth`'s Task 9 report for the original three, its Task 6 report
+(devtype expansion) for the thirteen added alongside this table, and its
+Task S4 report for the last two.
 
 - `MatterOnOffLight`
 - `MatterDimmableLight`
@@ -366,6 +385,10 @@ report (devtype expansion) for the thirteen added alongside this table.
 - `MatterWindowCovering`
 - `MatterThermostat`
 - `MatterEnhancedColorLight`
+- `MatterGenericSwitch` (upstream's own sketch directory is
+  `MatterSmartButton`; renamed here to match the class it declares, the
+  same one-folder-per-class convention every entry above follows)
+- `MatterColorLight`
 
 **They call `WiFi.begin()`, and on this platform that call can never
 succeed.** It is not merely redundant: the sketch would sit in
@@ -516,12 +539,11 @@ one.
   specified but unimplemented.** The attribute surface this library can
   read or write is integers and booleans only; string, array and float
   attributes are unsupported and any attempt reports `+MTERR:5`.
-- **Three of arduino-esp32's twenty endpoint classes remain out of scope**:
-  `MatterGenericSwitch`, `MatterTemperatureControlledCabinet` and
-  `MatterColorLight`, each for a distinct reason. See "Parked" under
-  "Supported device types" above, including the two narrower deferrals
-  inside otherwise-implemented classes (`MatterOccupancySensor` HoldTime,
-  `MatterWindowCovering` absolute position).
+- **One of arduino-esp32's twenty endpoint classes remains out of scope**:
+  `MatterTemperatureControlledCabinet`, needing `AT+MTATTRX`. See "Parked"
+  under "Supported device types" above, including the two narrower
+  deferrals inside otherwise-implemented classes (`MatterOccupancySensor`
+  HoldTime, `MatterWindowCovering` absolute position).
 - **The automatic co-processor reset has been exercised on hardware.** Verified
   during C4 end-to-end tests (2026-07-28 commissioning cycle, 2026-08-03
   transport smoke check against both single-stack and combined firmware). See
@@ -544,15 +566,13 @@ one.
   Several device-type namespaces were renamed between those two revisions,
   and three of arduino-esp32's classes (`MatterColorLight`,
   `MatterEnhancedColorLight`, `MatterThermostat`) call namespaces present in
-  **neither**, in upstream's own implementation. Two of those three are
-  implemented here anyway: this library never calls `esp_matter` directly
-  (it drives the C6 over `AT+MTATTR`), so `MatterEnhancedColorLight` and
-  `MatterThermostat`'s cluster/attribute IDs are plain integers, verified
-  directly against connectedhomeip's zap-generated headers rather than
-  against either `esp_matter` revision's namespace names, and the firmware
-  independently confirms both device types on the wire (`docs/AT_MT_SPEC.md`).
-  `MatterColorLight` is not implemented at all, so it does not currently
-  test this gap either way; see "Parked" above for why. The underlying
+  **neither**, in upstream's own implementation. All three are implemented
+  here anyway: this library never calls `esp_matter` directly (it drives
+  the C6 over `AT+MTATTR`), so their cluster/attribute IDs are plain
+  integers, verified directly against connectedhomeip's zap-generated
+  headers rather than against either `esp_matter` revision's namespace
+  names, and the firmware independently confirms all three device types on
+  the wire (`docs/AT_MT_SPEC.md`). The underlying
   question this bullet is really about is still open: a host library whose
   class surface is fixed to one `esp_matter` revision, talking to firmware
   pinned to a different one, means a future core or SDK bump can silently

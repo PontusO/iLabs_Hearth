@@ -32,6 +32,11 @@
  * Hearth.h, and .cpp files are leaves nothing else includes), so this is a
  * one-way dependency, not a cycle broken only by #pragma once appearing to
  * work.
+ *
+ * Task S4 (switch + color light) adds the last two of upstream's twenty:
+ * MatterGenericSwitch.h and MatterColorLight.h, taking this list to
+ * nineteen. MatterTemperatureControlledCabinet remains the one class this
+ * library does not implement (needs AT+MTATTRX; see README.md, "Parked").
  */
 #pragma once
 
@@ -57,6 +62,8 @@
 #include "MatterEndpoints/MatterWindowCovering.h"
 #include "MatterEndpoints/MatterThermostat.h"
 #include "MatterEndpoints/MatterEnhancedColorLight.h"
+#include "MatterEndpoints/MatterGenericSwitch.h"
+#include "MatterEndpoints/MatterColorLight.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART
