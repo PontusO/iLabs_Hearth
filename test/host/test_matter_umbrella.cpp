@@ -60,6 +60,14 @@ MatterWindowCovering umbrellaWindowCovering;
 MatterThermostat umbrellaThermostat;
 MatterEnhancedColorLight umbrellaEnhancedColorLight;
 
+/*
+ * Task S4's two additions, the last of upstream's twenty: dropping either
+ * include from Hearth.h's list fails this build too, same as the thirteen
+ * above.
+ */
+MatterGenericSwitch umbrellaGenericSwitch;
+MatterColorLight umbrellaColorLight;
+
 static int g_pass = 0, g_fail = 0;
 static void check(const char *name, bool cond) {
   printf("  [%s] %s\n", cond ? "PASS" : "FAIL", name);

@@ -23,6 +23,8 @@ build/
 /test/host/test_windowcovering
 /test/host/test_thermostat
 /test/host/test_enhancedcolor
+/test/host/test_genericswitch
+/test/host/test_colorlight
 
 *.bin
 *.uf2
