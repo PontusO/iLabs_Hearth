@@ -452,6 +452,118 @@ static void test_late_declaration_is_reported(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
+/*
+ * C4: composition variants (AT_MT_SPEC.md S3.9). hearthDeclare()'s three-arg
+ * form threads a per-device-type variant through the same identical-vs-
+ * rebuild comparison that already covers device type, so a variant change
+ * with no device-type change still forces a rebuild (the C6 must run the
+ * fifth abort trap's TemperatureNumber/TemperatureLevel branch that matches
+ * what the sketch actually declared).
+ */
+static void test_declared_variant_emits_variant_during_rebuild(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  TestEndPoint cabinet;
+  MatterEndPoint::hearthDeclare(&cabinet, 0x0071, 1);
+
+  MockStream s;
+  s.expect("AT+MTEP?", "OK\r\n");
+  s.expect("AT+MTFABRICS?", "+MTFABRICS:0\r\nOK\r\n");
+  s.expect("AT+MTEPCLEAR", "OK\r\n");
+  s.expect("AT+MTEP=0x0071,1", "OK\r\n");
+  s.expect("AT+MTEPAPPLY", "OK\r\n+MTREADY\r\n");
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x0071,1\r\nOK\r\n");
+  Hearth.begin(s);
+  Matter.begin();
+
+  check("the variant is emitted alongside the device type", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  check("endpoint adopts the ID from the re-query", cabinet.getEndPointId() == 1);
+}
+
+/* Adopt matches only when the reported variant equals the declared one: a
+ * 4-field +MTEP? line reporting the same variant the sketch declared is the
+ * identical case, one query, zero writes. */
+static void test_matching_4field_variant_adopts_without_rebuild(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  TestEndPoint cabinet;
+  MatterEndPoint::hearthDeclare(&cabinet, 0x0071, 1);
+
+  MockStream s;
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x0071,1\r\nOK\r\n");
+  Hearth.begin(s);
+  Matter.begin();
+
+  check("no further commands issued", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  check("endpoint adopts ID 1 without a rebuild", cabinet.getEndPointId() == 1);
+}
+
+/* The 3-field form (no 4th field at all) is variant 0, per AT_MT_SPEC.md
+ * S3.9's byte-identical-output guarantee: a declared variant 0 must adopt
+ * against it exactly as it always did, before this task existed. */
+static void test_3field_line_matches_declared_variant_zero(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  TestEndPoint cabinet;
+  MatterEndPoint::hearthDeclare(&cabinet, 0x0071); /* two-arg form: variant 0 */
+
+  MockStream s;
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x0071\r\nOK\r\n");
+  Hearth.begin(s);
+  Matter.begin();
+
+  check("no further commands issued", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  check("endpoint adopts ID 1 without a rebuild", cabinet.getEndPointId() == 1);
+}
+
+/* A live variant 0 against a declared variant 1 (or vice versa) is a
+ * mismatch even though the device type is identical: it must trigger a
+ * rebuild, not be silently adopted as if the C6 already had what the sketch
+ * wants. */
+static void test_variant_mismatch_triggers_rebuild(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  TestEndPoint cabinet;
+  MatterEndPoint::hearthDeclare(&cabinet, 0x0071, 1);
+
+  MockStream s;
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x0071\r\nOK\r\n"); /* live: variant 0 */
+  s.expect("AT+MTFABRICS?", "+MTFABRICS:0\r\nOK\r\n");
+  s.expect("AT+MTEPCLEAR", "OK\r\n");
+  s.expect("AT+MTEP=0x0071,1", "OK\r\n");
+  s.expect("AT+MTEPAPPLY", "OK\r\n+MTREADY\r\n");
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x0071,1\r\nOK\r\n");
+  Hearth.begin(s);
+  Matter.begin();
+
+  check("a variant-only mismatch still triggers a rebuild", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  check("endpoint adopts the ID from the re-query", cabinet.getEndPointId() == 1);
+}
+
+/* Review fix round 1, Minor 3: the reverse direction of the mismatch above.
+ * A declared variant 0 (the two-arg hearthDeclare() form) against a live
+ * 4-field line reporting variant 1 must also trigger a rebuild; only the
+ * "declared 1, live 3-field (0)" direction had a dedicated test before this. */
+static void test_declared_variant_zero_vs_stored_4field_variant_triggers_rebuild(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  TestEndPoint cabinet;
+  MatterEndPoint::hearthDeclare(&cabinet, 0x0071); /* two-arg form: variant 0 */
+
+  MockStream s;
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x0071,1\r\nOK\r\n"); /* live: variant 1 */
+  s.expect("AT+MTFABRICS?", "+MTFABRICS:0\r\nOK\r\n");
+  s.expect("AT+MTEPCLEAR", "OK\r\n");
+  s.expect("AT+MTEP=0x0071", "OK\r\n"); /* declared variant 0: no variant field emitted */
+  s.expect("AT+MTEPAPPLY", "OK\r\n+MTREADY\r\n");
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x0071\r\nOK\r\n");
+  Hearth.begin(s);
+  Matter.begin();
+
+  check("a declared-zero vs stored-4field-nonzero mismatch also triggers a rebuild", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  check("endpoint adopts the ID from the re-query", cabinet.getEndPointId() == 1);
+}
+
 int main(void) {
   printf("\n===== reconcile and ArduinoMatter tests =====\n");
   test_identical_composition_adopts_ids();
@@ -470,6 +582,11 @@ int main(void) {
   test_pairing_code();
   test_commissioned_query();
   test_late_declaration_is_reported();
+  test_declared_variant_emits_variant_during_rebuild();
+  test_matching_4field_variant_adopts_without_rebuild();
+  test_3field_line_matches_declared_variant_zero();
+  test_variant_mismatch_triggers_rebuild();
+  test_declared_variant_zero_vs_stored_4field_variant_triggers_rebuild();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }
