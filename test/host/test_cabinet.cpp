@@ -271,6 +271,41 @@ static void test_16_char_label_cap_enforced_host_side(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
+/*
+ * Review fix round 1, Important finding: a label containing a '"' must be
+ * rejected host-side, not sent through unescaped -- AT_MT_SPEC.md S3.16
+ * forbids a double-quote character inside a label, and an unescaped one
+ * would corrupt the AT+MTTEMPLEVELS line's own field boundary at the
+ * firmware parser rather than coming back as a clean +MTERR:1. Also pins a
+ * non-printable byte (the same grammar clause), and that a rejected call
+ * leaves the cache untouched: a later reconcile still resends the OLD
+ * (generated) labels, not the rejected content.
+ */
+static void test_label_content_grammar_enforced_host_side(void) {
+  MockStream s; MatterTemperatureControlledCabinet c;
+  uint8_t levels[] = { 0, 1, 2 };
+  bringUpTL(s, c, levels, 3, 0, "\"Level 0\",\"Level 1\",\"Level 2\"");
+
+  const char *quoteLabels[] = { "Bad\"Label" };
+  check("a label containing a double quote is refused", !c.setSupportedTemperatureLevelLabels(quoteLabels, 1));
+  check("reports the grammar/label-violation code", Hearth.lastError() == 1);
+  check("no AT traffic was issued for the quote violation", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+
+  const char *nonPrintableLabels[] = { "Bad\x01Label" };
+  check("a label containing a non-printable byte is refused", !c.setSupportedTemperatureLevelLabels(nonPrintableLabels, 1));
+  check("reports the grammar/label-violation code", Hearth.lastError() == 1);
+  check("no AT traffic was issued for the non-printable violation", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+
+  s.expect("AT+MTEP?", "+MTEP:0,4,0x0071,1\r\nOK\r\n");
+  s.expect("AT+MTTEMPLEVELS=4,\"Level 0\",\"Level 1\",\"Level 2\"", "OK\r\n"); /* still the OLD generated labels */
+  s.expect("AT+MTATTR=4,86,4,0,1", "+MTATTR:4,86,4,0\r\nOK\r\n");
+  Matter.begin();
+  check("both rejected calls left the cache untouched", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 static void test_tn_type_and_tl_type_report_the_right_attr_types(void) {
   MatterTemperatureControlledCabinet c;
   check(
@@ -303,6 +338,7 @@ int main(void) {
   test_tl_begin_rejects_too_many_levels();
   test_16_entry_label_cap_enforced_host_side();
   test_16_char_label_cap_enforced_host_side();
+  test_label_content_grammar_enforced_host_side();
   test_tn_type_and_tl_type_report_the_right_attr_types();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;

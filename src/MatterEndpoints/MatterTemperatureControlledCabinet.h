@@ -86,10 +86,14 @@
  *    labels verbatim through AT+MTTEMPLEVELS (S3.16); the numeric
  *    identifiers set via begin()/setSupportedTemperatureLevels() remain the
  *    sketch-side handle either way, since SelectedTemperatureLevel is the
- *    list index, not the label text. Enforces this library's cap host-side
- *    (1..16 labels, 1..16 bytes each -- S3.16's own grammar) and returns
- *    false with Hearth.hearthSetError(1), the wire's own "grammar/label
- *    violation" code, on a violation, without ever reaching the wire.
+ *    list index, not the label text. Enforces S3.16's full grammar
+ *    host-side (1..16 labels, 1..16 bytes each, every byte printable ASCII
+ *    0x20..0x7E, never a '"') and returns false with
+ *    Hearth.hearthSetError(1), the wire's own "grammar/label violation"
+ *    code, on a violation, without ever reaching the wire. The quote check
+ *    specifically is not merely cosmetic: an unescaped '"' inside a label
+ *    would corrupt the AT+MTTEMPLEVELS line's own field boundary at the
+ *    firmware parser rather than coming back as a clean rejection.
  */
 #pragma once
 

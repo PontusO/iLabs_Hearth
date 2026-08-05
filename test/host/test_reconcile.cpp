@@ -540,6 +540,30 @@ static void test_variant_mismatch_triggers_rebuild(void) {
   check("endpoint adopts the ID from the re-query", cabinet.getEndPointId() == 1);
 }
 
+/* Review fix round 1, Minor 3: the reverse direction of the mismatch above.
+ * A declared variant 0 (the two-arg hearthDeclare() form) against a live
+ * 4-field line reporting variant 1 must also trigger a rebuild; only the
+ * "declared 1, live 3-field (0)" direction had a dedicated test before this. */
+static void test_declared_variant_zero_vs_stored_4field_variant_triggers_rebuild(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  TestEndPoint cabinet;
+  MatterEndPoint::hearthDeclare(&cabinet, 0x0071); /* two-arg form: variant 0 */
+
+  MockStream s;
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x0071,1\r\nOK\r\n"); /* live: variant 1 */
+  s.expect("AT+MTFABRICS?", "+MTFABRICS:0\r\nOK\r\n");
+  s.expect("AT+MTEPCLEAR", "OK\r\n");
+  s.expect("AT+MTEP=0x0071", "OK\r\n"); /* declared variant 0: no variant field emitted */
+  s.expect("AT+MTEPAPPLY", "OK\r\n+MTREADY\r\n");
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x0071\r\nOK\r\n");
+  Hearth.begin(s);
+  Matter.begin();
+
+  check("a declared-zero vs stored-4field-nonzero mismatch also triggers a rebuild", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  check("endpoint adopts the ID from the re-query", cabinet.getEndPointId() == 1);
+}
+
 int main(void) {
   printf("\n===== reconcile and ArduinoMatter tests =====\n");
   test_identical_composition_adopts_ids();
@@ -562,6 +586,7 @@ int main(void) {
   test_matching_4field_variant_adopts_without_rebuild();
   test_3field_line_matches_declared_variant_zero();
   test_variant_mismatch_triggers_rebuild();
+  test_declared_variant_zero_vs_stored_4field_variant_triggers_rebuild();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

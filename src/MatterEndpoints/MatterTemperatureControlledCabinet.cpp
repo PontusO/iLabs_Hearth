@@ -351,6 +351,20 @@ bool MatterTemperatureControlledCabinet::setSupportedTemperatureLevelLabels(cons
       Hearth.hearthSetError(1);
       return false;
     }
+    /* AT_MT_SPEC.md S3.16's own grammar, checked host-side before the wire
+     * would have to: every byte printable ASCII (0x20..0x7E), and never a
+     * '"'. Sending a '"' through unescaped would not come back as a clean
+     * +MTERR:1 from the firmware parser, it would corrupt the field
+     * boundary of the AT+MTTEMPLEVELS line itself (a bare label byte of
+     * '"' looks exactly like the closing quote the parser is scanning
+     * for), so this must be caught here, not left for the wire to reject. */
+    for (const char *p = labels[i]; *p != '\0'; p++) {
+      unsigned char ch = (unsigned char)*p;
+      if (ch < 0x20 || ch > 0x7E || ch == '"') {
+        Hearth.hearthSetError(1);
+        return false;
+      }
+    }
   }
   if (getEndPointId() == 0) {
     Hearth.hearthSetError(2);
