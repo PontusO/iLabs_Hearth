@@ -13,6 +13,15 @@ static void check(const char *name, bool cond) {
 
 /* ===== TemperatureNumber mode (variant 0) ===== */
 
+/*
+ * Fix round 2 (bench bug): Matter.begin()'s reconcile now pushes the four
+ * cached TN values to the wire (min, max, step, setpoint order; see
+ * hearthOnReconciled()'s header comment for why). bringUpTN() therefore
+ * queues those four exchanges after the AT+MTEP? query, computed from the
+ * same values passed to begin(), so every existing TN test's MockStream
+ * script stays exact without hand-maintaining four raw numbers per call
+ * site.
+ */
 static void bringUpTN(
   MockStream &s, MatterTemperatureControlledCabinet &c, double setpoint = 0.00, double minTemp = -10.0, double maxTemp = 32.0,
   double step = 0.50
@@ -21,6 +30,25 @@ static void bringUpTN(
   Hearth.begin(s);
   c.begin(setpoint, minTemp, maxTemp, step);
   s.expect("AT+MTEP?", "+MTEP:0,1,0x0071\r\nOK\r\n"); /* variant 0: 3-field line */
+
+  int16_t rawMin = static_cast<int16_t>(minTemp * 100.0);
+  int16_t rawMax = static_cast<int16_t>(maxTemp * 100.0);
+  int16_t rawStep = static_cast<int16_t>(step * 100.0);
+  int16_t rawSetpoint = static_cast<int16_t>(setpoint * 100.0);
+  char cmd[48], reply[48];
+  snprintf(cmd, sizeof(cmd), "AT+MTATTR=1,86,1,%d,1", (int)rawMin);
+  snprintf(reply, sizeof(reply), "+MTATTR:1,86,1,%d\r\nOK\r\n", (int)rawMin);
+  s.expect(cmd, reply);
+  snprintf(cmd, sizeof(cmd), "AT+MTATTR=1,86,2,%d,1", (int)rawMax);
+  snprintf(reply, sizeof(reply), "+MTATTR:1,86,2,%d\r\nOK\r\n", (int)rawMax);
+  s.expect(cmd, reply);
+  snprintf(cmd, sizeof(cmd), "AT+MTATTR=1,86,3,%d,1", (int)rawStep);
+  snprintf(reply, sizeof(reply), "+MTATTR:1,86,3,%d\r\nOK\r\n", (int)rawStep);
+  s.expect(cmd, reply);
+  snprintf(cmd, sizeof(cmd), "AT+MTATTR=1,86,0,%d,1", (int)rawSetpoint);
+  snprintf(reply, sizeof(reply), "+MTATTR:1,86,0,%d\r\nOK\r\n", (int)rawSetpoint);
+  s.expect(cmd, reply);
+
   Matter.begin();
 }
 
@@ -30,7 +58,9 @@ static void test_tn_begin_declares_variant0(void) {
   check("declared as the cabinet device type", MatterEndPoint::hearthDeclaredTypeAt(0) == 0x0071);
   check("declared variant 0 (TemperatureNumber)", MatterEndPoint::hearthDeclaredVariantAt(0) == 0);
   check("adopted endpoint 1", c.getEndPointId() == 1);
-  check("begin() itself issued no AT traffic beyond the declaration", s.scriptDrained());
+  /* c.begin() itself still issues nothing; the reconcile push happens
+   * inside Matter.begin(), which bringUpTN() already called. */
+  check("exactly the declaration query plus the four-value reconcile push happened", s.scriptDrained());
   check("no unexpected commands", s.unexpected().empty());
   check("default setpoint is 0.00C", c.getTemperatureSetpoint() > -0.01 && c.getTemperatureSetpoint() < 0.01);
   check("default min is -10.0C", c.getMinTemperature() > -10.01 && c.getMinTemperature() < -9.99);
@@ -90,6 +120,65 @@ static void test_tn_rebegin_after_reconcile_refused(void) {
   check("the refused begin() issued no AT traffic", s.scriptDrained());
 }
 
+/*
+ * Fix round 2 (bench bug, C6): begin(21.5, -5.0, 30.0, 0.5) followed by
+ * Matter.begin() left MinTemperature/MaxTemperature/Step at the C6's
+ * esp-matter defaults (0/10/1) forever, because setRawMinTemperature() et
+ * al.'s skip-if-equal short-circuited on a cache that was seeded from the
+ * sketch's own arguments, never from the device (which boots at esp-matter's
+ * defaults, not the sketch's). A controller's SetTemperature command then
+ * answered CONSTRAINT_ERROR against bounds the sketch believed it had set.
+ * Reproduced on the bench; raw AT writes of the same values propagated fine,
+ * exonerating the firmware. Fixed by pushing the four cached values directly
+ * (bypassing the setters' skip-if-equal) from hearthOnReconciled(), the same
+ * hook TL mode already uses for its own state. Pins the bug's own exact
+ * reported scenario.
+ */
+static void test_tn_reconcile_pushes_the_four_cached_values_in_order(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  MockStream s; MatterTemperatureControlledCabinet c;
+  Hearth.begin(s);
+  check("TN begin(21.5, -5.0, 30.0, 0.5) succeeds", c.begin(21.5, -5.0, 30.0, 0.5));
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x0071\r\nOK\r\n");
+  s.expect("AT+MTATTR=1,86,1,-500,1", "+MTATTR:1,86,1,-500\r\nOK\r\n");  /* MinTemperature */
+  s.expect("AT+MTATTR=1,86,2,3000,1", "+MTATTR:1,86,2,3000\r\nOK\r\n");  /* MaxTemperature */
+  s.expect("AT+MTATTR=1,86,3,50,1", "+MTATTR:1,86,3,50\r\nOK\r\n");      /* Step */
+  s.expect("AT+MTATTR=1,86,0,2150,1", "+MTATTR:1,86,0,2150\r\nOK\r\n");  /* TemperatureSetpoint */
+  Matter.begin();
+
+  check("all four writes reached the wire during reconcile, in min/max/step/setpoint order", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  check("setpoint cached at 21.5C", c.getTemperatureSetpoint() > 21.49 && c.getTemperatureSetpoint() < 21.51);
+  check("min cached at -5.0C", c.getMinTemperature() > -5.01 && c.getMinTemperature() < -4.99);
+  check("max cached at 30.0C", c.getMaxTemperature() > 29.99 && c.getMaxTemperature() < 30.01);
+  check("step cached at 0.5C", c.getStep() > 0.49 && c.getStep() < 0.51);
+}
+
+/* Once the reconcile push has synced the device to the cache, cache==device
+ * holds, so the setters' pre-existing skip-if-equal is now correct: calling
+ * a setter with exactly the value begin() already pushed is a genuine no-op
+ * on the wire, not a silently-skipped divergent write. */
+static void test_tn_setter_with_begun_value_is_noop_after_reconcile_push(void) {
+  MockStream s; MatterTemperatureControlledCabinet c;
+  bringUpTN(s, c, 21.5, -5.0, 30.0, 0.5); /* reconcile push already put these on the wire */
+  check("setMinTemperature(-5.0), the same value begin() used, succeeds", c.setMinTemperature(-5.0));
+  check("and is a genuine no-op: the push already set this on the wire", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/* A setter value that genuinely differs from what the reconcile push sent
+ * still reaches the wire: the fix must not turn every TN setter into a
+ * permanent no-op, only skip writes that are truly redundant. */
+static void test_tn_setter_with_new_value_still_writes_after_reconcile_push(void) {
+  MockStream s; MatterTemperatureControlledCabinet c;
+  bringUpTN(s, c, 21.5, -5.0, 30.0, 0.5);
+  s.expect("AT+MTATTR=1,86,1,-800,1", "+MTATTR:1,86,1,-800\r\nOK\r\n");
+  check("setMinTemperature(-8.0), a genuinely new value, still writes", c.setMinTemperature(-8.0));
+  check("min cached at -8.0C", c.getMinTemperature() > -8.01 && c.getMinTemperature() < -7.99);
+  check("script drained", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 /* ===== TemperatureLevel mode (variant 1) ===== */
 
 static void bringUpTL(
@@ -121,6 +210,21 @@ static void test_tl_begin_declares_variant1_sends_generated_labels_and_selected_
   check("no unexpected commands", s.unexpected().empty());
   check("selected level cached", c.getSelectedTemperatureLevel() == 1);
   check("supported level count cached", c.getSupportedTemperatureLevelsCount() == 3);
+}
+
+/* Fix round 2: TL mode is unchanged by the TN reconcile-push fix. Its own
+ * bringUpTL() script is exact (labels, then SelectedTemperatureLevel, and
+ * nothing else), so this is confirmatory: a regression that pushed TN
+ * attributes for a TL-mode cabinet too would show up as an unexpected
+ * command here, since TL mode has no MinTemperature/MaxTemperature/Step/
+ * TemperatureSetpoint attributes on the live cluster at all (the fifth
+ * abort trap makes the two feature sets mutually exclusive). */
+static void test_tl_reconcile_pushes_only_labels_and_level_no_tn_attributes(void) {
+  MockStream s; MatterTemperatureControlledCabinet c;
+  uint8_t levels[] = { 0, 1, 2 };
+  bringUpTL(s, c, levels, 3, 1, "\"Level 0\",\"Level 1\",\"Level 2\"");
+  check("TL reconcile pushed exactly labels + selected level, nothing else", s.scriptDrained());
+  check("no unexpected commands (no TN attribute writes)", s.unexpected().empty());
 }
 
 /* Generated labels use the level IDENTIFIER, not its array index. */
@@ -326,7 +430,11 @@ int main(void) {
   test_tn_setpoint_out_of_range_is_refused();
   test_tn_failed_write_does_not_update_cache();
   test_tn_rebegin_after_reconcile_refused();
+  test_tn_reconcile_pushes_the_four_cached_values_in_order();
+  test_tn_setter_with_begun_value_is_noop_after_reconcile_push();
+  test_tn_setter_with_new_value_still_writes_after_reconcile_push();
   test_tl_begin_declares_variant1_sends_generated_labels_and_selected_level();
+  test_tl_reconcile_pushes_only_labels_and_level_no_tn_attributes();
   test_tl_generated_labels_use_level_identifier_not_index();
   test_set_labels_sends_exact_quoted_wire_with_comma_in_a_label();
   test_custom_labels_are_resent_on_next_reconcile();

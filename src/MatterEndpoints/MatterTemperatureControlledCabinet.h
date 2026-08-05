@@ -56,19 +56,37 @@
  *    upstream's begin() bodies) and MatterThermostat's deviation 1: a
  *    rejected begin() -- bad arguments, or a re-begin after reconcile --
  *    consumes no registry slot and leaves every cached value untouched.
- * 2. begin() issues no AT traffic beyond the declaration itself: unlike
+ * 2. begin() itself issues no AT traffic beyond the declaration: unlike
  *    upstream, which bakes tempSetpoint/minTemperature/maxTemperature/step
  *    (or the level array) into the esp_matter config struct at endpoint
  *    creation, AT+MTEP=<devtype>[,<variant>] (S3.9) carries no channel for
  *    initial attribute values -- the C6 creates the cluster with whatever
- *    its own data model default is. A sketch that wants a non-default
- *    initial TemperatureNumber state must call the setters explicitly after
- *    Matter.begin(), exactly as every other write-capable class in this
- *    library already requires (see MatterThermostat.h's own begin()).
- *    TemperatureLevel mode is the one exception: hearthOnReconciled() below
- *    pushes the (generated or custom) labels and the selected level
- *    automatically, because there is no other point at which a sketch could
- *    reasonably intervene before a controller might read an empty list.
+ *    its own data model default is (0/10/1 for min/max/step, observed on
+ *    the bench). hearthOnReconciled() below is what actually establishes
+ *    the sketch's chosen state on the device, for BOTH modes, symmetrically:
+ *    it pushes the four cached TemperatureNumber values (min, max, step,
+ *    setpoint, in that order) directly via updateAttributeVal(), bypassing
+ *    the setters' own skip-if-equal, and (TemperatureLevel mode) the
+ *    labels and selected level, exactly as it always did.
+ *
+ *    This replaces an earlier, incorrect contract ("call the setters
+ *    explicitly after Matter.begin()") that shipped in this class's first
+ *    round and was caught on the bench, not in the host suite: a sketch
+ *    calling setMinTemperature() with the very value it had just passed to
+ *    begin() hit the setters' cache-equality skip and sent nothing, because
+ *    begin()'s cache is seeded from the sketch's OWN arguments while the C6
+ *    boots the cluster at esp-matter's unrelated defaults -- the setter's
+ *    skip-if-equal, which assumes cache mirrors device, was therefore wrong
+ *    from the very first call, not just eventually. MatterThermostat's
+ *    begin() (kDefaultMinHeatSetpointLimit-adjacent defaults 1600/2400/2000)
+ *    looks like the same shape and is not: its cache seeds were chosen to
+ *    deliberately MATCH the firmware thunk's own seeded thermostat defaults,
+ *    so cache equals device from boot and its setters' skip-if-equal was
+ *    sound from the start. The cabinet has no such matching firmware seed to
+ *    lean on (its TN values are sketch-supplied, arbitrary), so the
+ *    precedent does not transfer; the reconcile push is what makes cache and
+ *    device agree at all, and only after that does skip-if-equal become
+ *    correct for it too.
  * 3. Every getter (getTemperatureSetpoint(), getSelectedTemperatureLevel(),
  *    getSupportedTemperatureLevelsCount(), ...) returns the cached value
  *    directly, with no getAttributeVal() round trip. Matches this library's
@@ -108,8 +126,9 @@ public:
   ~MatterTemperatureControlledCabinet();
 
   // begin with the TemperatureNumber feature (mutually exclusive with TemperatureLevel).
-  // Declares only; see deviation 2 above for why the values given here are not
-  // pushed to the wire by begin() itself.
+  // Declares only; begin() itself pushes nothing to the wire. The values given
+  // here reach the device automatically during the next Matter.begin() reconcile
+  // (hearthOnReconciled()), not from begin() itself; see deviation 2 above.
   bool begin(double tempSetpoint = 0.00, double minTemperature = -10.0, double maxTemperature = 32.0, double step = 0.50);
 
   // begin with the TemperatureLevel feature (mutually exclusive with TemperatureNumber).
@@ -202,8 +221,10 @@ protected:
   // builds and sends "AT+MTTEMPLEVELS=<ep>,"..."..." for exactly the given labels; wire-only, no cache update
   bool hearthSendLevelLabels(const char *const *labels, uint16_t count);
 
-  // Hearth's own hook (MatterEndPoint.h): resends the TemperatureLevel state
-  // (labels, then SelectedTemperatureLevel) on every reconcile. No-op in
-  // TemperatureNumber mode; see deviation 2.
+  // Hearth's own hook (MatterEndPoint.h), on every reconcile: in
+  // TemperatureNumber mode, pushes the four cached min/max/step/setpoint
+  // values directly to the wire (fix round 2's bench bug); in
+  // TemperatureLevel mode, resends labels then SelectedTemperatureLevel, as
+  // before. See deviation 2.
   void hearthOnReconciled() override;
 };

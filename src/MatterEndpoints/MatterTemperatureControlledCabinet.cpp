@@ -140,25 +140,67 @@ bool MatterTemperatureControlledCabinet::hearthSendLevelLabels(const char *const
 }
 
 /*
- * Hearth's own reconcile hook (MatterEndPoint.h): resend the TemperatureLevel
- * state that the C6 does not persist across a reboot (AT_MT_SPEC.md S3.16),
- * on every reconcile, not only the first. No-op in TemperatureNumber mode:
- * see the header's deviation 2, there is nothing to resend there, upstream's
- * config-at-creation approach has no equivalent on this wire.
+ * Hearth's own reconcile hook (MatterEndPoint.h), on every reconcile, not
+ * only the first. Two symmetric jobs, one per mode (see the header's
+ * deviation 2 for the full "why" of both):
+ *
+ * TemperatureLevel: resend the label list the C6 does not persist across a
+ * reboot (AT_MT_SPEC.md S3.16), then SelectedTemperatureLevel.
+ *
+ * TemperatureNumber (fix round 2, a real bench bug): push the four cached
+ * values -- min, max, step, setpoint, in that order -- directly via
+ * updateAttributeVal(), NOT by calling setMinTemperature()/setStep()/etc.
+ * Those setters' skip-if-equal ("if (cached == new) return true;") is sound
+ * only when the cache already mirrors the live device, which is exactly
+ * what does NOT hold here: begin()'s cache is seeded from the sketch's own
+ * arguments, while the C6 creates the TemperatureNumber cluster at
+ * esp-matter's own defaults (0/10/1), not the sketch's. Calling the setter
+ * with the sketch's own begin() value therefore always hit the skip branch
+ * and never reached the wire at all -- confirmed on the bench: the device
+ * stayed at 0/10/1 forever, and a controller's SetTemperature command
+ * answered CONSTRAINT_ERROR against bounds the sketch believed it had set.
+ * Raw AT writes of the same values propagated fine, exonerating the
+ * firmware. Pushing here, once, unconditionally, is what establishes
+ * cache==device in the first place; only after that does the setters' own
+ * skip-if-equal become the correct optimisation it already is for every
+ * other class in this library (including MatterThermostat, whose begin()
+ * cache seeds deliberately MATCH the firmware thunk's own seeded defaults,
+ * so its cache equals the device from boot -- a precedent that looks
+ * applicable here but is not: the cabinet's TN seeds come from the sketch,
+ * the thermostat's come from the firmware, and only one of those is true by
+ * construction).
  */
 void MatterTemperatureControlledCabinet::hearthOnReconciled() {
-  if (!started || useTemperatureNumber) {
+  if (!started) {
     return;
   }
+  /*
+   * Best-effort throughout, both branches: this runs deep inside
+   * ArduinoMatter::begin(), which has already committed to its own
+   * success/failure verdict for the endpoint composition itself by the time
+   * this hook runs. A failed push here has no further recourse within this
+   * call; the affected value simply stays whatever the C6 already has until
+   * the next reconcile tries again. No cache mutation either way: the cache
+   * already holds the value the sketch intends (from begin() or a prior
+   * successful setter call), so this only ever tries to make the device
+   * match it, never the reverse.
+   */
+  if (useTemperatureNumber) {
+    esp_matter_attr_val_t minVal = esp_matter_int16(rawMinTemperature);
+    updateAttributeVal(kTemperatureControlClusterId, kMinTemperatureAttributeId, &minVal);
+    esp_matter_attr_val_t maxVal = esp_matter_int16(rawMaxTemperature);
+    updateAttributeVal(kTemperatureControlClusterId, kMaxTemperatureAttributeId, &maxVal);
+    esp_matter_attr_val_t stepVal = esp_matter_int16(rawStep);
+    updateAttributeVal(kTemperatureControlClusterId, kStepAttributeId, &stepVal);
+    esp_matter_attr_val_t setpointVal = esp_matter_int16(rawTempSetpoint);
+    updateAttributeVal(kTemperatureControlClusterId, kTemperatureSetpointAttributeId, &setpointVal);
+    return;
+  }
+
   const char *ptrs[kMaxSupportedLevels];
   for (uint16_t i = 0; i < levelLabelCount; i++) {
     ptrs[i] = levelLabels[i];
   }
-  /* Best-effort: this runs deep inside ArduinoMatter::begin(), which has
-   * already committed to its own success/failure verdict for the endpoint
-   * composition itself by the time this hook runs. A failure here has no
-   * further recourse within this call; the labels/level simply stay whatever
-   * the C6 already has until the next reconcile tries again. */
   hearthSendLevelLabels(ptrs, levelLabelCount);
 
   esp_matter_attr_val_t val = esp_matter_uint8(selectedTempLevel);
