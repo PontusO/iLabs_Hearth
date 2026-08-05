@@ -267,10 +267,10 @@ Two smaller differences in the same area, for completeness:
 
 ## Supported device types
 
-Nineteen of arduino-esp32's twenty `Matter*` endpoint classes exist today,
+All twenty of arduino-esp32's `Matter*` endpoint classes exist today,
 matching the firmware's own device type table (`iLabs_AT_Hearth`'s
-`docs/AT_MT_SPEC.md`, "Supported device types"). These nineteen classes resolve
-to eighteen device type IDs, as `MatterColorLight` and `MatterEnhancedColorLight`
+`docs/AT_MT_SPEC.md`, "Supported device types"). These twenty classes resolve
+to nineteen device type IDs, as `MatterColorLight` and `MatterEnhancedColorLight`
 both address the same `0x010D` wire endpoint:
 
 | Class | Device type ID |
@@ -294,6 +294,7 @@ both address the same `0x010D` wire endpoint:
 | `MatterEnhancedColorLight` | `0x010D` |
 | `MatterGenericSwitch` | `0x000F` |
 | `MatterColorLight` | `0x010D` |
+| `MatterTemperatureControlledCabinet` | `0x0071` |
 
 Declaring an unimplemented device type in a sketch fails to link, the same
 as any other undefined symbol.
@@ -337,15 +338,29 @@ the widening on the same reasoning: a signature difference, honestly
 documented in the header and here, keeps the parity story truthful; a
 silent `void` that swallowed a real error would not.
 
+`MatterTemperatureControlledCabinet`, the twentieth and last class (Task
+C5), has two mutually exclusive cluster shapes chosen by a composition
+variant staged with `AT+MTEP=<id>[,<variant>]` and read back as the fourth
+field of `AT+MTEP?`: `begin(tempSetpoint, minTemperature, maxTemperature,
+step)` declares variant 0 (TemperatureNumber), whose four arguments become
+ordinary `AT+MTATTR`-reachable attributes; `begin(supportedLevels,
+levelCount, selectedLevel)` declares variant 1 (TemperatureLevel), whose
+`SelectedTemperatureLevel` is likewise ordinary, but whose
+`SupportedTemperatureLevels` is not an `AT+MTATTR` attribute at all: it is
+served by a CHIP delegate, and the firmware does not persist its labels
+across a reboot. `setSupportedTemperatureLevelLabels(const char *const
+*labels, uint16_t count)` is a Hearth-only addition, not part of upstream's
+surface (upstream's own `setSupportedTemperatureLevels()` carries only
+numeric level identifiers, never label text): it sends real display text
+through `AT+MTTEMPLEVELS`, automatically re-sent on every later
+`Matter.begin()` reconcile alongside generated `"Level <n>"` defaults for
+any level that has not been given a custom one. See the class header for
+the exact grammar enforced host-side before any of it reaches the wire
+(1..16 labels, 1..16 printable ASCII bytes each, never a double quote).
+
 ### Parked
 
-One of arduino-esp32's twenty classes remains out of scope:
-
-- **`MatterTemperatureControlledCabinet`** needs `AT+MTATTRX`, the
-  firmware's command for opaque (non-integer, non-boolean) attribute
-  types. It is specified but unimplemented; see "Limitations" below.
-
-Two further, narrower deferrals inside classes that are otherwise
+Two narrower deferrals inside classes that are otherwise fully
 implemented:
 
 - **`MatterOccupancySensor::setHoldTime()` and `setHoldTimeLimits()` return
@@ -357,17 +372,31 @@ implemented:
   attributes for the WindowCovering cluster; only the percent100ths lift/
   tilt attributes are live on the wire.
 
+**Command-forwarding for app-adjudicated commands (the door-lock family)
+is future work, deliberately deferred rather than parked as a gap.** Every
+class implemented so far is either attribute-driven (`AT+MTATTR`) or, for
+`MatterGenericSwitch`, a fire-and-forget event the cluster server resolves
+on its own. A door lock's `LockDoor`/`UnlockDoor` commands are a different
+shape: the cluster server cannot answer them autonomously, it needs a
+synchronous verdict from the application, which here means a round trip
+across the AT link back to the host before the C6 can respond to the
+controller. No AT command carries that shape yet. Recorded in
+`iLabs_AT_Hearth`'s
+`docs/superpowers/specs/2026-08-05-cabinet-templevels-design.md`, section
+7, as a welcome future challenge, not a limitation of the current class
+set.
+
 ## Examples
 
-`examples/` holds eighteen of `arduino-esp32`'s own Matter example sketches,
+`examples/` holds nineteen of `arduino-esp32`'s own Matter example sketches,
 copied **byte-identical** from
 `libraries/Matter/examples/` in the `esp32` Arduino core (3.3.8), and
 verified with `cmp` against that source. Byte-identity is the point: these
 sketches are the actual evidence that an unmodified sketch is in scope, and
 editing even one line to make it compile would remove that evidence. See
 `iLabs_AT_Hearth`'s Task 9 report for the original three, its Task 6 report
-(devtype expansion) for the thirteen added alongside this table, and its
-Task S4 report for the last two.
+(devtype expansion) for the thirteen added alongside this table, its
+Task S4 report for the next two, and its Task C5 report for the last.
 
 - `MatterOnOffLight`
 - `MatterDimmableLight`
@@ -390,6 +419,10 @@ Task S4 report for the last two.
 - `MatterGenericSwitch` (upstream ships it as `MatterSmartButton`; renamed
   here to match the class name)
 - `MatterColorLight`
+- `MatterTemperatureControlledCabinet` (upstream ships both a
+  TemperatureNumber and a `MatterTemperatureControlledCabinetLevels`
+  TemperatureLevel example; this copy is the TemperatureNumber one, matching
+  the class's default variant)
 
 **They call `WiFi.begin()`, and on this platform that call can never
 succeed.** It is not merely redundant: the sketch would sit in
@@ -539,12 +572,17 @@ one.
 - **`AT+MTATTRX`, the firmware's opaque-attribute-type command, is
   specified but unimplemented.** The attribute surface this library can
   read or write is integers and booleans only; string, array and float
-  attributes are unsupported and any attempt reports `+MTERR:5`.
-- **One of arduino-esp32's twenty endpoint classes remains out of scope**:
-  `MatterTemperatureControlledCabinet`, needing `AT+MTATTRX`. See "Parked"
-  under "Supported device types" above, including the two narrower
-  deferrals inside otherwise-implemented classes (`MatterOccupancySensor`
-  HoldTime, `MatterWindowCovering` absolute position).
+  attributes are unsupported and any attempt reports `+MTERR:5`. A generic
+  transport on this SDK pin could in principle serve string/octet
+  attributes, but every list attribute this library has actually needed
+  (cabinet levels, occupancy HoldTimeLimits) is CHIP-delegate-served and
+  unreachable through it regardless, so it stays reserved rather than built.
+- **All twenty of arduino-esp32's endpoint classes are implemented**, with
+  two narrower deferrals inside otherwise-complete classes
+  (`MatterOccupancySensor` HoldTime, `MatterWindowCovering` absolute
+  position) and command-forwarding for app-adjudicated commands (the
+  door-lock family) deferred as future work. See "Parked" under "Supported
+  device types" above.
 - **The automatic co-processor reset has been exercised on hardware.** Verified
   during C4 end-to-end tests (2026-07-28 commissioning cycle, 2026-08-03
   transport smoke check against both single-stack and combined firmware). See

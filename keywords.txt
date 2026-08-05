@@ -44,6 +44,9 @@ MatterEnhancedColorLight	KEYWORD1
 MatterGenericSwitch	KEYWORD1
 MatterColorLight	KEYWORD1
 
+# The twentieth and last device type (Task C5), completing the class set.
+MatterTemperatureControlledCabinet	KEYWORD1
+
 # Event and callback types.
 hearthEvent_t	KEYWORD1
 hearthEventCB	KEYWORD1
@@ -289,6 +292,24 @@ onChangeColorHSV	KEYWORD2
 # MatterGenericSwitch (Task S4): the one command that is an event, not an
 # attribute write. See the class header for why it returns bool.
 click	KEYWORD2
+
+# MatterTemperatureControlledCabinet (Task C5), the twentieth and last
+# device type. setSupportedTemperatureLevelLabels is a Hearth-only
+# addition, not part of upstream's surface; see README.md, "Supported
+# device types".
+setTemperatureSetpoint	KEYWORD2
+getTemperatureSetpoint	KEYWORD2
+setMinTemperature	KEYWORD2
+getMinTemperature	KEYWORD2
+setMaxTemperature	KEYWORD2
+getMaxTemperature	KEYWORD2
+setStep	KEYWORD2
+getStep	KEYWORD2
+setSelectedTemperatureLevel	KEYWORD2
+getSelectedTemperatureLevel	KEYWORD2
+setSupportedTemperatureLevels	KEYWORD2
+getSupportedTemperatureLevelsCount	KEYWORD2
+setSupportedTemperatureLevelLabels	KEYWORD2
 
 # HearthColorUtil.h conversions, called out from MatterEnhancedColorLight's
 # getColorRGB()/setColorRGB(), and from examples/MatterEnhancedColorLight's

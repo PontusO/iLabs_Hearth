@@ -33,10 +33,10 @@
  * one-way dependency, not a cycle broken only by #pragma once appearing to
  * work.
  *
- * Task S4 (switch + color light) adds the last two of upstream's twenty:
- * MatterGenericSwitch.h and MatterColorLight.h, taking this list to
- * nineteen. MatterTemperatureControlledCabinet remains the one class this
- * library does not implement (needs AT+MTATTRX; see README.md, "Parked").
+ * Task S4 (switch + color light) added MatterGenericSwitch.h and
+ * MatterColorLight.h, taking this list to nineteen. Task C5 adds the
+ * twentieth and last, MatterTemperatureControlledCabinet.h, completing
+ * upstream's class set. See README.md, "Supported device types".
  */
 #pragma once
 
@@ -64,6 +64,7 @@
 #include "MatterEndpoints/MatterEnhancedColorLight.h"
 #include "MatterEndpoints/MatterGenericSwitch.h"
 #include "MatterEndpoints/MatterColorLight.h"
+#include "MatterEndpoints/MatterTemperatureControlledCabinet.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART
