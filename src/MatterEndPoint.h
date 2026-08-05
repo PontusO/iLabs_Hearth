@@ -124,12 +124,27 @@ public:
    * everything after it: endpoint IDs are assigned from declaration order,
    * so compacting the array any other way would silently reshuffle the
    * composition. Called from the destructor; a sketch has no reason to call
-   * it directly. */
+   * it directly.
+   *
+   * hearthDeclare()'s three-arg form carries the per-device-type variant
+   * AT_MT_SPEC.md S3.9 added (`AT+MTEP=<id>[,<variant>]`): a sub-selector
+   * within one device type ID, today meaningful only for the Temperature
+   * Controlled Cabinet (0 = TemperatureNumber, 1 = TemperatureLevel), and
+   * `0` for every other type. The two-arg form is every existing class's
+   * call site, unchanged; it forwards to the three-arg form with variant 0
+   * rather than duplicating the declare/refuse logic above. Order matters
+   * exactly as much for the variant as for the device type itself: it is
+   * part of what makes two compositions identical (see hearthOnReconciled()
+   * below and ArduinoMatter::begin()'s comparison in Hearth.cpp), so a
+   * changed variant on an otherwise-identical declaration must trigger a
+   * rebuild the same way a changed device type does. */
   static bool hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId);
+  static bool hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId, uint8_t variant);
   static void hearthUndeclare(MatterEndPoint *ep);
   static uint8_t hearthDeclaredCount();
   static MatterEndPoint *hearthDeclaredAt(uint8_t index);
   static uint32_t hearthDeclaredTypeAt(uint8_t index);
+  static uint8_t hearthDeclaredVariantAt(size_t index);
   static void hearthClearDeclarations();
 
   /*
@@ -150,6 +165,22 @@ public:
    * begin()) can reconcile again from a clean slate. */
   static void hearthMarkReconciled();
 
+  /*
+   * Hearth's own addition, not part of the upstream surface (same
+   * precedent as the hearth* statics above): called once per declared
+   * endpoint by ArduinoMatter::begin() (Hearth.cpp), immediately after that
+   * endpoint's endpoint_id is adopted from the C6's reported composition,
+   * on every reconcile, not only the first. Default no-op; an endpoint
+   * type overrides it only when it owns state the C6 does not persist
+   * across a reboot and must therefore resend on every link
+   * (re-)establishment rather than once at creation, e.g.
+   * MatterTemperatureControlledCabinet's TemperatureLevel labels
+   * (AT_MT_SPEC.md S3.16: "Labels are NOT persisted... the sketch re-sends
+   * them after every boot"). Every other endpoint type in this library has
+   * no such state and does not override this.
+   */
+  virtual void hearthOnReconciled();
+
 protected:
   uint16_t endpoint_id = 0;
   EndPointIdentifyCB _onEndPointIdentifyCB = nullptr;
@@ -158,6 +189,7 @@ private:
   struct HearthDeclaration {
     MatterEndPoint *ep;
     uint32_t deviceTypeId;
+    uint8_t variant;
   };
   static HearthDeclaration _hearthDeclared[HEARTH_MAX_ENDPOINTS];
   static uint8_t _hearthDeclaredCount;

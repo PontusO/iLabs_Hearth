@@ -168,6 +168,10 @@ void MatterEndPoint::onIdentify(EndPointIdentifyCB onEndPointIdentifyCB) {
 }
 
 bool MatterEndPoint::hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId) {
+  return hearthDeclare(ep, deviceTypeId, 0);
+}
+
+bool MatterEndPoint::hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId, uint8_t variant) {
   if (ep == nullptr) {
     return false;
   }
@@ -208,6 +212,7 @@ bool MatterEndPoint::hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId) {
       return false;
     }
     _hearthDeclared[i].deviceTypeId = deviceTypeId;
+    _hearthDeclared[i].variant = variant;
     return true;
   }
   if (_hearthDeclaredCount >= HEARTH_MAX_ENDPOINTS) {
@@ -227,6 +232,7 @@ bool MatterEndPoint::hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId) {
   }
   _hearthDeclared[_hearthDeclaredCount].ep = ep;
   _hearthDeclared[_hearthDeclaredCount].deviceTypeId = deviceTypeId;
+  _hearthDeclared[_hearthDeclaredCount].variant = variant;
   _hearthDeclaredCount++;
   return true;
 }
@@ -253,6 +259,7 @@ void MatterEndPoint::hearthUndeclare(MatterEndPoint *ep) {
     _hearthDeclaredCount--;
     _hearthDeclared[_hearthDeclaredCount].ep = nullptr;
     _hearthDeclared[_hearthDeclaredCount].deviceTypeId = 0;
+    _hearthDeclared[_hearthDeclaredCount].variant = 0;
     return;
   }
 }
@@ -275,6 +282,13 @@ uint32_t MatterEndPoint::hearthDeclaredTypeAt(uint8_t index) {
   return _hearthDeclared[index].deviceTypeId;
 }
 
+uint8_t MatterEndPoint::hearthDeclaredVariantAt(size_t index) {
+  if (index >= (size_t)_hearthDeclaredCount) {
+    return 0;
+  }
+  return _hearthDeclared[index].variant;
+}
+
 void MatterEndPoint::hearthClearDeclarations() {
   _hearthDeclaredCount = 0;
   _hearthReconciled = false;
@@ -287,6 +301,9 @@ void MatterEndPoint::hearthClearDeclarations() {
 void MatterEndPoint::hearthMarkReconciled() {
   _hearthReconciled = true;
 }
+
+/* Base default: no state to resend. See the header comment. */
+void MatterEndPoint::hearthOnReconciled() {}
 
 MatterEndPoint *MatterEndPoint::hearthFindByEndPointId(uint16_t ep) {
   /* 0 is the Root Node and also the "not reconciled yet" value every
