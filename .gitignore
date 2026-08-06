@@ -35,6 +35,8 @@ build/
 /test/host/test_airpurifier
 /test/host/test_extractorhood
 /test/host/test_cooktop
+/test/host/test_roomac
+/test/host/test_pump
 
 *.bin
 *.uf2
