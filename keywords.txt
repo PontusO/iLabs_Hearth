@@ -172,6 +172,7 @@ hearthIsAttrRead	KEYWORD2
 # MatterEndPoint: base class every endpoint type derives from.
 attributeChangeCB	KEYWORD2
 hearthAttrTypeFor	KEYWORD2
+hearthOnForwardedCommand	KEYWORD2
 getEndPointId	KEYWORD2
 setEndPointId	KEYWORD2
 getAttributeVal	KEYWORD2

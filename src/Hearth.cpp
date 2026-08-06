@@ -493,21 +493,45 @@ void HearthClass::hearthEnqueueCmdResp(uint32_t seq, bool verdict) {
  * _link.command() path -- never self->hearthCommand(), which would run
  * poll() and this same drain again and would let a queued reply's own
  * +MTERR:1 (a harmless stale/already-answered seq, AT_MT_SPEC.md S3.17)
- * clobber the caller's lastError(). Called only from hearthCommand() and
- * poll(), both after their own _link call has returned, i.e. with
- * HearthLink::_busy already false: _link.command() here is therefore a
- * genuine, non-reentrant call that blocks for and consumes its own
- * terminal before the next entry (or the original caller) runs.
+ * clobber the caller's lastError().
+ *
+ * Final review of the command-forwarding round, IMPORTANT 2. This used to
+ * assume its two call sites (hearthCommand() and poll(), both after their
+ * own _link call has returned) were the only ones, and that HearthLink::
+ * _busy was therefore always false here. That assumption is false: a
+ * sketch's onChange handler may call back into the library (the README's
+ * own documented, if refused, pattern -- see HearthLink.h's
+ * HEARTH_CMD_REENTRANT), and that nested call's own hearthCommand() runs
+ * poll() at ITS top, which reaches this same drain while the OUTER
+ * command()'s busy latch is still held. _busy is one flag, not a per-call
+ * counter, so it reads true here too. Popping the entry and handing it to
+ * _link.command() in that state got HEARTH_CMD_REENTRANT back -- correctly
+ * refused, nothing went on the wire -- but the entry was already gone,
+ * discarded rather than merely delayed: the firmware default-denied after
+ * its own 1000 ms with no AT+MTCMDRESP ever sent, even though the sketch's
+ * onLock()/onUnlock() had already run and answered.
+ *
+ * Fixed by checking HearthLink::busy() before popping, not after: a busy
+ * link bails out with the queue untouched, so the entry survives every
+ * reentrant drain attempt made while the outer exchange is still in
+ * flight and is finally sent, as its own exchange, from the drain that
+ * outer call runs once its own _link.command() has returned and the busy
+ * latch has released -- the case this comment used to assume was the only
+ * one.
  *
  * Re-reads _cmdRespQueueCount on every iteration rather than snapshotting
  * it once: the _link.command() call below can itself dispatch a further
  * +MTCMD if one interleaves with THIS reply's own OK/+MTERR wait, which
  * enqueues another entry via hearthEnqueueCmdResp() above. Looping until
- * the queue is actually empty is what drains that one too, in the same
- * call, rather than leaving it for the next unrelated poll()/hearthCommand().
+ * the queue is actually empty (or the link goes busy) is what drains that
+ * one too, in the same call, rather than leaving it for the next unrelated
+ * poll()/hearthCommand().
  */
 void HearthClass::hearthDrainCmdRespQueue() {
   while (_cmdRespQueueCount > 0) {
+    if (_link.busy()) {
+      return;
+    }
     HearthPendingCmdResp entry = _cmdRespQueue[0];
     for (uint8_t i = 1; i < _cmdRespQueueCount; i++) {
       _cmdRespQueue[i - 1] = _cmdRespQueue[i];

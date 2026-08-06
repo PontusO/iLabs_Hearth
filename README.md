@@ -429,6 +429,27 @@ firmware never having heard back, whether because no callback was
 registered, the callback was slow, or the sketch's own polling cadence lost
 the race.
 
+**A forward that arrives while the sketch already has a bridge command of
+its own in flight cannot be answered inside the window, by construction.**
+"In flight" means any AT-backed call: a query (`AT+MTNET?`,
+`Matter.isDeviceCommissioned()`) or a setter (`setLockState()`, an
+attribute write) on any endpoint, not just this one. The link is
+single-reader (see "Driving the event loop" above): while one exchange is
+still waiting on its own terminal `OK`/`ERROR`, `+MTCMD`'s callback still
+runs (dispatch is not blocked), but the `AT+MTCMDRESP` reply it produces
+can only be queued, never sent, until that exchange releases the link, and
+`Hearth.poll()`/`hearthCommand()` are the only things that ever drain the
+queue. A sketch whose hot loop issues its own bridge traffic on every pass
+narrows the effective window every single time, and a slow enough one
+(or one already close to the 1000 ms edge) loses the race the same way a
+blocking `loop()` does above: the firmware's own deadline expires first,
+it default-denies, and `+MTCMDTO:<seq>` arrives having genuinely never had
+a chance. Keep per-loop status polling such as
+`Matter.isDeviceCommissioned()` off the hot loop in any sketch where a
+lock's (or other forwarded command's) verdict actually matters; the
+`MatterDoorLockAdjudicated` example below does not poll anything of the
+kind.
+
 **Verdict replies do not go out from inside the callback.** `AT+MTCMDRESP`
 is sent afterward, from a deferred queue drained once the current AT
 exchange has released the link, so a sketch author should not expect the

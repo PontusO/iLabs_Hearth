@@ -57,6 +57,19 @@ public:
   }
 
   /*
+   * True while command() or poll() is reading from the stream and
+   * dispatching what it reads -- see _busy's own comment below. Exposed so
+   * a caller one layer up (Hearth.cpp's hearthDrainCmdRespQueue()) can tell,
+   * BEFORE consuming its own state, that a _link.command() call right now
+   * would be refused HEARTH_CMD_REENTRANT rather than finding that out only
+   * after already popping something that call was meant to send. Read-only:
+   * nothing outside this class may set the flag.
+   */
+  bool busy() const {
+    return _busy;
+  }
+
+  /*
    * Send one AT command line (CRLF appended) and wait for its terminal
    * response. Intermediate query-result lines (e.g. +MTEP:, +MTATTR:,
    * +MTCODES:) are delivered to onLine; asynchronous URCs that arrive

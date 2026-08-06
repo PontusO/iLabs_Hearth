@@ -4,9 +4,11 @@
  * type with no arduino-esp32 counterpart.
  */
 #include <stdio.h>
+#include <functional>
 #include "ArduinoShim.h"
 #include "MockStream.h"
 #include "Hearth.h"
+#include "MatterEndPoint.h"
 #include "MatterEndpoints/MatterDoorLock.h"
 
 static int g_pass = 0, g_fail = 0;
@@ -205,6 +207,74 @@ static void test_forwarded_command_queued_before_next_command_does_not_misattrib
   check("no unexpected commands", s.unexpected().empty());
 }
 
+/*
+ * Final review of the command-forwarding round, IMPORTANT 2. Reachable, not
+ * hypothetical: hearthDrainCmdRespQueue() used to pop each queued verdict
+ * and hand it straight to _link.command() with no check that the link was
+ * already busy. An outer exchange can interleave a +MTCMD (which only
+ * enqueues; see hearthDispatchCmd()'s own comment) ahead of a +MTATTR whose
+ * sketch onChange fires from inside that SAME outer read loop and calls
+ * back into the library. That nested hearthCommand()'s own top-of-call
+ * poll() reaches the drain while HearthLink is still busy serving the
+ * outer exchange (HearthLink::_busy is one flag, not a per-call counter, so
+ * it reads true all the way down); the drain popped the entry anyway, its
+ * own _link.command() call was refused HEARTH_CMD_REENTRANT, and the
+ * verdict was gone -- discarded, not merely delayed. The firmware default-
+ * denies after its own 1000 ms with nothing ever having been sent, exactly
+ * the doorlock left unlocked (or the light left off) the sketch's allowing
+ * onLock() thought it had already answered.
+ *
+ * Fix: hearthDrainCmdRespQueue() now checks HearthLink::busy() (added for
+ * this) before popping and bails out, entry untouched, when the link is
+ * busy. The entry survives every reentrant drain attempt made while the
+ * outer exchange is still in flight and is finally sent, as its own
+ * exchange, from the drain the outer hearthCommand() runs after its own
+ * _link.command() call has returned and the busy latch has released.
+ */
+class TestNestedCallEndPoint : public MatterEndPoint {
+public:
+  std::function<bool()> onAttr;
+  bool attributeChangeCB(uint16_t, uint32_t, uint32_t, esp_matter_attr_val_t *) override {
+    return onAttr ? onAttr() : true;
+  }
+};
+
+static void test_verdict_survives_nested_reentrant_drain(void) {
+  MockStream s;
+  MatterDoorLock lock;
+  TestNestedCallEndPoint watcher;
+  MatterEndPoint::hearthClearDeclarations();
+  Hearth.begin(s);
+  lock.begin(false);                                /* declares first: adopts endpoint 1 */
+  MatterEndPoint::hearthDeclare(&watcher, 0x0100);  /* declares second: adopts endpoint 2 */
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x000A\r\n+MTEP:1,2,0x0100\r\nOK\r\n");
+  s.expect("AT+MTLOCK=1,2,1", "OK\r\n");  /* reconcile's unconditional push: Unlocked(2), Manual(1) */
+  Matter.begin();
+
+  lock.onLock([]() { return true; });
+  int nestedRc = 12345;
+  int nestedCalls = 0;
+  watcher.onAttr = [&]() {
+    nestedCalls++;
+    /* Any bridge command stands in here: the sketch's onChange calling back
+     * into the library at all is what matters, not which command. */
+    nestedRc = Hearth.hearthCommand("AT+MTVER?");
+    return true;
+  };
+
+  /* The outer exchange: an unrelated "AT" whose scripted reply interleaves
+   * the +MTCMD verdict request ahead of the +MTATTR that fires watcher's
+   * nested call, exactly as a real co-processor interleaves two
+   * asynchronous notifications inside one command's own response window. */
+  s.expect("AT", "+MTCMD:7,1,257,0\r\n+MTATTR:2,6,0,1\r\nOK\r\n");
+  s.expect("AT+MTCMDRESP=7,1", "OK\r\n");
+  check("the outer exchange completes with its own real terminal", Hearth.hearthCommand("AT") == 0);
+  check("the nested callback really ran", nestedCalls == 1);
+  check("and its own call into the library was refused re-entrant", nestedRc == HEARTH_CMD_REENTRANT);
+  check("the verdict survived the reentrant drain and went out after unwind", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 /* ===== Step 2: class behaviour ===== */
 
 static void test_begin_declares_0x000a_variant0(void) {
@@ -299,6 +369,7 @@ int main(void) {
   test_command_timeout_raises_link_event();
   test_forwarded_command_interleaved_in_outer_response_drains_after();
   test_forwarded_command_queued_before_next_command_does_not_misattribute();
+  test_verdict_survives_nested_reentrant_drain();
   test_begin_declares_0x000a_variant0();
   test_rebegin_after_reconcile_refused();
   test_setlockstate_exact_wire_pin_and_cache_update();
