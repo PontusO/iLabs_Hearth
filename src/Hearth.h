@@ -378,6 +378,43 @@ private:
   static void hearthDispatchCmd(const char *rest, HearthClass *self);
   static void hearthDispatchCmdTimeout(const char *rest, HearthClass *self);
 
+  /*
+   * Fix round 1 (C3 review, CRITICAL): a +MTCMD verdict must never be
+   * written to the wire from inside dispatchURC() itself. That call runs
+   * with HearthLink's busy gate already held by the outer command()/poll()
+   * that delivered the URC, so a fire-and-forget write there leaves its own
+   * OK/+MTERR terminal ownerless on the single-reader link: a later
+   * command()'s read loop can claim it as ITS OWN terminal instead of the
+   * reply it actually asked for (confirmed against the real library: a
+   * rejected AT+MTLOCK read back as success because the queued AT+MTCMDRESP
+   * reply's OK arrived first and was consumed by the next hearthCommand()).
+   *
+   * The fix: hearthDispatchCmd() only runs the verdict callback and enqueues
+   * (seq, verdict) here; hearthDrainCmdRespQueue() -- called from
+   * hearthCommand() and poll(), both AFTER their own _link.command()/
+   * _link.poll() call has returned, i.e. with the busy gate released --
+   * sends each queued reply through the ordinary _link.command() path,
+   * which waits for and consumes its own terminal before the next entry (or
+   * the caller) gets to run. No orphan terminal can exist: every
+   * AT+MTCMDRESP exchange, including its OK/+MTERR:1, is fully resolved
+   * before this class ever does anything else on the link.
+   *
+   * Depth 4: the firmware serializes command forwards (only one window open
+   * at a time), so more than one or two entries here is already an unusual
+   * burst (e.g. a +MTCMDTO followed immediately by a new forward); 4 is
+   * headroom, not a tuned minimum. An overflow silently drops the newest
+   * entry -- the firmware's own 1000 ms deadline default-denies it anyway,
+   * so a dropped reply degrades to exactly the timeout path already handled
+   * (HEARTH_CMD_TIMEOUT), not a hang.
+   */
+  struct HearthPendingCmdResp {
+    uint32_t seq;
+    bool verdict;
+  };
+  static const uint8_t kHearthCmdRespQueueDepth = 4;
+  void hearthEnqueueCmdResp(uint32_t seq, bool verdict);
+  void hearthDrainCmdRespQueue();
+
   HearthLink _link;
   int _lastError;
   bool _warnedAboutRecommission;
@@ -387,6 +424,8 @@ private:
   uint32_t _expectedRebootArmedAt;
   uint32_t _expectedRebootTimeoutMs;
   hearthEventCB _linkEventCB;
+  HearthPendingCmdResp _cmdRespQueue[kHearthCmdRespQueueDepth];
+  uint8_t _cmdRespQueueCount;
 };
 
 /*

@@ -128,6 +128,64 @@ static void test_command_timeout_raises_link_event(void) {
   Hearth.onLinkEvent(nullptr);
 }
 
+/*
+ * Fix round 1 (C3 review, CRITICAL): the +MTCMD URC interleaves with an
+ * unrelated outer command's own response lines -- exactly what a real UART
+ * does when a controller's LockDoor invoke lands mid-flight of something
+ * else the sketch is doing. The verdict callback still runs at dispatch
+ * time (inside the outer command's own read loop, so the firmware's
+ * 1000 ms deadline sees no different timing than before), but the
+ * AT+MTCMDRESP reply must not go out until AFTER the outer exchange's own
+ * terminal has been consumed as ITS terminal: a separate, later exchange
+ * with its own OK, not stolen by (or stealing) the outer command's OK.
+ * "AT" stands in for any unrelated outer command; the interleaved URC is
+ * staged inside ITS OWN scripted reply, ahead of its OK, exactly as a real
+ * co-processor would interleave an asynchronous notification with a
+ * synchronous command's response.
+ */
+static void test_forwarded_command_interleaved_in_outer_response_drains_after(void) {
+  MockStream s; MatterDoorLock lock;
+  bringUp(s, lock, false);
+  lock.onLock([]() { return true; });
+
+  s.expect("AT", "+MTCMD:7,1,257,0\r\nOK\r\n");
+  s.expect("AT+MTCMDRESP=7,1", "OK\r\n");
+  check("the outer command completes with its own real terminal", Hearth.hearthCommand("AT") == 0);
+  check("the queued verdict drained afterward, as its own exchange", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/*
+ * Fix round 1 (C3 review, CRITICAL): the reviewer's own compiled demo,
+ * pinned directly. The +MTCMD URC is already sitting on the wire, as if it
+ * arrived while the host was idle, before the very next library call
+ * starts. setLockState() -> hearthCommand()'s own top-of-call poll() is
+ * where it is picked up and the verdict callback runs; the fix is that the
+ * AT+MTCMDRESP reply is fully drained -- its own OK consumed -- BEFORE the
+ * outer AT+MTLOCK command is ever sent, so it cannot claim, or be claimed
+ * by, that command's own terminal.
+ *
+ * Before the fix (a fire-and-forget write from inside dispatchURC()), this
+ * exact scenario read the firmware's real +MTERR:2 rejection as a false OK:
+ * setLockState() returned true and the cache updated to Locked, while the
+ * wire had genuinely rejected the write. Reproduced against this test with
+ * the pre-fix dispatch (see the report's red excerpt) before implementing
+ * the queue.
+ */
+static void test_forwarded_command_queued_before_next_command_does_not_misattribute(void) {
+  MockStream s; MatterDoorLock lock;
+  bringUp(s, lock, false); /* cache Unlocked, endpoint 1 */
+  lock.onLock([]() { return true; });
+
+  s.injectURC("+MTCMD:7,1,257,0");
+  s.expect("AT+MTCMDRESP=7,1", "OK\r\n");                /* drained first, its own terminal */
+  s.expect("AT+MTLOCK=1,1,1", "+MTERR:2\r\nERROR\r\n");  /* the firmware's real (rejecting) answer */
+  check("setLockState() sees the wire's real answer, not an orphaned OK", !lock.setLockState(MatterDoorLock::kStateLocked, MatterDoorLock::kSourceManual));
+  check("and the cache reflects the real rejection", lock.getLockState() == MatterDoorLock::kStateUnlocked);
+  check("both exchanges completed, each claiming its own terminal", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 /* ===== Step 2: class behaviour ===== */
 
 static void test_begin_declares_0x000a_variant0(void) {
@@ -146,6 +204,11 @@ static void test_rebegin_after_reconcile_refused(void) {
   check("and reports the composition-rejected code", Hearth.lastError() == 10);
   check("the cached lock state was not overwritten", lock.getLockState() == MatterDoorLock::kStateLocked);
   check("the refused begin() issued no AT traffic", s.scriptDrained());
+  /* scriptDrained() alone is vacuously true here (nothing was ever
+   * queued): it cannot observe unscripted traffic, only that whatever WAS
+   * scripted got consumed. Only unexpected().empty() actually checks that
+   * begin() wrote nothing to the wire. */
+  check("and nothing unscripted was sent either", s.unexpected().empty());
 }
 
 static void test_setlockstate_exact_wire_pin_and_cache_update(void) {
@@ -188,6 +251,10 @@ static void test_setlockstate_before_reconcile_fails_without_traffic(void) {
   check("setLockState() before reconcile fails", !lock.setLockState(MatterDoorLock::kStateUnlocked, MatterDoorLock::kSourceManual));
   check("and reports the unaddressable-endpoint code", Hearth.lastError() == 2);
   check("no traffic issued", s.scriptDrained());
+  /* Same reasoning as test_rebegin_after_reconcile_refused(): scriptDrained()
+   * cannot see unscripted traffic on its own; a check that cannot observe
+   * its variable is not a check. */
+  check("and nothing unscripted was sent either", s.unexpected().empty());
 }
 
 /* Controller/firmware-driven change: LockState (cluster 257, attr 0) over
@@ -211,6 +278,8 @@ int main(void) {
   test_forwarded_command_unknown_endpoint_denies();
   test_forwarded_command_unrecognised_id_denies();
   test_command_timeout_raises_link_event();
+  test_forwarded_command_interleaved_in_outer_response_drains_after();
+  test_forwarded_command_queued_before_next_command_does_not_misattribute();
   test_begin_declares_0x000a_variant0();
   test_rebegin_after_reconcile_refused();
   test_setlockstate_exact_wire_pin_and_cache_update();

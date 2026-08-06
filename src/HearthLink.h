@@ -72,34 +72,6 @@ public:
    */
   int command(const char *cmd, LineCb onLine = nullptr, void *arg = nullptr, uint32_t timeout_ms = 0);
 
-  /*
-   * Write cmd+CRLF straight to the stream and return immediately: no wait
-   * for a reply, and no _busy check, unlike command()/poll()/waitReady().
-   *
-   * The one caller (Hearth.cpp's +MTCMD dispatch, C3) runs from inside
-   * dispatchURC() itself, i.e. while _busy is already held by the outer
-   * command()/poll() that delivered the URC. The ordinary response-waiting
-   * command() is refused from there by design (HEARTH_CMD_REENTRANT) --
-   * exactly the refusal a sketch's own URC-triggered callback already gets
-   * if it calls back into the library (test_onofflight.cpp and siblings
-   * pin that down) -- and rightly so: a second reader on this one line
-   * accumulator would steal the outer reader's lines.
-   *
-   * AT+MTCMDRESP has nothing worth blocking on here: the firmware's own
-   * 1000 ms verdict deadline (AT_MT_SPEC.md S3.17) is what the reply exists
-   * to beat, and a stale/unknown/already-answered seq's +MTERR:1 is
-   * documented as harmless. The eventual OK/+MTERR line this write provokes
-   * is left for whichever loop already owns the read to pick up and quietly
-   * ignore -- poll()'s "ignore stray OK/ERROR/result lines outside a
-   * command" branch, or an outer command()'s own onLine, where it lands as
-   * an unrecognised intermediate line -- the same way any other line
-   * neither side is synchronously waiting on is already handled.
-   *
-   * A no-op before begin() (no stream to write to), same as every other
-   * method here.
-   */
-  void sendLine(const char *cmd);
-
   /* Non-blocking: read and dispatch any pending asynchronous URC lines.
    * A no-op when called re-entrantly (from a URC callback, or from a
    * callback running inside command()): draining there would consume lines

@@ -19,7 +19,8 @@ HearthClass::HearthClass()
     _expectingReboot(false),
     _expectedRebootSeen(false),
     _expectedRebootArmedAt(0),
-    _expectedRebootTimeoutMs(0) {}
+    _expectedRebootTimeoutMs(0),
+    _cmdRespQueueCount(0) {}
 
 void HearthClass::begin(Stream &serial, unsigned long baud) {
   (void)baud;  // see the header: a caller-supplied Stream has no begin() of its own to call with it;
@@ -138,6 +139,11 @@ void HearthClass::poll() {
    */
   _link.poll();
   hearthCheckExpectedRebootExpiry();
+  /* Fix round 1 (C3 review): drain any +MTCMD verdicts _link.poll() just
+   * queued, now that its busy gate has been released. See
+   * hearthDrainCmdRespQueue()'s own comment for why this cannot happen
+   * inside dispatchURC() itself. */
+  hearthDrainCmdRespQueue();
 }
 
 void HearthClass::hearthOnVerLine(const char *line, void *arg) {
@@ -188,6 +194,15 @@ int HearthClass::hearthCommand(const char *cmd, HearthLink::LineCb onLine, void 
   int rc = _link.command(cmd, onLine, arg);
   hearthCheckExpectedRebootExpiry();
   _lastError = (rc > 0) ? rc : 0;
+  /* Fix round 1 (C3 review): drain any +MTCMD verdicts queued during either
+   * the poll() drain above or this command's own read loop, now that
+   * _link.command()'s busy gate has been released. Runs after _lastError is
+   * set from `rc` above, and uses _link.command() directly (not this
+   * hearthCommand() wrapper) so a queued AT+MTCMDRESP's own reply -- even a
+   * harmless +MTERR:1 for a stale seq -- can never clobber the caller's own
+   * lastError(). See hearthDrainCmdRespQueue()'s comment for the full
+   * reasoning. */
+  hearthDrainCmdRespQueue();
   return rc;
 }
 
@@ -398,22 +413,31 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
  * "<seq>,<ep>,<cluster>,<command>" (text after "+MTCMD:"), AT_MT_SPEC.md
  * S3.17: a controller invoked a command that needs an app-level verdict.
  * Routes to the named endpoint's hearthOnForwardedCommand() (MatterEndPoint.h)
- * and answers immediately with AT+MTCMDRESP=<seq>,<verdict>. An endpoint the
- * sketch never declared, or one whose override still says no (the base
- * class default), both deny -- fail closed, per the wire contract.
+ * at dispatch time -- the timing the user's callback sees is unchanged --
+ * but does NOT write AT+MTCMDRESP here. An endpoint the sketch never
+ * declared, or one whose override still says no (the base class default),
+ * both deny -- fail closed, per the wire contract.
  *
- * The reply goes out via HearthLink::sendLine(), not the ordinary
- * hearthCommand()/HearthLink::command() path: this function runs from
- * inside dispatchURC(), i.e. while the link's busy gate is already held by
- * the outer command()/poll() that delivered this URC (HearthLink.h's own
- * comment on _busy). hearthCommand() would be refused there with
- * HEARTH_CMD_REENTRANT, exactly the refusal a sketch's own URC-triggered
- * callback already gets if it tries to call back into the library
- * (test_onofflight.cpp and siblings pin that down for attributeChangeCB;
- * the reasoning is identical here, just internal to the library instead of
- * in sketch code). AT+MTCMDRESP has nothing worth blocking on regardless:
- * see sendLine()'s own comment for why a fire-and-forget write is the
- * right shape for this one command.
+ * Fix round 1 (C3 review, CRITICAL): this function used to send the reply
+ * immediately via a fire-and-forget HearthLink::sendLine(), reasoning that
+ * dispatchURC() runs with the link's busy gate already held (by the outer
+ * command()/poll() that delivered this URC), so the ordinary
+ * hearthCommand() path would be refused with HEARTH_CMD_REENTRANT. That
+ * refusal reasoning was right, but the fix was wrong: a write with no
+ * reader waiting for it leaves its own OK/+MTERR:1 terminal ownerless on
+ * this single-reader link. Confirmed against the real library, not just
+ * argued: a later command's read loop -- worst case the very next
+ * hearthCommand() call, sent immediately after this dispatch returns --
+ * can read that ownerless OK as ITS OWN terminal instead of the reply it
+ * actually asked for. A rejected AT+MTLOCK write (+MTERR:2) then read back
+ * as success, with the cache updated to match.
+ *
+ * The real fix: enqueue (seq, verdict) here and let
+ * hearthDrainCmdRespQueue() -- called from hearthCommand() and poll(),
+ * both AFTER their own _link.command()/_link.poll() call returns, i.e.
+ * with the busy gate released -- send it through the ordinary
+ * _link.command() path, which blocks for and consumes its own terminal
+ * before anything else on this link runs. See that method's own comment.
  *
  * A malformed line (fields do not parse) is dropped without a reply, the
  * same silent-drop policy hearthDispatchAttr()/hearthDispatchIdent() use
@@ -440,9 +464,60 @@ void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
   MatterEndPoint *target = MatterEndPoint::hearthFindByEndPointId((uint16_t)ep);
   bool verdict = target && target->hearthOnForwardedCommand((uint32_t)cluster, (uint32_t)command);
 
-  char cmd[40];
-  snprintf(cmd, sizeof(cmd), "AT+MTCMDRESP=%lu,%d", seq, verdict ? 1 : 0);
-  self->_link.sendLine(cmd);
+  self->hearthEnqueueCmdResp((uint32_t)seq, verdict);
+}
+
+/*
+ * Enqueue a verdict for hearthDrainCmdRespQueue() to send once the busy
+ * gate is released. Called only from inside dispatchURC() (hearthDispatchCmd()
+ * above), so this must never touch the wire itself -- see that function's
+ * comment for why.
+ *
+ * A full queue drops the newest entry silently rather than growing
+ * unbounded or overwriting an older one: see the queue's own depth comment
+ * in Hearth.h for why a drop here is not a hang (the firmware's 1000 ms
+ * deadline already covers it, degrading to the ordinary HEARTH_CMD_TIMEOUT
+ * path).
+ */
+void HearthClass::hearthEnqueueCmdResp(uint32_t seq, bool verdict) {
+  if (_cmdRespQueueCount >= kHearthCmdRespQueueDepth) {
+    return;
+  }
+  _cmdRespQueue[_cmdRespQueueCount].seq = seq;
+  _cmdRespQueue[_cmdRespQueueCount].verdict = verdict;
+  _cmdRespQueueCount++;
+}
+
+/*
+ * Send every queued AT+MTCMDRESP reply, oldest first, through the ordinary
+ * _link.command() path -- never self->hearthCommand(), which would run
+ * poll() and this same drain again and would let a queued reply's own
+ * +MTERR:1 (a harmless stale/already-answered seq, AT_MT_SPEC.md S3.17)
+ * clobber the caller's lastError(). Called only from hearthCommand() and
+ * poll(), both after their own _link call has returned, i.e. with
+ * HearthLink::_busy already false: _link.command() here is therefore a
+ * genuine, non-reentrant call that blocks for and consumes its own
+ * terminal before the next entry (or the original caller) runs.
+ *
+ * Re-reads _cmdRespQueueCount on every iteration rather than snapshotting
+ * it once: the _link.command() call below can itself dispatch a further
+ * +MTCMD if one interleaves with THIS reply's own OK/+MTERR wait, which
+ * enqueues another entry via hearthEnqueueCmdResp() above. Looping until
+ * the queue is actually empty is what drains that one too, in the same
+ * call, rather than leaving it for the next unrelated poll()/hearthCommand().
+ */
+void HearthClass::hearthDrainCmdRespQueue() {
+  while (_cmdRespQueueCount > 0) {
+    HearthPendingCmdResp entry = _cmdRespQueue[0];
+    for (uint8_t i = 1; i < _cmdRespQueueCount; i++) {
+      _cmdRespQueue[i - 1] = _cmdRespQueue[i];
+    }
+    _cmdRespQueueCount--;
+
+    char cmd[40];
+    snprintf(cmd, sizeof(cmd), "AT+MTCMDRESP=%lu,%d", (unsigned long)entry.seq, entry.verdict ? 1 : 0);
+    _link.command(cmd);
+  }
 }
 
 /*

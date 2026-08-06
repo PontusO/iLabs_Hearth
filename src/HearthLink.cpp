@@ -179,14 +179,6 @@ int HearthLink::command(const char *cmd, LineCb onLine, void *arg, uint32_t time
   }
 }
 
-void HearthLink::sendLine(const char *cmd) {
-  if (!_started || !_s) {
-    return;
-  }
-  _s->print(cmd);
-  _s->print("\r\n");
-}
-
 void HearthLink::poll() {
   /* Same re-entrancy reasoning as command(): a URC callback that polls
    * again would drain lines the command in flight is waiting for. Silently
