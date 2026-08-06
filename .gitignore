@@ -30,6 +30,11 @@ build/
 /test/host/test_lightsensor
 /test/host/test_flowsensor
 /test/host/test_airquality
+/test/host/test_mountedonoffcontrol
+/test/host/test_mounteddimmableloadcontrol
+/test/host/test_airpurifier
+/test/host/test_extractorhood
+/test/host/test_cooktop
 
 *.bin
 *.uf2
