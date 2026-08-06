@@ -4,7 +4,7 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality
 
 all: $(TESTS)
 
@@ -111,6 +111,18 @@ test_cabinet: test_cabinet.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../..
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 test_doorlock: test_doorlock.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterDoorLock.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+# Task C2: three Hearth-original sensor classes, one test binary each per
+# the brief's recipe minimum, rather than the combined test_measuresensors
+# shape the older read-direction sensors used.
+test_lightsensor: test_lightsensor.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterLightSensor.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_flowsensor: test_flowsensor.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterFlowSensor.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_airquality: test_airquality.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterAirQualitySensor.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all
