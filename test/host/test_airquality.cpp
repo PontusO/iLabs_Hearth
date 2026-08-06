@@ -39,7 +39,7 @@ static void test_begin_declares_and_adopts(void) {
 static void test_set_air_quality_writes(void) {
   MockStream s; MatterAirQualitySensor sensor;
   bringUp(s, sensor);
-  s.expect("AT+MTATTR=1,91,0,4,1", "+MTATTR:1,91,0,4\r\nOK\r\n");  /* 4 == kPoor */
+  s.expect("AT+MTATTR=1,91,0,4,1", "OK\r\n");  /* 4 == kPoor; B139: AQ writes never echo a URC (AAI-served), bare OK is the real wire */
   check("setAirQuality(kPoor) succeeds", sensor.setAirQuality(MatterAirQualitySensor::kPoor));
   check("state cached", sensor.getAirQuality() == MatterAirQualitySensor::kPoor);
   check("no unexpected commands", s.unexpected().empty());
