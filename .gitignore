@@ -26,6 +26,7 @@ build/
 /test/host/test_genericswitch
 /test/host/test_colorlight
 /test/host/test_cabinet
+/test/host/test_doorlock
 
 *.bin
 *.uf2

@@ -34,9 +34,17 @@
  * work.
  *
  * Task S4 (switch + color light) added MatterGenericSwitch.h and
- * MatterColorLight.h, taking this list to nineteen. Task C5 adds the
+ * MatterColorLight.h, taking this list to nineteen. Task C5 added the
  * twentieth and last, MatterTemperatureControlledCabinet.h, completing
  * upstream's class set. See README.md, "Supported device types".
+ *
+ * Task C3 (command forwarding) adds a twenty-first: MatterDoorLock.h. It has
+ * no arduino-esp32 counterpart (upstream's Matter library ships no door lock
+ * class at all), so it is not part of "completing upstream's class set"
+ * above; it is this library's own addition, included here for the same
+ * reason as every class before it -- a sketch's bare `#include <Matter.h>`
+ * plus a file-scope `MatterDoorLock lock;` must work with no endpoint header
+ * of its own.
  */
 #pragma once
 
@@ -65,6 +73,7 @@
 #include "MatterEndpoints/MatterGenericSwitch.h"
 #include "MatterEndpoints/MatterColorLight.h"
 #include "MatterEndpoints/MatterTemperatureControlledCabinet.h"
+#include "MatterEndpoints/MatterDoorLock.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART
@@ -145,6 +154,13 @@ enum hearthEvent_t {
    * the upstream-parity ArduinoMatter::onEvent() surface. Poll
    * Hearth.transportMismatch() for the same state on demand. */
   HEARTH_TRANSPORT_MISMATCH,
+  /* Firmware +MTCMDTO:<seq> (AT_MT_SPEC.md S3.17): a forwarded command's
+   * 1000 ms verdict window (see mt_at_urc()'s dispatch of +MTCMD) closed
+   * with no AT+MTCMDRESP from this host, so the firmware default-denied it
+   * on its own. No further action is needed or possible on this side: by
+   * the time this arrives, the window that AT+MTCMDRESP would have
+   * answered is already gone. */
+  HEARTH_CMD_TIMEOUT,
 };
 
 class HearthClass {
@@ -359,6 +375,45 @@ private:
   static void hearthOnURCLine(const char *line, void *arg);
   static void hearthOnVerLine(const char *line, void *arg);
   static void hearthDispatchEvt(const char *rest, HearthClass *self);
+  static void hearthDispatchCmd(const char *rest, HearthClass *self);
+  static void hearthDispatchCmdTimeout(const char *rest, HearthClass *self);
+
+  /*
+   * Fix round 1 (C3 review, CRITICAL): a +MTCMD verdict must never be
+   * written to the wire from inside dispatchURC() itself. That call runs
+   * with HearthLink's busy gate already held by the outer command()/poll()
+   * that delivered the URC, so a fire-and-forget write there leaves its own
+   * OK/+MTERR terminal ownerless on the single-reader link: a later
+   * command()'s read loop can claim it as ITS OWN terminal instead of the
+   * reply it actually asked for (confirmed against the real library: a
+   * rejected AT+MTLOCK read back as success because the queued AT+MTCMDRESP
+   * reply's OK arrived first and was consumed by the next hearthCommand()).
+   *
+   * The fix: hearthDispatchCmd() only runs the verdict callback and enqueues
+   * (seq, verdict) here; hearthDrainCmdRespQueue() -- called from
+   * hearthCommand() and poll(), both AFTER their own _link.command()/
+   * _link.poll() call has returned, i.e. with the busy gate released --
+   * sends each queued reply through the ordinary _link.command() path,
+   * which waits for and consumes its own terminal before the next entry (or
+   * the caller) gets to run. No orphan terminal can exist: every
+   * AT+MTCMDRESP exchange, including its OK/+MTERR:1, is fully resolved
+   * before this class ever does anything else on the link.
+   *
+   * Depth 4: the firmware serializes command forwards (only one window open
+   * at a time), so more than one or two entries here is already an unusual
+   * burst (e.g. a +MTCMDTO followed immediately by a new forward); 4 is
+   * headroom, not a tuned minimum. An overflow silently drops the newest
+   * entry -- the firmware's own 1000 ms deadline default-denies it anyway,
+   * so a dropped reply degrades to exactly the timeout path already handled
+   * (HEARTH_CMD_TIMEOUT), not a hang.
+   */
+  struct HearthPendingCmdResp {
+    uint32_t seq;
+    bool verdict;
+  };
+  static const uint8_t kHearthCmdRespQueueDepth = 4;
+  void hearthEnqueueCmdResp(uint32_t seq, bool verdict);
+  void hearthDrainCmdRespQueue();
 
   HearthLink _link;
   int _lastError;
@@ -369,6 +424,8 @@ private:
   uint32_t _expectedRebootArmedAt;
   uint32_t _expectedRebootTimeoutMs;
   hearthEventCB _linkEventCB;
+  HearthPendingCmdResp _cmdRespQueue[kHearthCmdRespQueueDepth];
+  uint8_t _cmdRespQueueCount;
 };
 
 /*

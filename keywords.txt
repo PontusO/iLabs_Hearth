@@ -44,8 +44,12 @@ MatterEnhancedColorLight	KEYWORD1
 MatterGenericSwitch	KEYWORD1
 MatterColorLight	KEYWORD1
 
-# The twentieth and last device type (Task C5), completing the class set.
+# The twentieth device type (Task C5), completing the upstream-parity set.
 MatterTemperatureControlledCabinet	KEYWORD1
+
+# The twenty-first device type (Task C3/C4): this library's first class with
+# no arduino-esp32 counterpart. See README.md, "Hearth originals".
+MatterDoorLock	KEYWORD1
 
 # Event and callback types.
 hearthEvent_t	KEYWORD1
@@ -87,6 +91,12 @@ OperationalStatusField_t	KEYWORD1
 ControlSequenceOfOperation_t	KEYWORD1
 ThermostatMode_t	KEYWORD1
 ThermostatAutoMode_t	KEYWORD1
+
+# MatterDoorLock's enum types (Task C3/C4): DlLockState and
+# OperationSourceEnum, transcribed from the pinned esp-matter checkout. See
+# README.md, "Hearth originals".
+LockState_t	KEYWORD1
+OperationSource_t	KEYWORD1
 
 # The esp_matter attribute-value shim (HearthCompat.h). Public because
 # getAttributeVal/setAttributeVal/updateAttributeVal and attributeChangeCB
@@ -162,6 +172,7 @@ hearthIsAttrRead	KEYWORD2
 # MatterEndPoint: base class every endpoint type derives from.
 attributeChangeCB	KEYWORD2
 hearthAttrTypeFor	KEYWORD2
+hearthOnForwardedCommand	KEYWORD2
 getEndPointId	KEYWORD2
 setEndPointId	KEYWORD2
 getAttributeVal	KEYWORD2
@@ -293,10 +304,10 @@ onChangeColorHSV	KEYWORD2
 # attribute write. See the class header for why it returns bool.
 click	KEYWORD2
 
-# MatterTemperatureControlledCabinet (Task C5), the twentieth and last
-# device type. setSupportedTemperatureLevelLabels is a Hearth-only
-# addition, not part of upstream's surface; see README.md, "Supported
-# device types".
+# MatterTemperatureControlledCabinet (Task C5), the twentieth device type,
+# completing the upstream-parity set. setSupportedTemperatureLevelLabels is
+# a Hearth-only addition, not part of upstream's surface; see README.md,
+# "Supported device types".
 setTemperatureSetpoint	KEYWORD2
 getTemperatureSetpoint	KEYWORD2
 setMinTemperature	KEYWORD2
@@ -310,6 +321,16 @@ getSelectedTemperatureLevel	KEYWORD2
 setSupportedTemperatureLevels	KEYWORD2
 getSupportedTemperatureLevelsCount	KEYWORD2
 setSupportedTemperatureLevelLabels	KEYWORD2
+
+# MatterDoorLock (Task C3/C4), the twenty-first device type and this
+# library's first with no arduino-esp32 counterpart. See README.md, "Hearth
+# originals".
+onLock	KEYWORD2
+onUnlock	KEYWORD2
+setLockState	KEYWORD2
+lock	KEYWORD2
+unlock	KEYWORD2
+getLockState	KEYWORD2
 
 # HearthColorUtil.h conversions, called out from MatterEnhancedColorLight's
 # getColorRGB()/setColorRGB(), and from examples/MatterEnhancedColorLight's
@@ -334,6 +355,7 @@ HEARTH_LINK_DOWN	LITERAL1
 HEARTH_COPROCESSOR_REBOOTED	LITERAL1
 HEARTH_PROTOCOL_ERROR	LITERAL1
 HEARTH_TRANSPORT_MISMATCH	LITERAL1
+HEARTH_CMD_TIMEOUT	LITERAL1
 
 # HearthTransport and error codes (Hearth.h).
 HEARTH_TRANSPORT_WIFI	LITERAL1
@@ -462,6 +484,28 @@ THERMOSTAT_MODE_SLEEP	LITERAL1
 # ThermostatAutoMode_t (MatterThermostat.h), upstream's own enumerators.
 THERMOSTAT_AUTO_MODE_DISABLED	LITERAL1
 THERMOSTAT_AUTO_MODE_ENABLED	LITERAL1
+
+# LockState_t (MatterDoorLock.h): DlLockState protocol values (AT_MT_SPEC.md
+# S3.18's <state>), transcribed from the pinned esp-matter checkout, not
+# upstream (no arduino-esp32 counterpart exists).
+kStateNotFullyLocked	LITERAL1
+kStateLocked	LITERAL1
+kStateUnlocked	LITERAL1
+
+# OperationSource_t (MatterDoorLock.h): OperationSourceEnum protocol values
+# (AT_MT_SPEC.md S3.18's <source>), transcribed from the pinned esp-matter
+# checkout, not upstream.
+kSourceUnspecified	LITERAL1
+kSourceManual	LITERAL1
+kSourceProprietaryRemote	LITERAL1
+kSourceKeypad	LITERAL1
+kSourceAuto	LITERAL1
+kSourceButton	LITERAL1
+kSourceSchedule	LITERAL1
+kSourceRemote	LITERAL1
+kSourceRfid	LITERAL1
+kSourceBiometric	LITERAL1
+kSourceAliro	LITERAL1
 
 # esp_matter_val_type_t (HearthCompat.h).
 ESP_MATTER_VAL_TYPE_INVALID	LITERAL1

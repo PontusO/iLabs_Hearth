@@ -181,6 +181,19 @@ public:
    */
   virtual void hearthOnReconciled();
 
+  /*
+   * Hearth's own addition (not part of the upstream surface, same precedent
+   * as hearthOnReconciled() above): called by Hearth.cpp's +MTCMD dispatcher
+   * when the firmware forwards a controller-invoked command awaiting an
+   * app-level verdict (AT_MT_SPEC.md S3.17; the door lock's LockDoor/
+   * UnlockDoor are the first consumers, C3). Default false: fail closed for
+   * every endpoint type that does not override it, and for any
+   * (cluster_id, command_id) pair a concrete override does not recognise.
+   * The dispatcher, not this method, sends AT+MTCMDRESP back to the
+   * firmware; this only decides allow (true) or deny (false).
+   */
+  virtual bool hearthOnForwardedCommand(uint32_t cluster_id, uint32_t command_id);
+
 protected:
   uint16_t endpoint_id = 0;
   EndPointIdentifyCB _onEndPointIdentifyCB = nullptr;

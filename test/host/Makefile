@@ -4,7 +4,7 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock
 
 all: $(TESTS)
 
@@ -24,7 +24,10 @@ test_endpoint: test_endpoint.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../
 test_hearth: test_hearth.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
-test_reconcile: test_reconcile.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp
+# C3 added MatterDoorLock reconcile-push tests (adopt and rebuild paths)
+# here, so this recipe needs that endpoint .cpp linked in too, not just the
+# generic TestEndPoint the rest of this file uses.
+test_reconcile: test_reconcile.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterDoorLock.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 test_onofflight: test_onofflight.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp
@@ -53,10 +56,11 @@ test_measuresensors: test_measuresensors.cpp ArduinoShim.cpp $(SRC) ../../src/He
 # sketch includes, must be enough to declare a device object at file scope.
 # Needs every endpoint .cpp linked in: the original four are brought up and
 # exercised over AT+MTATTR, the devtype expansion's other thirteen (final-
-# review finding M1) plus Task S4's MatterGenericSwitch/MatterColorLight and
-# Task C5's MatterTemperatureControlledCabinet are declared file-scope only,
-# a compile/link guard against a dropped umbrella include.
-test_matter_umbrella: test_matter_umbrella.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp ../../src/MatterEndpoints/MatterOnOffPlugin.cpp ../../src/MatterEndpoints/MatterDimmablePlugin.cpp ../../src/MatterEndpoints/MatterContactSensor.cpp ../../src/MatterEndpoints/MatterRainSensor.cpp ../../src/MatterEndpoints/MatterWaterFreezeDetector.cpp ../../src/MatterEndpoints/MatterWaterLeakDetector.cpp ../../src/MatterEndpoints/MatterHumiditySensor.cpp ../../src/MatterEndpoints/MatterPressureSensor.cpp ../../src/MatterEndpoints/MatterOccupancySensor.cpp ../../src/MatterEndpoints/MatterFan.cpp ../../src/MatterEndpoints/MatterWindowCovering.cpp ../../src/MatterEndpoints/MatterThermostat.cpp ../../src/MatterEndpoints/MatterEnhancedColorLight.cpp ../../src/MatterEndpoints/MatterGenericSwitch.cpp ../../src/MatterEndpoints/MatterColorLight.cpp ../../src/MatterEndpoints/MatterTemperatureControlledCabinet.cpp
+# review finding M1) plus Task S4's MatterGenericSwitch/MatterColorLight,
+# Task C5's MatterTemperatureControlledCabinet and Task C3's MatterDoorLock
+# (added at C4, per C3's own note that C4 owns this file) are declared
+# file-scope only, a compile/link guard against a dropped umbrella include.
+test_matter_umbrella: test_matter_umbrella.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp ../../src/MatterEndpoints/MatterOnOffPlugin.cpp ../../src/MatterEndpoints/MatterDimmablePlugin.cpp ../../src/MatterEndpoints/MatterContactSensor.cpp ../../src/MatterEndpoints/MatterRainSensor.cpp ../../src/MatterEndpoints/MatterWaterFreezeDetector.cpp ../../src/MatterEndpoints/MatterWaterLeakDetector.cpp ../../src/MatterEndpoints/MatterHumiditySensor.cpp ../../src/MatterEndpoints/MatterPressureSensor.cpp ../../src/MatterEndpoints/MatterOccupancySensor.cpp ../../src/MatterEndpoints/MatterFan.cpp ../../src/MatterEndpoints/MatterWindowCovering.cpp ../../src/MatterEndpoints/MatterThermostat.cpp ../../src/MatterEndpoints/MatterEnhancedColorLight.cpp ../../src/MatterEndpoints/MatterGenericSwitch.cpp ../../src/MatterEndpoints/MatterColorLight.cpp ../../src/MatterEndpoints/MatterTemperatureControlledCabinet.cpp ../../src/MatterEndpoints/MatterDoorLock.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 # Regression test for the final-review MINOR 1 fix: the Matter and Hearth
@@ -104,6 +108,9 @@ test_colorlight: test_colorlight.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 test_cabinet: test_cabinet.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterTemperatureControlledCabinet.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_doorlock: test_doorlock.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterDoorLock.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all

@@ -305,6 +305,13 @@ void MatterEndPoint::hearthMarkReconciled() {
 /* Base default: no state to resend. See the header comment. */
 void MatterEndPoint::hearthOnReconciled() {}
 
+/* Base default: deny (fail closed). See the header comment. */
+bool MatterEndPoint::hearthOnForwardedCommand(uint32_t cluster_id, uint32_t command_id) {
+  (void)cluster_id;
+  (void)command_id;
+  return false;
+}
+
 MatterEndPoint *MatterEndPoint::hearthFindByEndPointId(uint16_t ep) {
   /* 0 is the Root Node and also the "not reconciled yet" value every
    * declared endpoint carries, so a match on it is never right: see the
