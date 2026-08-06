@@ -51,6 +51,20 @@ MatterTemperatureControlledCabinet	KEYWORD1
 # no arduino-esp32 counterpart. See README.md, "Hearth originals".
 MatterDoorLock	KEYWORD1
 
+# The ten-type swoop (Tasks C2-C4, wired into the umbrella at C5): twenty-second
+# through thirty-first, none with an arduino-esp32 counterpart. See README.md,
+# "Hearth originals".
+MatterLightSensor	KEYWORD1
+MatterFlowSensor	KEYWORD1
+MatterAirQualitySensor	KEYWORD1
+MatterMountedOnOffControl	KEYWORD1
+MatterMountedDimmableLoadControl	KEYWORD1
+MatterAirPurifier	KEYWORD1
+MatterExtractorHood	KEYWORD1
+MatterCooktop	KEYWORD1
+MatterRoomAirConditioner	KEYWORD1
+MatterPump	KEYWORD1
+
 # Event and callback types.
 hearthEvent_t	KEYWORD1
 hearthEventCB	KEYWORD1
@@ -81,6 +95,9 @@ EndPointTiltCB	KEYWORD1
 EndPointStopCB	KEYWORD1
 EndPointRGBColorCB	KEYWORD1
 
+# Callback typedef the ten-type swoop's MatterPump adds (C5 scope addition).
+EndPointOperationModeCB	KEYWORD1
+
 # Enum types the thirteen new device types add.
 OccupancySensorType_t	KEYWORD1
 FanMode_t	KEYWORD1
@@ -97,6 +114,11 @@ ThermostatAutoMode_t	KEYWORD1
 # README.md, "Hearth originals".
 LockState_t	KEYWORD1
 OperationSource_t	KEYWORD1
+
+# MatterAirQualitySensor's enum type (ten-type swoop, C2), transcribed from
+# AirQualityEnum in the pinned esp-matter checkout. See README.md, "Hearth
+# originals".
+AirQuality_t	KEYWORD1
 
 # The esp_matter attribute-value shim (HearthCompat.h). Public because
 # getAttributeVal/setAttributeVal/updateAttributeVal and attributeChangeCB
@@ -332,6 +354,31 @@ lock	KEYWORD2
 unlock	KEYWORD2
 getLockState	KEYWORD2
 
+# The ten-type swoop (Tasks C2-C4): MatterLightSensor, MatterFlowSensor,
+# MatterAirQualitySensor, MatterMountedOnOffControl,
+# MatterMountedDimmableLoadControl, MatterAirPurifier, MatterExtractorHood,
+# MatterCooktop, MatterRoomAirConditioner, MatterPump. Names already listed
+# above (begin, end, setOnOff, getOnOff, toggle, onChange, onChangeOnOff,
+# onChangeBrightness, setBrightness, getBrightness, setSpeedPercent,
+# getSpeedPercent, setMode, getMode, onChangeMode, onChangeSpeedPercent,
+# updateAccessory, setLocalTemperature, setCoolingSetpoint,
+# getCoolingSetpoint, setHeatingSetpoint, getHeatingSetpoint,
+# onChangeCoolingSetpoint, onChangeHeatingSetpoint) are not repeated here. See
+# README.md, "Hearth originals".
+setRawMeasuredValue	KEYWORD2
+getRawMeasuredValue	KEYWORD2
+setAirQuality	KEYWORD2
+getAirQuality	KEYWORD2
+off	KEYWORD2
+setOperationMode	KEYWORD2
+getOperationMode	KEYWORD2
+onChangeOperationMode	KEYWORD2
+setMaxPressure	KEYWORD2
+setMaxSpeed	KEYWORD2
+setMaxFlow	KEYWORD2
+getEffectiveOperationMode	KEYWORD2
+getEffectiveControlMode	KEYWORD2
+
 # HearthColorUtil.h conversions, called out from MatterEnhancedColorLight's
 # getColorRGB()/setColorRGB(), and from examples/MatterEnhancedColorLight's
 # own temperature simulation (espCTToRgbColor/espCTColorToRgbColor).
@@ -506,6 +553,16 @@ kSourceRemote	LITERAL1
 kSourceRfid	LITERAL1
 kSourceBiometric	LITERAL1
 kSourceAliro	LITERAL1
+
+# AirQuality_t (MatterAirQualitySensor.h, ten-type swoop C2), transcribed from
+# AirQualityEnum in the pinned esp-matter checkout.
+kUnknown	LITERAL1
+kGood	LITERAL1
+kFair	LITERAL1
+kModerate	LITERAL1
+kPoor	LITERAL1
+kVeryPoor	LITERAL1
+kExtremelyPoor	LITERAL1
 
 # esp_matter_val_type_t (HearthCompat.h).
 ESP_MATTER_VAL_TYPE_INVALID	LITERAL1

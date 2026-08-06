@@ -485,6 +485,65 @@ See `examples/MatterDoorLockAdjudicated/` for the full shape: a
 sketch-side policy consulted from `onLock`/`onUnlock`, `Hearth.poll()` in
 `loop()`, and `setLockState()` called on actuation with `kSourceManual`.
 
+### The ten-type swoop
+
+Ten more classes, none with an `arduino-esp32` counterpart (Tasks C2-C4),
+join `MatterDoorLock` in this section rather than the parity table above,
+which stays at 20/20. Three are Hearth-original sensors (C2), five are
+actuator clones of an existing parity class onto a new device type (C3), and
+two carry real surface design of their own (C4):
+
+- `MatterLightSensor` (`0x0106`): `begin(rawValue)` / `setRawMeasuredValue()`
+  / `getRawMeasuredValue()` push a raw `uint16` `IlluminanceMeasurement`
+  reading; the sketch is the light source, nothing arrives back down.
+- `MatterFlowSensor` (`0x0306`): the identical raw-`uint16` push shape as
+  `MatterLightSensor`, over `FlowMeasurement` instead.
+- `MatterAirQualitySensor` (`0x002C`): `setAirQuality(AirQuality_t)` /
+  `getAirQuality()` push an enum8 `AirQuality` reading (`kUnknown` through
+  `kExtremelyPoor`). **None of these three sensor classes adds `onChange`:**
+  their one attribute is `kView`-only per the C2 adjudication, so a
+  controller can never write it and no genuine controller-driven URC for it
+  can ever arrive; an `onChange` callback would have nothing honest to fire
+  on.
+- `MatterMountedOnOffControl` (`0x010F`): `MatterOnOffPlugin`'s surface
+  (`setOnOff`/`getOnOff`/`toggle`/`onChange`/`onChangeOnOff`) cloned onto the
+  mounted-on-off-control device type.
+- `MatterMountedDimmableLoadControl` (`0x0110`): `MatterDimmablePlugin`'s
+  shape cloned onto the mounted-dimmable-load-control device type, using
+  `MatterDimmableLight`'s `setBrightness`/`getBrightness` naming rather than
+  `MatterDimmablePlugin`'s own `setLevel`/`getLevel`.
+- `MatterAirPurifier` (`0x002D`): `MatterFan`'s surface (fan mode enum plus
+  speed percent) cloned onto the air-purifier device type.
+- `MatterExtractorHood` (`0x007A`): the identical `MatterFan` clone as
+  `MatterAirPurifier`, on the extractor-hood device type instead.
+- `MatterCooktop` (`0x0078`): **`OffOnly`**, the odd one out. The public
+  surface is deliberately just `begin()`/`off()`/`getOnOff()`: there is no
+  `on()`, no `toggle()`, and no write path of any kind that can turn the
+  attribute true, because a remotely-started physical heating element is the
+  failure mode this device class exists to prevent; a local turn-on still
+  reaches `getOnOff()` through a controller-side URC, since only the
+  *write* direction is closed off, not the read one.
+- `MatterRoomAirConditioner` (`0x0072`): an `OnOff` leg (`MatterOnOffPlugin`'s
+  shape) plus `MatterThermostat`'s setpoint/mode surface
+  (`setCoolingSetpoint`/`setHeatingSetpoint`/`setMode` over the same
+  `Thermostat` cluster IDs). **Dead-front is documentation, not code:**
+  `setOnOff(false)` sends an ordinary `OnOff` write and nothing else; the
+  device type's spec-mandated dead-front behaviour (turning the unit off
+  disables its thermostat function) happens entirely in the C6 firmware's
+  data model, and this class neither models nor enforces it, so
+  `setCoolingSetpoint()`/`setHeatingSetpoint()`/`setMode()` remain ordinary
+  writes whether the device is on or off. `onChangeCoolingSetpoint()`,
+  `onChangeHeatingSetpoint()` and `onChangeMode()` (a C5 scope addition, the
+  ten-type swoop's own review) let a sketch learn of a controller-driven
+  change to any of the three without polling the getters.
+- `MatterPump` (`0x0303`): an `OnOff` leg plus `PumpConfigurationAndControl`:
+  `setOperationMode()`/`getOperationMode()` (controller-writable, with
+  `onChangeOperationMode()`, a C5 scope addition, firing on a
+  controller-driven change), `setMaxPressure()`/`setMaxSpeed()`/
+  `setMaxFlow()` (sketch-published telemetry, Read-only on the wire, no
+  getter), and `getEffectiveOperationMode()`/`getEffectiveControlMode()`
+  (device-answered reads fed exclusively by URCs, no setter).
+
 ## Examples
 
 `examples/` holds nineteen of `arduino-esp32`'s own Matter example sketches,
@@ -528,6 +587,14 @@ of the count above: **it is Hearth-original, not copied from upstream.**
 `MatterDoorLock` has no `arduino-esp32` counterpart, so there is no example
 to copy byte-identical; the sketch header says so. See "Hearth originals"
 above for the class it demonstrates.
+
+`examples/HearthSensorsAndAppliances/` is a twenty-first example, and a
+second Hearth-original: it composes a representative subset of the
+ten-type swoop (`MatterAirQualitySensor`, `MatterPump`,
+`MatterRoomAirConditioner`), `Hearth.poll()`-driven and CDC (`Serial`)
+interactive like `MatterDoorLockAdjudicated`, with no upstream counterpart
+to copy from. See "The ten-type swoop" above for the classes it
+demonstrates.
 
 **They call `WiFi.begin()`, and on this platform that call can never
 succeed.** It is not merely redundant: the sketch would sit in
