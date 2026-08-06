@@ -46,6 +46,7 @@ static void test_set_on_off_no_op_same_value(void) {
   bringUp(s, p, false);
   check("setOnOff(false) when already off succeeds without a write", p.setOnOff(false));
   check("no AT traffic for a no-op write", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
 }
 
 static void test_set_operation_mode_writes(void) {
@@ -63,6 +64,7 @@ static void test_set_operation_mode_no_op_same_value(void) {
   bringUp(s, p, false);
   check("setOperationMode(0) when already 0 succeeds without a write", p.setOperationMode(0));
   check("no AT traffic for a no-op write", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
 }
 
 static void test_set_max_pressure_writes(void) {

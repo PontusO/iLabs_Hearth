@@ -46,6 +46,7 @@ static void test_set_on_off_no_op_same_value(void) {
   bringUp(s, r, false);
   check("setOnOff(false) when already off succeeds without a write", r.setOnOff(false));
   check("no AT traffic for a no-op write", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
 }
 
 /*
@@ -108,6 +109,7 @@ static void test_set_mode_no_op_same_value(void) {
   bringUp(s, r, false);
   check("setMode(0) when already 0 succeeds without a write", r.setMode(0));
   check("no AT traffic for a no-op write", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
 }
 
 static void test_failed_mode_write_returns_false(void) {
@@ -178,6 +180,7 @@ static void test_controller_change_local_temperature_typed_but_ungettable(void) 
   Hearth.poll();
   check("local temperature value type is int16", r.seenLocalTempType == ESP_MATTER_VAL_TYPE_INT16);
   check("no echo", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
 }
 
 /*

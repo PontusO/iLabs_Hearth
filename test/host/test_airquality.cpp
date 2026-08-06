@@ -80,6 +80,7 @@ static void test_rebegin_after_reconcile_refused(void) {
   check("and reports the composition-rejected code", Hearth.lastError() == 10);
   check("the cached state was not overwritten", sensor.getAirQuality() == MatterAirQualitySensor::kUnknown);
   check("the refused begin() issued no AT traffic", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
 }
 
 int main(void) {
