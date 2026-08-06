@@ -156,6 +156,9 @@ bool MatterPump::attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id, ui
   } else if (cluster_id == kPumpConfigClusterId) {
     if (attribute_id == kOperationModeAttributeId) {
       operationMode = val->val.u8;
+      if (_onChangeOperationModeCB != NULL) {
+        _onChangeOperationModeCB(operationMode);
+      }
     } else if (attribute_id == kEffectiveOperationModeAttributeId) {
       effectiveOperationMode = val->val.u8;
     } else if (attribute_id == kEffectiveControlModeAttributeId) {

@@ -163,6 +163,27 @@ static void test_controller_change_feeds_effective_getters(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
+/*
+ * C5 scope addition (C4 review): onChangeOperationMode() lets a sketch learn
+ * of a controller-driven OperationMode change without polling
+ * getOperationMode(). Following MatterThermostat's
+ * test_controller_change_*_fires_callback shape; the callback is
+ * void-returning (see the header comment), so the getter agreeing with what
+ * the callback saw is the only thing to pin.
+ */
+static void test_controller_change_operation_mode_fires_callback(void) {
+  MockStream s; MatterPump p;
+  bringUp(s, p, false);
+  int seen = 0; uint8_t mode = 0xFF;
+  p.onChangeOperationMode([&](uint8_t m) { seen++; mode = m; });
+  s.injectURC("+MTATTR:1,512,32,2");  /* OperationModeEnum::kMaximum */
+  Hearth.poll();
+  check("onChangeOperationMode fired", seen == 1 && mode == 2);
+  check("cache getter agrees", p.getOperationMode() == 2);
+  check("no echo written back to the fabric", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 static void test_rebegin_after_reconcile_does_not_desync_the_cache(void) {
   MockStream s; MatterPump p;
   bringUp(s, p, false);
@@ -195,6 +216,7 @@ int main(void) {
   test_failed_operation_mode_write_returns_false();
   test_failed_max_speed_write_returns_false();
   test_controller_change_feeds_effective_getters();
+  test_controller_change_operation_mode_fires_callback();
   test_rebegin_after_reconcile_does_not_desync_the_cache();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;

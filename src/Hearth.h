@@ -45,6 +45,16 @@
  * reason as every class before it -- a sketch's bare `#include <Matter.h>`
  * plus a file-scope `MatterDoorLock lock;` must work with no endpoint header
  * of its own.
+ *
+ * The ten-type swoop (Tasks C2-C4) adds the twenty-second through
+ * thirty-first: MatterLightSensor.h, MatterFlowSensor.h,
+ * MatterAirQualitySensor.h (C2, Hearth-original sensors), MatterMountedOnOffControl.h,
+ * MatterMountedDimmableLoadControl.h, MatterAirPurifier.h,
+ * MatterExtractorHood.h, MatterCooktop.h (C3, actuator clones), and
+ * MatterRoomAirConditioner.h, MatterPump.h (C4). None has an arduino-esp32
+ * counterpart, same reason as MatterDoorLock.h above: a bare `#include
+ * <Matter.h>` plus a file-scope declaration must work with no endpoint
+ * header of its own. See README.md, "Hearth originals".
  */
 #pragma once
 
@@ -74,6 +84,16 @@
 #include "MatterEndpoints/MatterColorLight.h"
 #include "MatterEndpoints/MatterTemperatureControlledCabinet.h"
 #include "MatterEndpoints/MatterDoorLock.h"
+#include "MatterEndpoints/MatterLightSensor.h"
+#include "MatterEndpoints/MatterFlowSensor.h"
+#include "MatterEndpoints/MatterAirQualitySensor.h"
+#include "MatterEndpoints/MatterMountedOnOffControl.h"
+#include "MatterEndpoints/MatterMountedDimmableLoadControl.h"
+#include "MatterEndpoints/MatterAirPurifier.h"
+#include "MatterEndpoints/MatterExtractorHood.h"
+#include "MatterEndpoints/MatterCooktop.h"
+#include "MatterEndpoints/MatterRoomAirConditioner.h"
+#include "MatterEndpoints/MatterPump.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART

@@ -89,10 +89,23 @@
  * updateAttributeVal would be an infinite loop with the real device. This is
  * the entire reason AT+MTATTR has a silent write mode; see
  * MatterEndPoint.h's header comment.
+ *
+ * C5 scope addition (C4 review): onChangeCoolingSetpoint(), onChangeHeatingSetpoint()
+ * and onChangeMode() let a sketch learn of a controller-driven change on these
+ * three attributes without polling the getters, following MatterThermostat's
+ * onChange naming and attributeChangeCB dispatch idiom. Unlike the sensor
+ * classes' MeasuredValue (kView-only per the C2 adjudication: a controller can
+ * never write it, so no genuine URC for it exists), CoolingSetpoint,
+ * HeatingSetpoint and SystemMode are controller-writable, so a URC for one of
+ * them is a real external signal, not a hypothetical. The three callbacks are
+ * void-returning (unlike MatterThermostat's bool-returning ones, which gate a
+ * write-back this class's attributeChangeCB never performs anyway): there is
+ * nothing for a bool return to veto here, so the signature says so honestly.
  */
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <stdint.h>
 #include "MatterEndPoint.h"
 
@@ -121,6 +134,24 @@ public:
   bool setMode(uint8_t systemMode);
   uint8_t getMode();
 
+  // User Callback for whenever the Cooling Setpoint is changed by the Matter Controller
+  using EndPointCoolingSetpointCB = std::function<void(double)>;
+  void onChangeCoolingSetpoint(EndPointCoolingSetpointCB onChangeCB) {
+    _onChangeCoolingSetpointCB = onChangeCB;
+  }
+
+  // User Callback for whenever the Heating Setpoint is changed by the Matter Controller
+  using EndPointHeatingSetpointCB = std::function<void(double)>;
+  void onChangeHeatingSetpoint(EndPointHeatingSetpointCB onChangeCB) {
+    _onChangeHeatingSetpointCB = onChangeCB;
+  }
+
+  // User Callback for whenever the Mode is changed by the Matter Controller
+  using EndPointModeCB = std::function<void(uint8_t)>;
+  void onChangeMode(EndPointModeCB onChangeCB) {
+    _onChangeModeCB = onChangeCB;
+  }
+
   bool attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *val);
 
   esp_matter_val_type_t hearthAttrTypeFor(uint32_t cluster_id, uint32_t attribute_id) const override;
@@ -134,4 +165,8 @@ protected:
   int16_t coolingSetpointTemperature = 2400;   // 24C cooling setpoint
   int16_t heatingSetpointTemperature = 1600;   // 16C heating setpoint
   uint8_t systemMode = 0;                      // SystemModeEnum::kOff
+
+  EndPointCoolingSetpointCB _onChangeCoolingSetpointCB = NULL;
+  EndPointHeatingSetpointCB _onChangeHeatingSetpointCB = NULL;
+  EndPointModeCB _onChangeModeCB = NULL;
 };

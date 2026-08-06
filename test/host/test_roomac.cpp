@@ -180,6 +180,53 @@ static void test_controller_change_local_temperature_typed_but_ungettable(void) 
   check("no echo", s.scriptDrained());
 }
 
+/*
+ * C5 scope addition (C4 review): onChangeCoolingSetpoint/onChangeHeatingSetpoint/
+ * onChangeMode let a sketch learn of a controller-driven change without
+ * polling. Following MatterThermostat's test_controller_change_*_fires_callback
+ * shape exactly, but the callbacks here are void-returning (see the header
+ * comment), so there is no verdict to gate the cache update on: the getter
+ * agreeing with what the callback saw is the only thing to pin.
+ */
+static void test_controller_change_cooling_setpoint_fires_callback(void) {
+  MockStream s; MatterRoomAirConditioner r;
+  bringUp(s, r, false);
+  int seen = 0; double sp = 0;
+  r.onChangeCoolingSetpoint([&](double v) { seen++; sp = v; });
+  s.injectURC("+MTATTR:1,513,17,2550");  /* 25.50C */
+  Hearth.poll();
+  check("onChangeCoolingSetpoint fired", seen == 1 && sp > 25.49 && sp < 25.51);
+  check("cache getter agrees", r.getCoolingSetpoint() > 25.49 && r.getCoolingSetpoint() < 25.51);
+  check("no echo written back to the fabric", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+static void test_controller_change_heating_setpoint_fires_callback(void) {
+  MockStream s; MatterRoomAirConditioner r;
+  bringUp(s, r, false);
+  int seen = 0; double sp = 0;
+  r.onChangeHeatingSetpoint([&](double v) { seen++; sp = v; });
+  s.injectURC("+MTATTR:1,513,18,1750");  /* 17.50C */
+  Hearth.poll();
+  check("onChangeHeatingSetpoint fired", seen == 1 && sp > 17.49 && sp < 17.51);
+  check("cache getter agrees", r.getHeatingSetpoint() > 17.49 && r.getHeatingSetpoint() < 17.51);
+  check("no echo written back to the fabric", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+static void test_controller_change_mode_fires_callback(void) {
+  MockStream s; MatterRoomAirConditioner r;
+  bringUp(s, r, false);
+  int seen = 0; uint8_t mode = 0xFF;
+  r.onChangeMode([&](uint8_t m) { seen++; mode = m; });
+  s.injectURC("+MTATTR:1,513,28,4");  /* HEAT */
+  Hearth.poll();
+  check("onChangeMode fired", seen == 1 && mode == 4);
+  check("cache getter agrees", r.getMode() == 4);
+  check("no echo written back to the fabric", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 static void test_rebegin_after_reconcile_does_not_desync_the_cache(void) {
   MockStream s; MatterRoomAirConditioner r;
   bringUp(s, r, false);
@@ -213,6 +260,9 @@ int main(void) {
   test_failed_cooling_setpoint_write_returns_false();
   test_controller_change_feeds_setpoint_and_mode_getters();
   test_controller_change_local_temperature_typed_but_ungettable();
+  test_controller_change_cooling_setpoint_fires_callback();
+  test_controller_change_heating_setpoint_fires_callback();
+  test_controller_change_mode_fires_callback();
   test_rebegin_after_reconcile_does_not_desync_the_cache();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;

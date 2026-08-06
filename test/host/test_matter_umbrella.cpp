@@ -84,6 +84,24 @@ MatterTemperatureControlledCabinet umbrellaCabinet;
  */
 MatterDoorLock umbrellaDoorLock;
 
+/*
+ * The ten-type swoop's own additions (Tasks C2-C4, wired into the umbrella at
+ * C5): none has an arduino-esp32 counterpart, same reason as MatterDoorLock
+ * above. Declared here only, same compile/link guard as the thirteen devtype-
+ * expansion classes: dropping any one of their includes from Hearth.h's list
+ * fails this build too.
+ */
+MatterLightSensor umbrellaLightSensor;
+MatterFlowSensor umbrellaFlowSensor;
+MatterAirQualitySensor umbrellaAirQualitySensor;
+MatterMountedOnOffControl umbrellaMountedOnOffControl;
+MatterMountedDimmableLoadControl umbrellaMountedDimmableLoadControl;
+MatterAirPurifier umbrellaAirPurifier;
+MatterExtractorHood umbrellaExtractorHood;
+MatterCooktop umbrellaCooktop;
+MatterRoomAirConditioner umbrellaRoomAirConditioner;
+MatterPump umbrellaPump;
+
 static int g_pass = 0, g_fail = 0;
 static void check(const char *name, bool cond) {
   printf("  [%s] %s\n", cond ? "PASS" : "FAIL", name);

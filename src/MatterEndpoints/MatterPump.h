@@ -107,10 +107,23 @@
  * it beyond the fact that OperationMode/EffectiveOperationMode/
  * EffectiveControlMode exist on the wire regardless of which feature the
  * firmware enabled.
+ *
+ * C5 scope addition (C4 review): onChangeOperationMode() lets a sketch learn
+ * of a controller-driven change to OperationMode without polling
+ * getOperationMode(), following MatterThermostat's onChange naming and
+ * attributeChangeCB dispatch idiom. OperationMode is controller-writable
+ * (unlike EffectiveOperationMode/EffectiveControlMode, which are
+ * device-answered only, and MaxPressure/MaxSpeed/MaxFlow, which are Read-only
+ * per the cluster spec and carry no attributeChangeCB wiring at all, see
+ * above), so a URC for it is a real external signal. The callback is
+ * void-returning, not MatterThermostat's bool-returning shape: there is
+ * nothing for a bool return to veto, since this class's attributeChangeCB
+ * never writes back to the fabric regardless.
  */
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <stdint.h>
 #include "MatterEndPoint.h"
 
@@ -138,6 +151,12 @@ public:
   uint8_t getEffectiveOperationMode();
   uint8_t getEffectiveControlMode();
 
+  // User Callback for whenever the Operation Mode is changed by the Matter Controller
+  using EndPointOperationModeCB = std::function<void(uint8_t)>;
+  void onChangeOperationMode(EndPointOperationModeCB onChangeCB) {
+    _onChangeOperationModeCB = onChangeCB;
+  }
+
   bool attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *val);
 
   esp_matter_val_type_t hearthAttrTypeFor(uint32_t cluster_id, uint32_t attribute_id) const override;
@@ -151,4 +170,6 @@ protected:
   uint16_t maxFlow = 0;
   uint8_t effectiveOperationMode = 0;  // OperationModeEnum::kNormal
   uint8_t effectiveControlMode = 0;    // ControlModeEnum::kConstantSpeed
+
+  EndPointOperationModeCB _onChangeOperationModeCB = NULL;
 };

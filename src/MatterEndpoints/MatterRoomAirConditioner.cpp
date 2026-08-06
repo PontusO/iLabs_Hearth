@@ -156,10 +156,19 @@ bool MatterRoomAirConditioner::attributeChangeCB(uint16_t endpoint_id, uint32_t 
       localTemperature = val->val.i16;
     } else if (attribute_id == kOccupiedCoolingSetpointAttributeId) {
       coolingSetpointTemperature = val->val.i16;
+      if (_onChangeCoolingSetpointCB != NULL) {
+        _onChangeCoolingSetpointCB((double)coolingSetpointTemperature / 100.0);
+      }
     } else if (attribute_id == kOccupiedHeatingSetpointAttributeId) {
       heatingSetpointTemperature = val->val.i16;
+      if (_onChangeHeatingSetpointCB != NULL) {
+        _onChangeHeatingSetpointCB((double)heatingSetpointTemperature / 100.0);
+      }
     } else if (attribute_id == kSystemModeAttributeId) {
       systemMode = val->val.u8;
+      if (_onChangeModeCB != NULL) {
+        _onChangeModeCB(systemMode);
+      }
     }
   }
   return true;
