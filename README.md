@@ -373,18 +373,96 @@ implemented:
   tilt attributes are live on the wire.
 
 **Command-forwarding for app-adjudicated commands (the door-lock family)
-is future work, deliberately deferred rather than parked as a gap.** Every
-class implemented so far is either attribute-driven (`AT+MTATTR`) or, for
+is implemented, but as a Hearth original, not as part of this parity
+table.** Every class above is either attribute-driven (`AT+MTATTR`) or, for
 `MatterGenericSwitch`, a fire-and-forget event the cluster server resolves
 on its own. A door lock's `LockDoor`/`UnlockDoor` commands are a different
 shape: the cluster server cannot answer them autonomously, it needs a
-synchronous verdict from the application, which here means a round trip
-across the AT link back to the host before the C6 can respond to the
-controller. No AT command carries that shape yet. Recorded in
-`iLabs_AT_Hearth`'s
-`docs/superpowers/specs/2026-08-05-cabinet-templevels-design.md`, section
-7, as a welcome future challenge, not a limitation of the current class
-set.
+synchronous verdict from the application, a round trip across the AT link
+back to the host before the C6 can respond to the controller. No upstream
+`arduino-esp32` class has this shape either, so `MatterDoorLock` is not a
+twenty-first row here: it belongs in "Hearth originals" below, which is
+where its class stays at 21 while this table stays at the 20/20 upstream
+count.
+
+## Hearth originals
+
+Classes in this section have **no arduino-esp32 counterpart.** They are not
+part of the parity table above (which stays at 20/20 upstream classes) and
+are not "extra" parity: they are this library's own design against a wire
+contract `arduino-esp32`'s Matter library has never needed, because it runs
+its cluster server locally and can answer a command inline. Over the AT
+link, some commands cannot be answered that way, and `MatterDoorLock` (Task
+C3/C4) is the first one built.
+
+### `MatterDoorLock`
+
+Device type `0x000A` (door lock), cluster `0x0101` (`DoorLock`, 257
+decimal). `LockState` reads over `AT+MTATTR` like any other attribute; what
+is different is the two commands, `LockDoor` and `UnlockDoor`
+(`AT_MT_SPEC.md` S3.17-S3.18).
+
+**A controller's `LockDoor`/`UnlockDoor` is forwarded to the host for a
+verdict, not answered by the C6 on its own.** The firmware raises
+`+MTCMD:<seq>,<ep>,<cluster>,<command>`, and the callback registered with
+`onLock(std::function<bool()>)` / `onUnlock(std::function<bool()>)` runs
+synchronously from inside whichever library call dispatched the URC (the
+same "your callback fires from inside a library call" shape every other
+class's `onChange` already has; see "Driving the event loop" above). Its
+return value is the verdict: `true` allows the command, `false` denies it.
+**No callback registered denies by default.** A lock fails closed, never
+open, on every path that is not an explicit allow.
+
+**The verdict deadline is exactly 1000 ms, and it includes `Hearth.poll()`
+latency, not just the callback's own running time.** The firmware starts
+its clock the moment `+MTCMD` reaches the wire; the host only sees that URC,
+and therefore only runs `onLock`/`onUnlock`, the next time something calls
+into the library (a `Matter.*` call, an endpoint method, or `Hearth.poll()`
+itself; see "Driving the event loop"). A sketch whose `loop()` blocks
+(a long `delay()`, a synchronous sensor read, a busy-wait) for any real
+fraction of that window can miss it entirely: the callback never runs in
+time, the firmware's own deadline expires, and the lock denies by default,
+exactly as if the callback had returned `false`. `+MTCMDTO:<seq>` arriving
+at the host, mapped to `HEARTH_CMD_TIMEOUT` on `onLinkEvent()`, is the
+diagnostic for exactly this: it means a verdict window closed with the
+firmware never having heard back, whether because no callback was
+registered, the callback was slow, or the sketch's own polling cadence lost
+the race.
+
+**Verdict replies do not go out from inside the callback.** `AT+MTCMDRESP`
+is sent afterward, from a deferred queue drained once the current AT
+exchange has released the link, so a sketch author should not expect the
+reply to reach the wire synchronously inside `onLock`/`onUnlock`; the
+verdict is captured there, not transmitted there.
+
+**Reporting that the bolt actually moved is a separate step, on a separate
+command.** The firmware never calls `AT+MTLOCK`'s effect on its own, even
+after an allowed verdict (spec F4): allowing `LockDoor` only tells the
+controller its request was accepted, it does not move anything, because
+actuation timing belongs to whatever mechanism the sketch is driving, not
+to the verdict. Call `setLockState(state, source = kSourceManual)` (or the
+`lock()`/`unlock()` shorthands) once that mechanism confirms the state
+change, most often right after acting on an allowed verdict from a *local*
+source such as `kSourceManual` (a physical button, not a Matter command)
+rather than in response to the forwarded command itself. The cache updates
+only on a successful write, matching every other class's failed-write
+discipline. `getLockState()` reads the cache; no wire round trip.
+
+**Feature-map 0 in this round: no PIN/user/credential surface.** A
+controller may only send bare `LockDoor`/`UnlockDoor`; it cannot send a
+PIN-carrying variant, and the device's own CHIP stack refuses one before it
+ever reaches this library or the sketch, since the cluster's PIN/USER/COTA
+features are not enabled on the wire (`AT_MT_SPEC.md`'s device-type table,
+door lock: "Feature map `0`"). A host-side keypad (a Matter PIN, an RFID
+badge, a numeric pad wired to the host) is therefore entirely a sketch-side
+concern: read it, decide, and return the verdict from `onLock`/`onUnlock`
+with whichever `OperationSource_t` value describes what actually happened
+recorded through `setLockState()`'s `source` argument afterward. This
+library carries no PIN storage or matching of its own.
+
+See `examples/MatterDoorLockAdjudicated/` for the full shape: a
+sketch-side policy consulted from `onLock`/`onUnlock`, `Hearth.poll()` in
+`loop()`, and `setLockState()` called on actuation with `kSourceManual`.
 
 ## Examples
 
@@ -423,6 +501,12 @@ Task S4 report for the next two, and its Task C5 report for the last.
   TemperatureNumber and a `MatterTemperatureControlledCabinetLevels`
   TemperatureLevel example; this copy is the TemperatureNumber one, matching
   the class's default variant)
+
+`examples/MatterDoorLockAdjudicated/` is a twentieth example, and not part
+of the count above: **it is Hearth-original, not copied from upstream.**
+`MatterDoorLock` has no `arduino-esp32` counterpart, so there is no example
+to copy byte-identical; the sketch header says so. See "Hearth originals"
+above for the class it demonstrates.
 
 **They call `WiFi.begin()`, and on this platform that call can never
 succeed.** It is not merely redundant: the sketch would sit in
@@ -580,9 +664,14 @@ one.
 - **All twenty of arduino-esp32's endpoint classes are implemented**, with
   two narrower deferrals inside otherwise-complete classes
   (`MatterOccupancySensor` HoldTime, `MatterWindowCovering` absolute
-  position) and command-forwarding for app-adjudicated commands (the
-  door-lock family) deferred as future work. See "Parked" under "Supported
-  device types" above.
+  position). See "Parked" under "Supported device types" above.
+  Command-forwarding for app-adjudicated commands (the door-lock family) is
+  no longer deferred: `MatterDoorLock` implements it as a Hearth original,
+  see "Hearth originals" above, not as an addition to this twenty.
+- **`MatterDoorLock`'s 1000 ms verdict window is a real latency budget, not
+  a formality.** A sketch whose `loop()` blocks for a meaningful fraction of
+  a second can miss `onLock`/`onUnlock` entirely and the lock fails closed.
+  See "Hearth originals" above.
 - **The automatic co-processor reset has been exercised on hardware.** Verified
   during C4 end-to-end tests (2026-07-28 commissioning cycle, 2026-08-03
   transport smoke check against both single-stack and combined firmware). See

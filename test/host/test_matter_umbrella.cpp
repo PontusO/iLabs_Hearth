@@ -40,11 +40,13 @@ MatterTemperatureSensor umbrellaTempSensor;
 
 /*
  * The remaining thirteen device types Hearth.h's own include list carries
- * (the devtype expansion, Tasks L1-L6): declared here too, file-scope, so
- * dropping any one of them from Hearth.h's include list fails this host
- * build, not only a slower arduino-cli compile pass against real examples.
- * Compile-time guard only: these are not brought up or exercised, unlike
- * the four above, which also prove the AT+MTATTR path resolves and links.
+ * (the devtype expansion, Tasks L1-L6), Task S4's two additions, Task C5's
+ * MatterTemperatureControlledCabinet and Task C3's MatterDoorLock: declared
+ * here too, file-scope, so dropping any one of them from Hearth.h's include
+ * list fails this host build, not only a slower arduino-cli compile pass
+ * against real examples. Compile-time guard only: these are not brought up
+ * or exercised, unlike the four above, which also prove the AT+MTATTR path
+ * resolves and links.
  */
 MatterOnOffPlugin umbrellaOnOffPlugin;
 MatterDimmablePlugin umbrellaDimmablePlugin;
@@ -72,6 +74,15 @@ MatterColorLight umbrellaColorLight;
  * dropping its include from Hearth.h's list fails this build too.
  */
 MatterTemperatureControlledCabinet umbrellaCabinet;
+
+/*
+ * Task C3's addition, the twenty-first and this library's first class with
+ * no arduino-esp32 counterpart (see Hearth.h's own umbrella comment):
+ * MatterDoorLock.h. Declared here only, same as the thirteen devtype-
+ * expansion classes and the two Task S4 additions above: dropping its
+ * include from Hearth.h's list fails this build too.
+ */
+MatterDoorLock umbrellaDoorLock;
 
 static int g_pass = 0, g_fail = 0;
 static void check(const char *name, bool cond) {
