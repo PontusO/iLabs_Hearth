@@ -80,6 +80,7 @@ static void test_cooling_setpoint_write(void) {
   check("cooling cached", r.getCoolingSetpoint() > 25.99 && r.getCoolingSetpoint() < 26.01);
   check("heating untouched", r.getHeatingSetpoint() > 15.99 && r.getHeatingSetpoint() < 16.01);
   check("script drained", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
 }
 
 static void test_heating_setpoint_write(void) {
@@ -89,6 +90,7 @@ static void test_heating_setpoint_write(void) {
   check("setHeatingSetpoint(18.0) writes OccupiedHeatingSetpoint", r.setHeatingSetpoint(18.0));
   check("heating cached", r.getHeatingSetpoint() > 17.99 && r.getHeatingSetpoint() < 18.01);
   check("script drained", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
 }
 
 static void test_set_mode_writes(void) {

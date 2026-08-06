@@ -80,6 +80,7 @@ static void test_set_max_pressure_negative(void) {
   s.expect("AT+MTATTR=1,512,0,-100,1", "+MTATTR:1,512,0,-100\r\nOK\r\n");
   check("setMaxPressure(-100) sends a negative int16", p.setMaxPressure(-100));
   check("script drained", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
 }
 
 static void test_set_max_speed_writes(void) {
