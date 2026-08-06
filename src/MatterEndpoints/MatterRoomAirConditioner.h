@@ -97,10 +97,22 @@
  * classes' MeasuredValue (kView-only per the C2 adjudication: a controller can
  * never write it, so no genuine URC for it exists), CoolingSetpoint,
  * HeatingSetpoint and SystemMode are controller-writable, so a URC for one of
- * them is a real external signal, not a hypothetical. The three callbacks are
- * void-returning (unlike MatterThermostat's bool-returning ones, which gate a
- * write-back this class's attributeChangeCB never performs anyway): there is
- * nothing for a bool return to veto here, so the signature says so honestly.
+ * them is a real external signal, not a hypothetical.
+ *
+ * The three callbacks are void-returning, a deliberate divergence from
+ * MatterThermostat's bool-returning ones, not a transcription of the brief
+ * (the brief said to follow MatterThermostat's idiom, and MatterThermostat's
+ * own bool return is not vestigial: attributeChangeCB there is
+ * notify-then-conditionally-commit, `ret &= cb(new); if (ret) cache = new;`,
+ * so a false return deliberately leaves the cache stale relative to what the
+ * device already reported). This class's dispatch above is
+ * commit-then-notify: the cache is written from the URC's value first, and
+ * the callback is only ever informed afterward, so there is no veto point by
+ * construction. Chosen over MatterThermostat's notify-then-conditionally-
+ * commit, whose false-return leaves the cache stale relative to the device
+ * (a semantic its own tests never exercise): the cache never lying about the
+ * device's actual reported state is worth more than a veto hook nothing here
+ * would ever use.
  */
 #pragma once
 
