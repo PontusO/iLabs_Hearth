@@ -3,6 +3,7 @@
 #include "MockStream.h"
 #include "Hearth.h"
 #include "MatterEndPoint.h"
+#include "MatterEndpoints/MatterDoorLock.h"
 
 static int g_pass = 0, g_fail = 0;
 static void check(const char *name, bool cond) {
@@ -564,6 +565,54 @@ static void test_declared_variant_zero_vs_stored_4field_variant_triggers_rebuild
   check("endpoint adopts the ID from the re-query", cabinet.getEndPointId() == 1);
 }
 
+/*
+ * C3: MatterDoorLock's reconcile push (B120 norm, see its header comment).
+ * ArduinoMatter::begin() calls hearthOnReconciled() exactly once per
+ * declared endpoint on BOTH the "identical" (adopt, one query, zero writes)
+ * and the rebuild (clear/apply/re-query) branches -- see the "identical"
+ * check and its own comment above -- so the door lock's AT+MTLOCK push must
+ * fire on both, not only the first boot's rebuild. Test both explicitly:
+ * the class's own test/host/test_doorlock.cpp only ever exercises the adopt
+ * path (via its bringUp() helper), so the rebuild path has no coverage
+ * without a dedicated test here.
+ */
+static void test_doorlock_reconcile_adopt_pushes_lock_state(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  MatterDoorLock lock;
+  MockStream s;
+  Hearth.begin(s);
+  check("begin(true) declares", lock.begin(true));
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x000A\r\nOK\r\n"); /* already matches: one query, no rebuild */
+  s.expect("AT+MTLOCK=1,1,1", "OK\r\n"); /* Locked, kSourceManual */
+  Matter.begin();
+
+  check("the adopt path still pushes the begun lock state exactly once", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  check("endpoint adopts ID 1", lock.getEndPointId() == 1);
+  check("cache reflects the begun state", lock.getLockState() == MatterDoorLock::kStateLocked);
+}
+
+static void test_doorlock_reconcile_rebuild_pushes_lock_state(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  MatterDoorLock lock;
+  MockStream s;
+  Hearth.begin(s);
+  check("begin(false) declares", lock.begin(false));
+  s.expect("AT+MTEP?", "OK\r\n"); /* empty: first boot, must rebuild */
+  s.expect("AT+MTFABRICS?", "+MTFABRICS:0\r\nOK\r\n");
+  s.expect("AT+MTEPCLEAR", "OK\r\n");
+  s.expect("AT+MTEP=0x000A", "OK\r\n");
+  s.expect("AT+MTEPAPPLY", "OK\r\n+MTREADY\r\n");
+  s.expect("AT+MTEP?", "+MTEP:0,1,0x000A\r\nOK\r\n");
+  s.expect("AT+MTLOCK=1,2,1", "OK\r\n"); /* Unlocked, kSourceManual */
+  Matter.begin();
+
+  check("the rebuild path pushes the begun lock state exactly once, after the re-query", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  check("endpoint adopts the ID from the re-query", lock.getEndPointId() == 1);
+  check("cache reflects the begun state", lock.getLockState() == MatterDoorLock::kStateUnlocked);
+}
+
 int main(void) {
   printf("\n===== reconcile and ArduinoMatter tests =====\n");
   test_identical_composition_adopts_ids();
@@ -587,6 +636,8 @@ int main(void) {
   test_3field_line_matches_declared_variant_zero();
   test_variant_mismatch_triggers_rebuild();
   test_declared_variant_zero_vs_stored_4field_variant_triggers_rebuild();
+  test_doorlock_reconcile_adopt_pushes_lock_state();
+  test_doorlock_reconcile_rebuild_pushes_lock_state();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

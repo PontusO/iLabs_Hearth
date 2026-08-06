@@ -17,9 +17,18 @@ void HearthLink::begin(Stream &serial) {
   _started = true;
 }
 
+/*
+ * "+MTCMD" (6 chars) matches both "+MTCMD:" (the URC awaiting a verdict)
+ * and "+MTCMDTO:" (the missed-window timeout, AT_MT_SPEC.md S3.17): their
+ * seventh characters (':' and 'T') differ, but the prefix check here only
+ * needs to know "this is one of the command-forwarding URCs", not which
+ * one -- Hearth.cpp's hearthOnURCLine() makes that distinction itself with
+ * the full prefixes.
+ */
 bool HearthLink::isAsyncURC(const char *line) {
   return strncmp(line, "+MTEVT", 6) == 0 || strncmp(line, "+MTATTR", 7) == 0
-      || strncmp(line, "+MTIDENT", 8) == 0 || strncmp(line, "+MTREADY", 8) == 0;
+      || strncmp(line, "+MTIDENT", 8) == 0 || strncmp(line, "+MTREADY", 8) == 0
+      || strncmp(line, "+MTCMD", 6) == 0;
 }
 
 /*
@@ -168,6 +177,14 @@ int HearthLink::command(const char *cmd, LineCb onLine, void *arg, uint32_t time
     }
     // otherwise: unexpected intermediate line, ignore
   }
+}
+
+void HearthLink::sendLine(const char *cmd) {
+  if (!_started || !_s) {
+    return;
+  }
+  _s->print(cmd);
+  _s->print("\r\n");
 }
 
 void HearthLink::poll() {

@@ -395,6 +395,71 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
 }
 
 /*
+ * "<seq>,<ep>,<cluster>,<command>" (text after "+MTCMD:"), AT_MT_SPEC.md
+ * S3.17: a controller invoked a command that needs an app-level verdict.
+ * Routes to the named endpoint's hearthOnForwardedCommand() (MatterEndPoint.h)
+ * and answers immediately with AT+MTCMDRESP=<seq>,<verdict>. An endpoint the
+ * sketch never declared, or one whose override still says no (the base
+ * class default), both deny -- fail closed, per the wire contract.
+ *
+ * The reply goes out via HearthLink::sendLine(), not the ordinary
+ * hearthCommand()/HearthLink::command() path: this function runs from
+ * inside dispatchURC(), i.e. while the link's busy gate is already held by
+ * the outer command()/poll() that delivered this URC (HearthLink.h's own
+ * comment on _busy). hearthCommand() would be refused there with
+ * HEARTH_CMD_REENTRANT, exactly the refusal a sketch's own URC-triggered
+ * callback already gets if it tries to call back into the library
+ * (test_onofflight.cpp and siblings pin that down for attributeChangeCB;
+ * the reasoning is identical here, just internal to the library instead of
+ * in sketch code). AT+MTCMDRESP has nothing worth blocking on regardless:
+ * see sendLine()'s own comment for why a fire-and-forget write is the
+ * right shape for this one command.
+ *
+ * A malformed line (fields do not parse) is dropped without a reply, the
+ * same silent-drop policy hearthDispatchAttr()/hearthDispatchIdent() use
+ * above: the firmware's own +MTCMDTO:<seq> already covers "no answer
+ * arrived in time", so there is no case here that needs a reply this
+ * function cannot construct.
+ */
+void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
+  char *end;
+  unsigned long seq = strtoul(rest, &end, 10);
+  if (end == rest || *end != ',') {
+    return;
+  }
+  unsigned long ep = strtoul(end + 1, &end, 10);
+  if (*end != ',') {
+    return;
+  }
+  unsigned long cluster = strtoul(end + 1, &end, 10);
+  if (*end != ',') {
+    return;
+  }
+  unsigned long command = strtoul(end + 1, &end, 10);
+
+  MatterEndPoint *target = MatterEndPoint::hearthFindByEndPointId((uint16_t)ep);
+  bool verdict = target && target->hearthOnForwardedCommand((uint32_t)cluster, (uint32_t)command);
+
+  char cmd[40];
+  snprintf(cmd, sizeof(cmd), "AT+MTCMDRESP=%lu,%d", seq, verdict ? 1 : 0);
+  self->_link.sendLine(cmd);
+}
+
+/*
+ * "+MTCMDTO:<seq>" (AT_MT_SPEC.md S3.17): the verdict window closed with no
+ * AT+MTCMDRESP from this host, so the firmware default-denied on its own.
+ * Nothing on this side was waiting on the seq (hearthDispatchCmd() above
+ * never holds one open past its own return), so there is nothing to look
+ * up or clean up here -- just tell the sketch, via the same link-event
+ * channel HEARTH_TRANSPORT_MISMATCH already uses for a Hearth-specific
+ * condition with no upstream matterEvent_t of its own.
+ */
+void HearthClass::hearthDispatchCmdTimeout(const char *rest, HearthClass *self) {
+  (void)rest;
+  self->hearthRaiseEvent(HEARTH_CMD_TIMEOUT);
+}
+
+/*
  * The URC handler installed on HearthLink. +MTREADY is the one link-level
  * concern: an unexpected one means the co-processor rebooted under us, so
  * every cached endpoint ID is now unconfirmed (HEARTH_COPROCESSOR_REBOOTED).
@@ -426,6 +491,17 @@ void HearthClass::hearthOnURCLine(const char *line, void *arg) {
   }
   if (strncmp(line, "+MTIDENT:", 9) == 0) {
     hearthDispatchIdent(line + 9);
+    return;
+  }
+  /* +MTCMDTO: checked before +MTCMD: even though the two prefixes cannot
+   * collide (their 7th characters are ':' and 'T'): keeps the more specific
+   * timeout URC visually paired with its own dispatcher first. */
+  if (strncmp(line, "+MTCMDTO:", 9) == 0) {
+    hearthDispatchCmdTimeout(line + 9, self);
+    return;
+  }
+  if (strncmp(line, "+MTCMD:", 7) == 0) {
+    hearthDispatchCmd(line + 7, self);
     return;
   }
 }
