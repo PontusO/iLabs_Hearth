@@ -168,9 +168,19 @@ static void test_forwarded_command_interleaved_in_outer_response_drains_after(vo
  * Before the fix (a fire-and-forget write from inside dispatchURC()), this
  * exact scenario read the firmware's real +MTERR:2 rejection as a false OK:
  * setLockState() returned true and the cache updated to Locked, while the
- * wire had genuinely rejected the write. Reproduced against this test with
- * the pre-fix dispatch (see the report's red excerpt) before implementing
- * the queue.
+ * wire had genuinely rejected the write.
+ *
+ * Fix round 2 (C3 re-review): this test's ORIGINAL script (both replies
+ * immediate/synchronous) passed under the pre-fix dispatch too -- traced by
+ * the re-reviewer and confirmed here: MockStream's default deliver()
+ * appends a reply the instant its command is matched, so the stray OK from
+ * a fire-and-forget AT+MTCMDRESP write was always still sitting in the
+ * buffer for the SAME in-progress read loop to consume before returning,
+ * self-healing a desync no real link would. It protected nothing going
+ * forward. The AT+MTCMDRESP reply below is now `deferred` (MockStream.h),
+ * which makes this test load-bearing: verified genuinely red against the
+ * pre-fix (sendLine-based) dispatch before this fix existed, see the C3
+ * report's "Fix round 2" section for the captured run.
  */
 static void test_forwarded_command_queued_before_next_command_does_not_misattribute(void) {
   MockStream s; MatterDoorLock lock;
@@ -178,7 +188,16 @@ static void test_forwarded_command_queued_before_next_command_does_not_misattrib
   lock.onLock([]() { return true; });
 
   s.injectURC("+MTCMD:7,1,257,0");
-  s.expect("AT+MTCMDRESP=7,1", "OK\r\n");                /* drained first, its own terminal */
+  /* deferred: models the real link, where this reply has not arrived yet
+   * at the instant the write completes. Under the pre-fix (fire-and-forget)
+   * dispatch, deliver()'s flush-on-next-write (MockStream.h) lands this
+   * "OK" ahead of AT+MTLOCK's own real reply in the simulated stream, so
+   * AT+MTLOCK's read loop claims it as ITS OWN terminal -- the exact
+   * misattribution this test exists to catch. Under the fix, the queue's
+   * own _link.command() call drains and consumes this reply (via
+   * pumpDeferred()'s two-round self-resolution) before AT+MTLOCK is ever
+   * written, so no reordering happens at all. */
+  s.expect("AT+MTCMDRESP=7,1", "OK\r\n", /*deferred=*/true);
   s.expect("AT+MTLOCK=1,1,1", "+MTERR:2\r\nERROR\r\n");  /* the firmware's real (rejecting) answer */
   check("setLockState() sees the wire's real answer, not an orphaned OK", !lock.setLockState(MatterDoorLock::kStateLocked, MatterDoorLock::kSourceManual));
   check("and the cache reflects the real rejection", lock.getLockState() == MatterDoorLock::kStateUnlocked);
