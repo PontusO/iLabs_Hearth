@@ -47,8 +47,9 @@ void printHelp() {
 }
 
 void loop() {
-  /* Every iteration, unconditionally: URC dispatch, and therefore every
-   * onChange* callback in this sketch, only runs from inside poll(). */
+  /* Every iteration, unconditionally: URC dispatch. This class has no
+   * onChange to dispatch, but poll() still drains the link for every
+   * other endpoint and command in the sketch. */
   Hearth.poll();
 
   if (Serial.available()) {
