@@ -410,13 +410,14 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
 }
 
 /*
- * "<seq>,<ep>,<cluster>,<command>" (text after "+MTCMD:"), AT_MT_SPEC.md
- * S3.17: a controller invoked a command that needs an app-level verdict.
- * Routes to the named endpoint's hearthOnForwardedCommand() (MatterEndPoint.h)
- * at dispatch time -- the timing the user's callback sees is unchanged --
- * but does NOT write AT+MTCMDRESP here. An endpoint the sketch never
- * declared, or one whose override still says no (the base class default),
- * both deny -- fail closed, per the wire contract.
+ * "<seq>,<ep>,<cluster>,<command>[,<payload>]" (text after "+MTCMD:"),
+ * AT_MT_SPEC.md S3.17: a controller invoked a command that needs an
+ * app-level verdict. Routes to the named endpoint's
+ * hearthOnForwardedCommand() (MatterEndPoint.h) at dispatch time -- the
+ * timing the user's callback sees is unchanged -- but does NOT write
+ * AT+MTCMDRESP here. An endpoint the sketch never declared, or one whose
+ * override still says no (the base class default), both deny -- fail
+ * closed, per the wire contract.
  *
  * Fix round 1 (C3 review, CRITICAL): this function used to send the reply
  * immediately via a fire-and-forget HearthLink::sendLine(), reasoning that
@@ -444,6 +445,24 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
  * above: the firmware's own +MTCMDTO:<seq> already covers "no answer
  * arrived in time", so there is no case here that needs a reply this
  * function cannot construct.
+ *
+ * Task C7 widening, two changes:
+ *
+ * - The fifth field is optional (AT_MT_SPEC.md S3.17's reserved payload,
+ *   chime's PlayChimeSound `chimeID` the first consumer): parsed only when
+ *   a comma follows the fourth field, and handed to
+ *   hearthOnForwardedCommand() as (hasPayload=true, payload). A four-field
+ *   line, exactly what every consumer before chime sends, parses exactly as
+ *   before (hasPayload=false, payload=0) -- the whole point of the field
+ *   being reserved rather than mandatory from day one.
+ * - Seq `0` is notify-only (AT_MT_SPEC.md S3.17): the firmware opens no
+ *   mailbox slot for it and `AT+MTCMDRESP=0,...` always answers +MTERR:1,
+ *   so this dispatches to hearthOnForwardedCommand() exactly as any other
+ *   seq (a registered callback still runs, e.g. a URC with genuinely
+ *   nothing to adjudicate) but the verdict is never enqueued: there is
+ *   structurally nothing pending under seq 0 for hearthDrainCmdRespQueue()
+ *   to answer, and enqueuing anyway would just earn the host its own
+ *   +MTERR:1 for asking.
  */
 void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
   char *end;
@@ -461,9 +480,19 @@ void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
   }
   unsigned long command = strtoul(end + 1, &end, 10);
 
-  MatterEndPoint *target = MatterEndPoint::hearthFindByEndPointId((uint16_t)ep);
-  bool verdict = target && target->hearthOnForwardedCommand((uint32_t)cluster, (uint32_t)command);
+  bool hasPayload = false;
+  unsigned long payload = 0;
+  if (*end == ',') {
+    payload = strtoul(end + 1, &end, 10);
+    hasPayload = true;
+  }
 
+  MatterEndPoint *target = MatterEndPoint::hearthFindByEndPointId((uint16_t)ep);
+  bool verdict = target && target->hearthOnForwardedCommand((uint32_t)cluster, (uint32_t)command, hasPayload, (uint32_t)payload);
+
+  if (seq == 0) {
+    return;  // notify-only: dispatch already ran above, no verdict to send
+  }
   self->hearthEnqueueCmdResp((uint32_t)seq, verdict);
 }
 
