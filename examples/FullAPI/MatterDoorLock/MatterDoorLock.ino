@@ -41,12 +41,12 @@
  * second loses the race even with a callback that itself returns
  * instantly; the lock then fails closed (denied), never open, and
  * +MTCMDTO arrives here as HEARTH_CMD_TIMEOUT on Hearth.onLinkEvent() (see
- * setup() below) -- the diagnostic for exactly this failure shape.
+ * setup() below), the diagnostic for exactly this failure shape.
  *
  * DEFERRED REPLY: the verdict callback's return value only decides
  * allow/deny. The AT+MTCMDRESP reply that carries it to the firmware goes
  * out afterward, from a queue drained once the current AT exchange
- * releases the link (Hearth.cpp's hearthDrainCmdRespQueue()) -- do not
+ * releases the link (Hearth.cpp's hearthDrainCmdRespQueue()); do not
  * expect the reply to have gone out yet by the time the callback returns.
  * -------------------------------------------------------------------------
  *

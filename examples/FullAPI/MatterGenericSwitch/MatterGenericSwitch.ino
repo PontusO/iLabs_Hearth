@@ -30,7 +30,9 @@
  *
  * Observe controller-side:
  *   chip-tool switch subscribe-event initial-press 0 10 <node> <ep>
- *   chip-tool switch read current-position <node> <ep>
+ *   chip-tool switch read current-position <node> <ep>   (always 0:
+ *   this class never writes an attribute; shown for contrast with the
+ *   event line above)
  *
  * Error handling pattern (applies to every setter in this library):
  *   if (!Switch.click()) {

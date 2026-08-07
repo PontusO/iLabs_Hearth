@@ -560,7 +560,8 @@ two carry real surface design of their own (C4):
   where the sketch exercises it; the banner is a coverage checklist against
   the class header, not narrative.
 - **Scenario showcases**: `MatterDoorLockAdjudicated` and
-  `HearthSensorsAndAppliances` (documented under "Hearth originals" above),
+  `HearthSensorsAndAppliances` (sketch descriptions further down in this
+  section; the classes they drive are documented under "Hearth originals"),
   Hearth-original sketches that compose several classes into something
   closer to a real device, rather than exhaustively covering one class.
 
