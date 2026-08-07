@@ -102,6 +102,34 @@ MatterCooktop umbrellaCooktop;
 MatterRoomAirConditioner umbrellaRoomAirConditioner;
 MatterPump umbrellaPump;
 
+/*
+ * The seven-type batch's first library task (Task C7): thirty-second
+ * through thirty-fourth, none with an arduino-esp32 counterpart. Declared
+ * here only, same compile/link guard as the ten-type swoop above: dropping
+ * any one of their includes from Hearth.h's list fails this build too.
+ */
+MatterWaterValve umbrellaWaterValve;
+MatterModeSelect umbrellaModeSelect;
+MatterChime umbrellaChime;
+
+/*
+ * The seven-type batch's second library task (Task C8): thirty-fifth
+ * through thirty-ninth, none with an arduino-esp32 counterpart. The trio
+ * (MatterLaundryWasher, MatterDishwasher, MatterLaundryDryer) shares
+ * MatterOperationalStateEndpoint as its implementation core (see that
+ * header's own comment); its own header is not included directly by
+ * Hearth.h and so is not declared here either, the same reasoning
+ * Hearth.h's own comment gives: it carries no device type of its own for a
+ * sketch to declare, so there is nothing here for this file to
+ * compile/link-guard beyond what declaring the three subclasses already
+ * covers transitively. Declared here only, same guard as every class above.
+ */
+MatterSmokeCOAlarm umbrellaSmokeCOAlarm;
+MatterPowerSource umbrellaPowerSource;
+MatterLaundryWasher umbrellaLaundryWasher;
+MatterDishwasher umbrellaDishwasher;
+MatterLaundryDryer umbrellaLaundryDryer;
+
 static int g_pass = 0, g_fail = 0;
 static void check(const char *name, bool cond) {
   printf("  [%s] %s\n", cond ? "PASS" : "FAIL", name);

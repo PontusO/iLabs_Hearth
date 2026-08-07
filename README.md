@@ -544,6 +544,114 @@ two carry real surface design of their own (C4):
   getter), and `getEffectiveOperationMode()`/`getEffectiveControlMode()`
   (device-answered reads fed exclusively by URCs, no setter).
 
+### The seven-type batch
+
+Eight more classes, none with an `arduino-esp32` counterpart (Tasks C7-C8),
+join `MatterDoorLock` and the ten-type swoop in this section rather than
+the parity table above, which stays at 20/20. The firmware's own device
+type table (`iLabs_AT_Hearth`'s `docs/AT_MT_SPEC.md`, "Supported device
+types") now lists 38 rows; this batch supplies the last eight of them,
+taking this section's own class count to nineteen (`MatterDoorLock`, the
+ten-type swoop's ten, and these eight) and the library's total public
+`Matter*` endpoint class count to thirty-nine: twenty parity classes plus
+nineteen Hearth originals.
+
+Three add no shared implementation (C7):
+
+- `MatterWaterValve` (`0x0042`): `onOpen()`/`onClose()` register a verdict
+  for a forwarded `Open`/`Close` invoke (`ValveConfigurationAndControl`,
+  cluster `0x0081`); `setValveState(state[, level])` reports `CurrentState`
+  over `AT+MTVALVE`, cache-only `getValveState()`. **The verdict cannot
+  fail the command on the wire.** Unlike the door lock,
+  `ValveConfigurationAndControl`'s own server calls the delegate
+  synchronously and discards what it returns (`TEMPORARY_RETURN_IGNORED`,
+  both call sites), so the controller always sees `Status::Success` once
+  the command reaches the host at all; a deny gates only whether the
+  sketch's own callback goes on to move the physical valve, never what the
+  controller observes. `<level>` (0..100) is accepted but never cached or
+  readable back: this SDK revision's `water_valve` thunk fixes
+  `FeatureMap` at 0, so `CurrentLevel`/`TargetLevel` are never created as
+  attributes at all.
+- `MatterModeSelect` (`0x0027`): `setSupportedModes(modes, labels, count)`
+  replaces the `SupportedModes` list over `AT+MTMODES` (1..8 mode/label
+  pairs, each mode unique, each label 1..32 printable ASCII bytes with no
+  `"`), served by CHIP's own `SupportedModesManager` rather than
+  `esp_matter`'s attribute store, so there is no `AT+MTATTR` path to it and
+  no read-back command either; not persisted, so the cached list is resent
+  on every later `Matter.begin()` reconcile, the
+  `MatterTemperatureControlledCabinet` norm. `CurrentMode` is the
+  opposite: a plain `esp_matter`-managed attribute, `setCurrentMode()`/
+  `getCurrentMode()` going through the base class the same way
+  `MatterOnOffLight::setOnOff()` does, with `onChangeMode()` firing on a
+  controller's `ChangeToMode`.
+- `MatterChime` (`0x0146`): `setInstalledChimeSounds(ids, names, count)`
+  is the `AT+MTCHIMESOUNDS`-only counterpart of `MatterModeSelect`'s
+  `setSupportedModes()`, identical grammar, not persisted, resent per
+  reconcile. `setSelectedChime()`/`getSelectedChime()` and
+  `setEnabled()`/`getEnabled()` are cache-only in both directions over
+  `AT+MTCHIME` (no `AT+MTATTR` path exists for any of this cluster's three
+  attributes), but persist firmware-side across `AT+MTRESET`, so neither
+  needs a reconcile push. `onPlayChime(std::function<bool(uint8_t
+  chimeID)>)` registers the verdict for a forwarded `PlayChimeSound`
+  invoke, and unlike the water valve, **this one is a real wire verdict**:
+  the SDK passes the host's allow/deny straight through as
+  `Status::Success`/`Status::Failure`, with no remapping. It is also the
+  first consumer of `AT_MT_SPEC.md` S3.17's reserved fifth `+MTCMD`
+  payload field, the requested `chimeID`. The SDK short-circuits
+  `PlayChimeSound` before it ever reaches the host in two cases (`Enabled`
+  false, or an uninstalled `chimeID`): the callback simply never fires,
+  there is nothing to deny.
+
+Two more add no shared implementation either (C8):
+
+- `MatterSmokeCOAlarm` (`0x0076`): eleven `AT+MTALARM` fields, ten cached
+  setter/getter pairs (`setSmokeState`, `setCOState`, `setBatteryAlert`,
+  `setDeviceMuted`, `setHardwareFaultAlert`, `setEndOfServiceAlert`,
+  `setInterconnectSmokeAlarm`, `setInterconnectCOAlarm`,
+  `setContaminationState`, `setSmokeSensitivityLevel`) plus
+  `completeSelfTest()` (field 5, `TestInProgress`, value 0 only).
+  **`onSelfTest(std::function<void()>)` is this library's first notify-only
+  `+MTCMD` consumer.** `SmokeCoAlarmServer::HandleRemoteSelfTestRequest`
+  answers the controller itself before the app-level hook ever runs, so a
+  controller-invoked self test always arrives as `+MTCMD:0,<ep>,92,0`
+  (`AT_MT_SPEC.md` S3.17's notify-only form, seq `0` reserved): the
+  callback runs, but there is no verdict to send back and this library's
+  dispatcher never tries to send one. `getExpressedState()` is the one
+  genuine `AT+MTATTR` read in this class (`ExpressedState` is derived
+  server-side from the ten states above, so there is no cached value to
+  return instead), and this library's first use of that live-read path
+  anywhere.
+- `MatterPowerSource` (`0x0011`): a flat sibling endpoint, not composed
+  onto another one, enabling the `Battery` feature only.
+  `setBatChargeLevel()`/`setBatPercentRemaining(double percent)`/
+  `setBatReplacementNeeded()` are ordinary `AT+MTATTR` writes, the
+  `MatterAirQualitySensor::setAirQuality()` shape for a host-authoritative
+  reading pushed to the fabric; no getters, matching the task brief's own
+  API for this class. `BatPercentRemaining` is the Matter spec's own
+  half-percent-step type (0-200 for 0-100%); the `double` argument is
+  clamped to 0..100 (an out-of-range `double` cast to `uint8_t` is
+  undefined behaviour in C++, not a wire-validation gap) and doubled
+  before the write.
+
+The last three (C8) share one implementation, `MatterOperationalStateEndpoint`,
+an internal base class (not itself a public device type: it has no device
+type ID of its own) behind three thin public subclasses,
+`MatterLaundryWasher` (`0x0073`), `MatterDishwasher` (`0x0075`) and
+`MatterLaundryDryer` (`0x007C`), all three wiring the identical
+`OperationalState` cluster (`0x0060`) with no device-specific extension
+(`AT_MT_SPEC.md` S3.21). Each subclass's `begin()` differs only in the
+device type ID it declares. `onPause()`/`onResume()`/`onStart()`/
+`onStop()` register the verdict for a forwarded `Pause`/`Resume`/`Start`/
+`Stop` invoke; `setOperationalState()`/`getOperationalState()` report the
+appliance's actual state over `AT+MTOPSTATE` (state `0`/`1`/`2`; state
+`3`, `Error`, is reserved for the device's own fault-detection path and
+rejected `+MTERR:1`), cache-only getter, no `AT+MTATTR` path exists for
+any `OperationalState` attribute. **A deny IS the wire response here**,
+unlike the water valve: the SDK copies the adjudication verdict straight
+into the command's own `OperationalCommandResponse`, so `onPause()`/
+`onResume()`/`onStart()`/`onStop()`'s return value is a real allow/deny
+the controller observes, the same shape as the door lock and the chime.
+
 ## Examples
 
 `examples/` holds three tiers of sketches, each proving a different thing:
@@ -555,7 +663,7 @@ two carry real surface design of their own (C4):
   erase the proof, so this tier stays untouched.
 - **FullAPI references**, one per class under `examples/FullAPI/`
   (documented below, in its own subsection): a sketch that exercises the
-  complete public surface of exactly one `Matter*` endpoint class, thirty-one
+  complete public surface of exactly one `Matter*` endpoint class, thirty-nine
   in total. Each opens with a banner comment listing every public member and
   where the sketch exercises it; the banner is a coverage checklist against
   the class header, not narrative.
@@ -688,7 +796,7 @@ Full commands and output for the original three-blocker analysis are in
 ### FullAPI references (`examples/FullAPI/`)
 
 One sketch per concrete `Matter*` endpoint class this library implements,
-thirty-one in total, folder name equal to sketch name. Where the tiers
+thirty-nine in total, folder name equal to sketch name. Where the tiers
 above prove "an unmodified upstream sketch builds" and "several classes
 compose into something demo-able", this tier proves "every public member of
 this one class actually works", one class at a time.
@@ -707,7 +815,9 @@ single-character CDC menu over `Serial` drives every writable member, `?`
 prints help, and every controller-observable effect prints the equivalent
 `chip-tool` command so a bench session can be checked against a live
 commissioned device without guessing cluster and attribute names. See
-`iLabs_AT_Hearth`'s Task E1-E4 reports for the round that built this tier.
+`iLabs_AT_Hearth`'s Task E1-E4 reports for the round that built this tier,
+and its Task C9 report for the eight added when the seven-type batch's
+device types reached the library surface.
 
 ## Preferences
 
