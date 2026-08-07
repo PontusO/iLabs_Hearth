@@ -19,9 +19,11 @@
  *         FanModeSequence_t)       setup()
  *   getFanModeString(uint8_t)      menu 'm' / 'g', prints the mode name
  *   setOnOff(bool, bool)           menu '1' / '0' (performUpdate defaults
- *                                  true; menu 'S' shows the silent form)
+ *                                  true)
  *   getOnOff()                     menu 's'
- *   toggle(bool)                   menu 't'
+ *   toggle(bool)                   menu 't' (performUpdate defaults true);
+ *                                  menu 'X' shows the silent form (see the
+ *                                  SILENT WRITE NOTE below)
  *   setSpeedPercent(uint8_t, bool) menu '+' / '-', step 10; 'S' silent
  *   getSpeedPercent()              menu 'p'
  *   setMode(FanMode_t, bool)       menu 'm', cycles all seven values
@@ -34,9 +36,15 @@
  *                                  down mid-demo is not a usable demo;
  *                                  call it when retiring the endpoint
  *
- * Silent write note: setOnOff(), toggle() and setSpeedPercent() all take a
- * trailing performUpdate flag (default true -> AT+MTATTR mode 1, reported;
- * false -> mode 0, silent). The 'S' key demonstrates the false form.
+ * SILENT WRITE NOTE: setOnOff(), toggle() and setSpeedPercent() all take a
+ * trailing performUpdate flag (default true). Per MatterEndPoint.h's header
+ * comment: true -> updateAttributeVal(), AT+MTATTR mode 1, "reported to
+ * subscribers and bound devices"; false -> setAttributeVal(), mode 0, "no
+ * report to the fabric". The false form still changes the cached attribute
+ * on this device (confirm with 's'/'g' afterward) but a Matter controller
+ * subscribed to FanMode/PercentCurrent receives no report of the change;
+ * only an explicit read reveals it. 'X' demonstrates this on toggle();
+ * 'S' demonstrates it on setSpeedPercent().
  *
  * Observe controller-side:
  *   chip-tool fancontrol read fan-mode <node> <ep>
@@ -87,7 +95,7 @@ void setup() {
 }
 
 void printHelp() {
-  Serial.println("1=on 0=off t=toggle s=getOnOff  +/-=speed step10  S=silent speed step10");
+  Serial.println("1=on 0=off t=toggle s=getOnOff  X=silent toggle  +/-=speed step10  S=silent speed step10");
   Serial.println("m=setMode(cycle 7) g=getMode  p=getSpeedPercent  u=updateAccessory  ?=help");
 }
 
@@ -102,6 +110,13 @@ void loop() {
       case '0': Serial.println(Hood.setOnOff(false) ? "off: OK" : "off: failed"); break;
       case 't': Serial.println(Hood.toggle() ? "toggled" : "toggle failed");      break;
       case 's': Serial.print("onOff: "); Serial.println(Hood.getOnOff());         break;
+      case 'X':
+        /* performUpdate=false: still flips currentFanMode locally (verify
+         * with 's'/'g'), but per MatterEndPoint.h's header comment this is
+         * AT+MTATTR mode 0, "no report to the fabric", so a controller
+         * subscribed to FanMode gets no report of this change. */
+        Serial.println(Hood.toggle(false) ? "toggled (silent)" : "toggle (silent) failed");
+        break;
       case '+':
         {
           uint16_t raw = (uint16_t)Hood.getSpeedPercent() + 10;
