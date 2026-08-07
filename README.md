@@ -546,6 +546,24 @@ two carry real surface design of their own (C4):
 
 ## Examples
 
+`examples/` holds three tiers of sketches, each proving a different thing:
+
+- **Parity proofs**, at the examples root (documented in the list right
+  below): byte-identical copies of `arduino-esp32`'s own Matter example
+  sketches. They are the evidence that an unmodified upstream sketch
+  compiles and runs on a Challenger; editing one to make it build would
+  erase the proof, so this tier stays untouched.
+- **FullAPI references**, one per class under `examples/FullAPI/`
+  (documented below, in its own subsection): a sketch that exercises the
+  complete public surface of exactly one `Matter*` endpoint class, thirty-one
+  in total. Each opens with a banner comment listing every public member and
+  where the sketch exercises it; the banner is a coverage checklist against
+  the class header, not narrative.
+- **Scenario showcases**: `MatterDoorLockAdjudicated` and
+  `HearthSensorsAndAppliances` (documented under "Hearth originals" above),
+  Hearth-original sketches that compose several classes into something
+  closer to a real device, rather than exhaustively covering one class.
+
 `examples/` holds nineteen of `arduino-esp32`'s own Matter example sketches,
 copied **byte-identical** from
 `libraries/Matter/examples/` in the `esp32` Arduino core (3.3.8), and
@@ -665,6 +683,30 @@ rather than editing them:
 
 Full commands and output for the original three-blocker analysis are in
 `iLabs_AT_Hearth`'s Task 9 report.
+
+### FullAPI references (`examples/FullAPI/`)
+
+One sketch per concrete `Matter*` endpoint class this library implements,
+thirty-one in total, folder name equal to sketch name. Where the tiers
+above prove "an unmodified upstream sketch builds" and "several classes
+compose into something demo-able", this tier proves "every public member of
+this one class actually works", one class at a time.
+
+Every sketch opens with the same banner convention: a comment block listing
+every public member of the class, from its header, minus the standing
+implementation-detail exclusions (`attributeChangeCB`, `hearthAttrTypeFor`
+and the like), and where in the sketch it is exercised. The banner is the
+reviewer's checklist, not narrative: cross it off against the class header
+in one direction and against the sketch's `setup()`/menu in the other, and
+any gap is the sketch's bug, not the class's.
+
+They are bring-up firmware for real hardware, not copies of anything:
+`Hearth.poll()` runs first in every `loop()` with a comment on why, a
+single-character CDC menu over `Serial` drives every writable member, `?`
+prints help, and every controller-observable effect prints the equivalent
+`chip-tool` command so a bench session can be checked against a live
+commissioned device without guessing cluster and attribute names. See
+`iLabs_AT_Hearth`'s Task E1-E4 reports for the round that built this tier.
 
 ## Preferences
 
