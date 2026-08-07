@@ -37,6 +37,9 @@ build/
 /test/host/test_cooktop
 /test/host/test_roomac
 /test/host/test_pump
+/test/host/test_watervalve
+/test/host/test_modeselect
+/test/host/test_chime
 
 *.bin
 *.uf2

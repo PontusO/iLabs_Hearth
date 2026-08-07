@@ -55,6 +55,10 @@
  * counterpart, same reason as MatterDoorLock.h above: a bare `#include
  * <Matter.h>` plus a file-scope declaration must work with no endpoint
  * header of its own. See README.md, "Hearth originals".
+ *
+ * Task C7 (the seven-type batch's first library task) adds the thirty-second
+ * through thirty-fourth: MatterWaterValve.h, MatterModeSelect.h,
+ * MatterChime.h. Same reasoning again, same "Hearth originals" section.
  */
 #pragma once
 
@@ -94,6 +98,9 @@
 #include "MatterEndpoints/MatterCooktop.h"
 #include "MatterEndpoints/MatterRoomAirConditioner.h"
 #include "MatterEndpoints/MatterPump.h"
+#include "MatterEndpoints/MatterWaterValve.h"
+#include "MatterEndpoints/MatterModeSelect.h"
+#include "MatterEndpoints/MatterChime.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART
