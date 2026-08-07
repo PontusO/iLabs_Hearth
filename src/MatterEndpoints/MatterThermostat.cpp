@@ -21,9 +21,16 @@ const uint32_t kOccupiedHeatingSetpointAttributeId = 0x0012;
 const uint32_t kSystemModeAttributeId = 0x001C;
 }  // namespace
 
-// string helper for the THERMOSTAT MODE. Index 2 is "UNKNOWN": SystemModeEnum
-// has a gap there (kAuto=1, kCool=3), see the header comment.
-const char *MatterThermostat::thermostatModeString[5] = { "OFF", "AUTO", "UNKNOWN", "COOL", "HEAT" };
+/* string helper for the THERMOSTAT MODE. Index 2 is "UNKNOWN": SystemModeEnum
+ * has a gap there (kAuto=1, kCool=3), see the header comment. All ten enum
+ * values are covered: modes 5-9 (EMERGENCY_HEAT..SLEEP) are controller
+ * writable, and the old 5-entry table read out of bounds for every one of
+ * them, reachable from both the sketch getter and the onChangeMode path
+ * (bug B146). The accessor clamps anything past the table to "UNKNOWN". */
+const char *MatterThermostat::thermostatModeString[10] = {
+  "OFF", "AUTO", "UNKNOWN", "COOL", "HEAT",
+  "EMERGENCY_HEAT", "PRECOOLING", "FAN_ONLY", "DRY", "SLEEP"
+};
 
 MatterThermostat::MatterThermostat() {}
 

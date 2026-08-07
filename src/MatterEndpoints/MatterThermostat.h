@@ -123,7 +123,10 @@ public:
   }
   // returns a friendly string for the Thermostat Mode
   static const char *getThermostatModeString(uint8_t mode) {
-    return thermostatModeString[mode];
+    /* Clamp, do not index blindly: controllers can write any u8 into
+     * SystemMode and this helper must never read past the table (B146;
+     * the MatterFan mode-string helper set the pattern). */
+    return (mode < 10) ? thermostatModeString[mode] : "UNKNOWN";
   }
 
   // get the Thermostat Control Sequence of Operation
@@ -256,5 +259,5 @@ protected:
   // clang-format on
 
   // string helper for the THERMOSTAT MODE
-  static const char *thermostatModeString[5];
+  static const char *thermostatModeString[10];
 };

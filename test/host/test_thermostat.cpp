@@ -326,6 +326,15 @@ static void test_thermostat_mode_string(void) {
   check("mode string UNKNOWN at the enum gap", strcmp(MatterThermostat::getThermostatModeString(2), "UNKNOWN") == 0);
   check("mode string COOL", strcmp(MatterThermostat::getThermostatModeString(3), "COOL") == 0);
   check("mode string HEAT", strcmp(MatterThermostat::getThermostatModeString(4), "HEAT") == 0);
+  /* B146: modes 5-9 are controller-writable SystemModeEnum values; the
+   * old 5-entry table read out of bounds for every one of them. */
+  check("mode string EMERGENCY_HEAT", strcmp(MatterThermostat::getThermostatModeString(5), "EMERGENCY_HEAT") == 0);
+  check("mode string PRECOOLING", strcmp(MatterThermostat::getThermostatModeString(6), "PRECOOLING") == 0);
+  check("mode string FAN_ONLY", strcmp(MatterThermostat::getThermostatModeString(7), "FAN_ONLY") == 0);
+  check("mode string DRY", strcmp(MatterThermostat::getThermostatModeString(8), "DRY") == 0);
+  check("mode string SLEEP", strcmp(MatterThermostat::getThermostatModeString(9), "SLEEP") == 0);
+  check("mode string clamps above the enum (10)", strcmp(MatterThermostat::getThermostatModeString(10), "UNKNOWN") == 0);
+  check("mode string clamps at 255", strcmp(MatterThermostat::getThermostatModeString(255), "UNKNOWN") == 0);
 }
 
 static void test_setpoint_limit_getters(void) {
