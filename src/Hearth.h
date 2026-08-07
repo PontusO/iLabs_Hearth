@@ -59,6 +59,17 @@
  * Task C7 (the seven-type batch's first library task) adds the thirty-second
  * through thirty-fourth: MatterWaterValve.h, MatterModeSelect.h,
  * MatterChime.h. Same reasoning again, same "Hearth originals" section.
+ *
+ * Task C8 (the seven-type batch's second library task) adds the
+ * thirty-fifth through thirty-ninth: MatterSmokeCOAlarm.h,
+ * MatterPowerSource.h, and the OperationalState trio MatterLaundryWasher.h,
+ * MatterDishwasher.h, MatterLaundryDryer.h. The trio's three headers each
+ * include MatterEndpoints/MatterOperationalStateEndpoint.h themselves (the
+ * shared implementation core the three subclass), so that header is not
+ * listed separately here: it carries no device type of its own for a
+ * sketch to declare, and the "no cycle" one-way dependency this comment
+ * already establishes covers it transitively. Same reasoning as every
+ * class before it, same "Hearth originals" section.
  */
 #pragma once
 
@@ -101,6 +112,11 @@
 #include "MatterEndpoints/MatterWaterValve.h"
 #include "MatterEndpoints/MatterModeSelect.h"
 #include "MatterEndpoints/MatterChime.h"
+#include "MatterEndpoints/MatterSmokeCOAlarm.h"
+#include "MatterEndpoints/MatterPowerSource.h"
+#include "MatterEndpoints/MatterLaundryWasher.h"
+#include "MatterEndpoints/MatterDishwasher.h"
+#include "MatterEndpoints/MatterLaundryDryer.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART

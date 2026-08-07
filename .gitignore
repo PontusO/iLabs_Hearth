@@ -40,6 +40,11 @@ build/
 /test/host/test_watervalve
 /test/host/test_modeselect
 /test/host/test_chime
+/test/host/test_smokecoalarm
+/test/host/test_powersource
+/test/host/test_laundrywasher
+/test/host/test_dishwasher
+/test/host/test_laundrydryer
 
 *.bin
 *.uf2

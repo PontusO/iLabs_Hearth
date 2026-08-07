@@ -4,7 +4,7 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer
 
 all: $(TESTS)
 
@@ -160,6 +160,30 @@ test_modeselect: test_modeselect.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 test_chime: test_chime.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterChime.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+# Task C8: the second library task of the seven-type batch. Two
+# Hearth-original classes with no shared implementation
+# (MatterSmokeCOAlarm, MatterPowerSource), plus the OperationalState trio,
+# which DOES share one implementation core
+# (MatterOperationalStateEndpoint.cpp) behind three thin per-devtype
+# classes; every trio recipe below links that shared .cpp alongside its own
+# thin subclass. test_laundrywasher additionally links MatterDishwasher.cpp,
+# since its own test file carries the brief's cross-class shared-core proof
+# (one endpoint of each device type, driven over the identical wire).
+test_smokecoalarm: test_smokecoalarm.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterSmokeCOAlarm.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_powersource: test_powersource.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterPowerSource.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_laundrywasher: test_laundrywasher.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOperationalStateEndpoint.cpp ../../src/MatterEndpoints/MatterLaundryWasher.cpp ../../src/MatterEndpoints/MatterDishwasher.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_dishwasher: test_dishwasher.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOperationalStateEndpoint.cpp ../../src/MatterEndpoints/MatterDishwasher.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_laundrydryer: test_laundrydryer.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOperationalStateEndpoint.cpp ../../src/MatterEndpoints/MatterLaundryDryer.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all
