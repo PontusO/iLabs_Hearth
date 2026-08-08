@@ -65,6 +65,28 @@ MatterCooktop	KEYWORD1
 MatterRoomAirConditioner	KEYWORD1
 MatterPump	KEYWORD1
 
+# The seven-type batch's first library task (Task C7): thirty-second through
+# thirty-fourth, none with an arduino-esp32 counterpart. See README.md,
+# "Hearth originals".
+MatterWaterValve	KEYWORD1
+MatterModeSelect	KEYWORD1
+MatterChime	KEYWORD1
+
+# The seven-type batch's second library task (Task C8): thirty-fifth through
+# thirty-ninth, none with an arduino-esp32 counterpart. See README.md,
+# "Hearth originals". MatterOperationalStateEndpoint is the shared
+# implementation core the trio (MatterLaundryWasher, MatterDishwasher,
+# MatterLaundryDryer) subclasses; listed here for the same reason
+# MatterEndPoint is above it: its public members (onPause/onResume/onStart/
+# onStop/setOperationalState/getOperationalState) are what a sketch actually
+# calls on a trio instance, even though a sketch never declares one directly.
+MatterSmokeCOAlarm	KEYWORD1
+MatterPowerSource	KEYWORD1
+MatterOperationalStateEndpoint	KEYWORD1
+MatterLaundryWasher	KEYWORD1
+MatterDishwasher	KEYWORD1
+MatterLaundryDryer	KEYWORD1
+
 # Event and callback types.
 hearthEvent_t	KEYWORD1
 hearthEventCB	KEYWORD1
@@ -119,6 +141,18 @@ OperationSource_t	KEYWORD1
 # AirQualityEnum in the pinned esp-matter checkout. See README.md, "Hearth
 # originals".
 AirQuality_t	KEYWORD1
+
+# MatterWaterValve's enum type (Task C7), transcribed from ValveStateEnum in
+# the pinned esp-matter checkout. See README.md, "Hearth originals".
+ValveState_t	KEYWORD1
+
+# OperationalState_t is already listed above (MatterWindowCovering.h); the
+# OperationalState trio (Task C8) nests its own enum of the identical name in
+# MatterOperationalStateEndpoint.h, transcribed from OperationalStateEnum in
+# the pinned esp-matter checkout, with a different enumerator set
+# (kStateStopped/kStateRunning/kStatePaused below) than MatterWindowCovering's
+# STALL/MOVING_UP_OR_OPEN/MOVING_DOWN_OR_CLOSE. Not re-listed as a datatype:
+# same name, same as this file's existing precedent for a reused type name.
 
 # The esp_matter attribute-value shim (HearthCompat.h). Public because
 # getAttributeVal/setAttributeVal/updateAttributeVal and attributeChangeCB
@@ -379,6 +413,58 @@ setMaxFlow	KEYWORD2
 getEffectiveOperationMode	KEYWORD2
 getEffectiveControlMode	KEYWORD2
 
+# The seven-type batch's first library task (Task C7): MatterWaterValve,
+# MatterModeSelect, MatterChime. Names already listed above (begin, end,
+# onOpen, onClose, onChangeMode) are not repeated here. See README.md,
+# "Hearth originals".
+setValveState	KEYWORD2
+getValveState	KEYWORD2
+setSupportedModes	KEYWORD2
+setCurrentMode	KEYWORD2
+getCurrentMode	KEYWORD2
+onPlayChime	KEYWORD2
+setInstalledChimeSounds	KEYWORD2
+setSelectedChime	KEYWORD2
+getSelectedChime	KEYWORD2
+setEnabled	KEYWORD2
+getEnabled	KEYWORD2
+
+# The seven-type batch's second library task (Task C8): MatterSmokeCOAlarm,
+# MatterPowerSource, and the OperationalState trio (MatterLaundryWasher,
+# MatterDishwasher, MatterLaundryDryer, sharing
+# MatterOperationalStateEndpoint). Names already listed above (begin, end,
+# onStop, setOperationalState, getOperationalState) are not repeated here.
+# See README.md, "Hearth originals".
+onSelfTest	KEYWORD2
+completeSelfTest	KEYWORD2
+setSmokeState	KEYWORD2
+setCOState	KEYWORD2
+setBatteryAlert	KEYWORD2
+setDeviceMuted	KEYWORD2
+setHardwareFaultAlert	KEYWORD2
+setEndOfServiceAlert	KEYWORD2
+setInterconnectSmokeAlarm	KEYWORD2
+setInterconnectCOAlarm	KEYWORD2
+setContaminationState	KEYWORD2
+setSmokeSensitivityLevel	KEYWORD2
+getSmokeState	KEYWORD2
+getCOState	KEYWORD2
+getBatteryAlert	KEYWORD2
+getDeviceMuted	KEYWORD2
+getHardwareFaultAlert	KEYWORD2
+getEndOfServiceAlert	KEYWORD2
+getInterconnectSmokeAlarm	KEYWORD2
+getInterconnectCOAlarm	KEYWORD2
+getContaminationState	KEYWORD2
+getSmokeSensitivityLevel	KEYWORD2
+getExpressedState	KEYWORD2
+setBatChargeLevel	KEYWORD2
+setBatPercentRemaining	KEYWORD2
+setBatReplacementNeeded	KEYWORD2
+onPause	KEYWORD2
+onResume	KEYWORD2
+onStart	KEYWORD2
+
 # HearthColorUtil.h conversions, called out from MatterEnhancedColorLight's
 # getColorRGB()/setColorRGB(), and from examples/MatterEnhancedColorLight's
 # own temperature simulation (espCTToRgbColor/espCTColorToRgbColor).
@@ -553,6 +639,23 @@ kSourceRemote	LITERAL1
 kSourceRfid	LITERAL1
 kSourceBiometric	LITERAL1
 kSourceAliro	LITERAL1
+
+# ValveState_t (MatterWaterValve.h, Task C7): ValveStateEnum protocol values
+# (AT_MT_SPEC.md S3.19's <state>), transcribed from the pinned esp-matter
+# checkout, not upstream (no arduino-esp32 counterpart exists).
+kStateClosed	LITERAL1
+kStateOpen	LITERAL1
+kStateTransitioning	LITERAL1
+
+# OperationalState_t (MatterOperationalStateEndpoint.h, Task C8, the
+# OperationalState trio's shared base): OperationalStateEnum protocol values
+# (AT_MT_SPEC.md S3.21's <state>), transcribed from the pinned esp-matter
+# checkout, not upstream. A different enumerator set than
+# MatterWindowCovering's own OperationalState_t (STALL/MOVING_UP_OR_OPEN/
+# MOVING_DOWN_OR_CLOSE, above).
+kStateStopped	LITERAL1
+kStateRunning	LITERAL1
+kStatePaused	LITERAL1
 
 # AirQuality_t (MatterAirQualitySensor.h, ten-type swoop C2), transcribed from
 # AirQualityEnum in the pinned esp-matter checkout.

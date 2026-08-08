@@ -34,6 +34,47 @@ void HearthClass::begin(Stream &serial, unsigned long baud) {
   _expectedRebootTimeoutMs = 0;
 }
 
+#ifdef ARDUINO
+namespace {
+/*
+ * Grow the port's receive buffer to HEARTH_LINK_RX_BUFFER before it is
+ * opened (bug B166; see that macro's comment in Hearth.h for the measured
+ * burst this exists to survive).
+ *
+ * Detected rather than called outright: setFIFOSize() is arduino-pico's
+ * SerialUART/SerialPIO API, not part of Arduino's Stream or HardwareSerial
+ * contract, and HEARTH_SERIAL_PORT is whatever a board variant names --
+ * possibly a USB CDC object, or another core's HardwareSerial, neither of
+ * which has the method. The overload pair below picks the real call when
+ * the type offers it and compiles to nothing when it does not, so a board
+ * without it still builds and simply keeps its own buffer, which is what
+ * "no core-specific #ifdef ladder in a variant-driven library" costs. The
+ * int/long parameter is the usual tie-break: 0 is an int, so the first
+ * overload wins whenever its return type is valid.
+ *
+ * The end() is not defensive tidying, it is the whole reason this works.
+ * setFIFOSize() refuses outright while the port is running (`if (!size ||
+ * _running) return false;`) and it is begin() that allocates the queue, so
+ * the port has to be closed first -- and on this board it is ALREADY open
+ * before a single line of the sketch runs. The Challenger variant's
+ * initVariant() (variants/challenger_2350_wifi6_ble5/board_init.cpp) calls
+ * Challenger2040WiFi.reset(), which calls ESP_SERIAL_PORT.begin() to talk
+ * to whatever esp-at firmware the board normally carries. Measured, not
+ * assumed: without the end(), setFIFOSize() returned false and the buffer
+ * stayed at 32 (bug B166 bench transcript). end() is a no-op on a port
+ * that is not running, so it costs nothing on a board with no such
+ * variant hook.
+ */
+template <typename T>
+auto hearthSetRxBuffer(T &port, size_t bytes, int) -> decltype(port.setFIFOSize(bytes), (void)0) {
+  port.end();
+  port.setFIFOSize(bytes);
+}
+template <typename T>
+void hearthSetRxBuffer(T &, size_t, long) {}
+}  // namespace
+#endif
+
 /*
  * begin() was never called, which is the normal case: bring the link up on
  * the UART the board variant wires to the co-processor, then reset the
@@ -58,6 +99,7 @@ void HearthClass::hearthEnsureLink() {
 #ifndef HEARTH_SERIAL_PORT
 #error "iLabs Hearth requires a board variant that defines ESP_SERIAL_PORT (the UART wired to the ESP32-C6 co-processor), e.g. an iLabs Challenger WiFi6 board. Override with -DHEARTH_SERIAL_PORT=... for a board no variant describes."
 #else
+  hearthSetRxBuffer(HEARTH_SERIAL_PORT, (size_t)HEARTH_LINK_RX_BUFFER, 0);
   HEARTH_SERIAL_PORT.begin(HEARTH_LINK_BAUD);
   begin(HEARTH_SERIAL_PORT, HEARTH_LINK_BAUD);
   hearthResetCoprocessor();
@@ -410,13 +452,14 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
 }
 
 /*
- * "<seq>,<ep>,<cluster>,<command>" (text after "+MTCMD:"), AT_MT_SPEC.md
- * S3.17: a controller invoked a command that needs an app-level verdict.
- * Routes to the named endpoint's hearthOnForwardedCommand() (MatterEndPoint.h)
- * at dispatch time -- the timing the user's callback sees is unchanged --
- * but does NOT write AT+MTCMDRESP here. An endpoint the sketch never
- * declared, or one whose override still says no (the base class default),
- * both deny -- fail closed, per the wire contract.
+ * "<seq>,<ep>,<cluster>,<command>[,<payload>]" (text after "+MTCMD:"),
+ * AT_MT_SPEC.md S3.17: a controller invoked a command that needs an
+ * app-level verdict. Routes to the named endpoint's
+ * hearthOnForwardedCommand() (MatterEndPoint.h) at dispatch time -- the
+ * timing the user's callback sees is unchanged -- but does NOT write
+ * AT+MTCMDRESP here. An endpoint the sketch never declared, or one whose
+ * override still says no (the base class default), both deny -- fail
+ * closed, per the wire contract.
  *
  * Fix round 1 (C3 review, CRITICAL): this function used to send the reply
  * immediately via a fire-and-forget HearthLink::sendLine(), reasoning that
@@ -444,6 +487,24 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
  * above: the firmware's own +MTCMDTO:<seq> already covers "no answer
  * arrived in time", so there is no case here that needs a reply this
  * function cannot construct.
+ *
+ * Task C7 widening, two changes:
+ *
+ * - The fifth field is optional (AT_MT_SPEC.md S3.17's reserved payload,
+ *   chime's PlayChimeSound `chimeID` the first consumer): parsed only when
+ *   a comma follows the fourth field, and handed to
+ *   hearthOnForwardedCommand() as (hasPayload=true, payload). A four-field
+ *   line, exactly what every consumer before chime sends, parses exactly as
+ *   before (hasPayload=false, payload=0) -- the whole point of the field
+ *   being reserved rather than mandatory from day one.
+ * - Seq `0` is notify-only (AT_MT_SPEC.md S3.17): the firmware opens no
+ *   mailbox slot for it and `AT+MTCMDRESP=0,...` always answers +MTERR:1,
+ *   so this dispatches to hearthOnForwardedCommand() exactly as any other
+ *   seq (a registered callback still runs, e.g. a URC with genuinely
+ *   nothing to adjudicate) but the verdict is never enqueued: there is
+ *   structurally nothing pending under seq 0 for hearthDrainCmdRespQueue()
+ *   to answer, and enqueuing anyway would just earn the host its own
+ *   +MTERR:1 for asking.
  */
 void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
   char *end;
@@ -461,9 +522,19 @@ void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
   }
   unsigned long command = strtoul(end + 1, &end, 10);
 
-  MatterEndPoint *target = MatterEndPoint::hearthFindByEndPointId((uint16_t)ep);
-  bool verdict = target && target->hearthOnForwardedCommand((uint32_t)cluster, (uint32_t)command);
+  bool hasPayload = false;
+  unsigned long payload = 0;
+  if (*end == ',') {
+    payload = strtoul(end + 1, &end, 10);
+    hasPayload = true;
+  }
 
+  MatterEndPoint *target = MatterEndPoint::hearthFindByEndPointId((uint16_t)ep);
+  bool verdict = target && target->hearthOnForwardedCommand((uint32_t)cluster, (uint32_t)command, hasPayload, (uint32_t)payload);
+
+  if (seq == 0) {
+    return;  // notify-only: dispatch already ran above, no verdict to send
+  }
   self->hearthEnqueueCmdResp((uint32_t)seq, verdict);
 }
 

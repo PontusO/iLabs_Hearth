@@ -191,8 +191,20 @@ public:
    * (cluster_id, command_id) pair a concrete override does not recognise.
    * The dispatcher, not this method, sends AT+MTCMDRESP back to the
    * firmware; this only decides allow (true) or deny (false).
+   *
+   * Task C7 widening: `hasPayload`/`payload` carry AT_MT_SPEC.md S3.17's
+   * reserved fifth `+MTCMD` field (chime's PlayChimeSound `chimeID` is the
+   * first consumer). Defaulted so a call site that only ever knew the
+   * four-field form -- there are none left in this library after this
+   * change, but a sketch could still hold a raw MatterEndPoint* and call
+   * this directly -- keeps compiling. An override, however, must repeat the
+   * widened signature verbatim (`override` will not compile against a
+   * mismatched parameter list, C++'s own protection against a silently
+   * un-overridden base default): MatterDoorLock's own override was
+   * mechanically updated for this reason, not because LockDoor/UnlockDoor
+   * carry a payload -- they do not, so it ignores both new parameters.
    */
-  virtual bool hearthOnForwardedCommand(uint32_t cluster_id, uint32_t command_id);
+  virtual bool hearthOnForwardedCommand(uint32_t cluster_id, uint32_t command_id, bool hasPayload = false, uint32_t payload = 0);
 
 protected:
   uint16_t endpoint_id = 0;

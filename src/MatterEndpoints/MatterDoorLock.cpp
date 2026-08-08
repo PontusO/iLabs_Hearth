@@ -157,7 +157,9 @@ esp_matter_val_type_t MatterDoorLock::hearthAttrTypeFor(uint32_t cluster_id, uin
  * or no callback registered -- every path that is not an explicit allow,
  * exactly the wire contract's own "a lock fails closed, never open" rule.
  */
-bool MatterDoorLock::hearthOnForwardedCommand(uint32_t cluster_id, uint32_t command_id) {
+bool MatterDoorLock::hearthOnForwardedCommand(uint32_t cluster_id, uint32_t command_id, bool hasPayload, uint32_t payload) {
+  (void)hasPayload;  // LockDoor/UnlockDoor carry no S3.17 fifth field
+  (void)payload;
   if (!started || cluster_id != kDoorLockClusterId) {
     return false;
   }

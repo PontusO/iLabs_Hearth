@@ -305,10 +305,15 @@ void MatterEndPoint::hearthMarkReconciled() {
 /* Base default: no state to resend. See the header comment. */
 void MatterEndPoint::hearthOnReconciled() {}
 
-/* Base default: deny (fail closed). See the header comment. */
-bool MatterEndPoint::hearthOnForwardedCommand(uint32_t cluster_id, uint32_t command_id) {
+/* Base default: deny (fail closed). See the header comment. Default
+ * arguments live on the declaration (the header) only, per C++ rules; this
+ * definition repeats the full widened parameter list without repeating the
+ * defaults. */
+bool MatterEndPoint::hearthOnForwardedCommand(uint32_t cluster_id, uint32_t command_id, bool hasPayload, uint32_t payload) {
   (void)cluster_id;
   (void)command_id;
+  (void)hasPayload;
+  (void)payload;
   return false;
 }
 

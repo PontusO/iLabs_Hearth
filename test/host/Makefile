@@ -4,7 +4,7 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer
 
 all: $(TESTS)
 
@@ -58,10 +58,14 @@ test_measuresensors: test_measuresensors.cpp ArduinoShim.cpp $(SRC) ../../src/He
 # exercised over AT+MTATTR, the devtype expansion's other thirteen (final-
 # review finding M1) plus Task S4's MatterGenericSwitch/MatterColorLight,
 # Task C5's MatterTemperatureControlledCabinet, Task C3's MatterDoorLock
-# (added at C4, per C3's own note that C4 owns this file), and the ten-type
-# swoop's own ten classes (Tasks C2-C4, wired in here at C5) are declared
-# file-scope only, a compile/link guard against a dropped umbrella include.
-test_matter_umbrella: test_matter_umbrella.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp ../../src/MatterEndpoints/MatterOnOffPlugin.cpp ../../src/MatterEndpoints/MatterDimmablePlugin.cpp ../../src/MatterEndpoints/MatterContactSensor.cpp ../../src/MatterEndpoints/MatterRainSensor.cpp ../../src/MatterEndpoints/MatterWaterFreezeDetector.cpp ../../src/MatterEndpoints/MatterWaterLeakDetector.cpp ../../src/MatterEndpoints/MatterHumiditySensor.cpp ../../src/MatterEndpoints/MatterPressureSensor.cpp ../../src/MatterEndpoints/MatterOccupancySensor.cpp ../../src/MatterEndpoints/MatterFan.cpp ../../src/MatterEndpoints/MatterWindowCovering.cpp ../../src/MatterEndpoints/MatterThermostat.cpp ../../src/MatterEndpoints/MatterEnhancedColorLight.cpp ../../src/MatterEndpoints/MatterGenericSwitch.cpp ../../src/MatterEndpoints/MatterColorLight.cpp ../../src/MatterEndpoints/MatterTemperatureControlledCabinet.cpp ../../src/MatterEndpoints/MatterDoorLock.cpp ../../src/MatterEndpoints/MatterLightSensor.cpp ../../src/MatterEndpoints/MatterFlowSensor.cpp ../../src/MatterEndpoints/MatterAirQualitySensor.cpp ../../src/MatterEndpoints/MatterMountedOnOffControl.cpp ../../src/MatterEndpoints/MatterMountedDimmableLoadControl.cpp ../../src/MatterEndpoints/MatterAirPurifier.cpp ../../src/MatterEndpoints/MatterExtractorHood.cpp ../../src/MatterEndpoints/MatterCooktop.cpp ../../src/MatterEndpoints/MatterRoomAirConditioner.cpp ../../src/MatterEndpoints/MatterPump.cpp
+# (added at C4, per C3's own note that C4 owns this file), the ten-type
+# swoop's own ten classes (Tasks C2-C4, wired in here at C5), and the
+# seven-type batch's eight classes (Tasks C7-C8, wired in here at C9) are
+# declared file-scope only, a compile/link guard against a dropped umbrella
+# include. The OperationalState trio (MatterLaundryWasher, MatterDishwasher,
+# MatterLaundryDryer) additionally needs MatterOperationalStateEndpoint.cpp,
+# their shared implementation core, linked once.
+test_matter_umbrella: test_matter_umbrella.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp ../../src/MatterEndpoints/MatterOnOffPlugin.cpp ../../src/MatterEndpoints/MatterDimmablePlugin.cpp ../../src/MatterEndpoints/MatterContactSensor.cpp ../../src/MatterEndpoints/MatterRainSensor.cpp ../../src/MatterEndpoints/MatterWaterFreezeDetector.cpp ../../src/MatterEndpoints/MatterWaterLeakDetector.cpp ../../src/MatterEndpoints/MatterHumiditySensor.cpp ../../src/MatterEndpoints/MatterPressureSensor.cpp ../../src/MatterEndpoints/MatterOccupancySensor.cpp ../../src/MatterEndpoints/MatterFan.cpp ../../src/MatterEndpoints/MatterWindowCovering.cpp ../../src/MatterEndpoints/MatterThermostat.cpp ../../src/MatterEndpoints/MatterEnhancedColorLight.cpp ../../src/MatterEndpoints/MatterGenericSwitch.cpp ../../src/MatterEndpoints/MatterColorLight.cpp ../../src/MatterEndpoints/MatterTemperatureControlledCabinet.cpp ../../src/MatterEndpoints/MatterDoorLock.cpp ../../src/MatterEndpoints/MatterLightSensor.cpp ../../src/MatterEndpoints/MatterFlowSensor.cpp ../../src/MatterEndpoints/MatterAirQualitySensor.cpp ../../src/MatterEndpoints/MatterMountedOnOffControl.cpp ../../src/MatterEndpoints/MatterMountedDimmableLoadControl.cpp ../../src/MatterEndpoints/MatterAirPurifier.cpp ../../src/MatterEndpoints/MatterExtractorHood.cpp ../../src/MatterEndpoints/MatterCooktop.cpp ../../src/MatterEndpoints/MatterRoomAirConditioner.cpp ../../src/MatterEndpoints/MatterPump.cpp ../../src/MatterEndpoints/MatterWaterValve.cpp ../../src/MatterEndpoints/MatterModeSelect.cpp ../../src/MatterEndpoints/MatterChime.cpp ../../src/MatterEndpoints/MatterSmokeCOAlarm.cpp ../../src/MatterEndpoints/MatterPowerSource.cpp ../../src/MatterEndpoints/MatterOperationalStateEndpoint.cpp ../../src/MatterEndpoints/MatterLaundryWasher.cpp ../../src/MatterEndpoints/MatterDishwasher.cpp ../../src/MatterEndpoints/MatterLaundryDryer.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 # Regression test for the final-review MINOR 1 fix: the Matter and Hearth
@@ -148,6 +152,42 @@ test_roomac: test_roomac.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../s
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 test_pump: test_pump.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterPump.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+# Task C7: the seven-type batch's first library task. Three classes with no
+# arduino-esp32 counterpart (same shape as MatterDoorLock, C3), one test
+# binary each per the brief's recipe.
+test_watervalve: test_watervalve.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterWaterValve.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_modeselect: test_modeselect.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterModeSelect.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_chime: test_chime.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterChime.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+# Task C8: the second library task of the seven-type batch. Two
+# Hearth-original classes with no shared implementation
+# (MatterSmokeCOAlarm, MatterPowerSource), plus the OperationalState trio,
+# which DOES share one implementation core
+# (MatterOperationalStateEndpoint.cpp) behind three thin per-devtype
+# classes; every trio recipe below links that shared .cpp alongside its own
+# thin subclass. test_laundrywasher additionally links MatterDishwasher.cpp,
+# since its own test file carries the brief's cross-class shared-core proof
+# (one endpoint of each device type, driven over the identical wire).
+test_smokecoalarm: test_smokecoalarm.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterSmokeCOAlarm.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_powersource: test_powersource.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterPowerSource.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_laundrywasher: test_laundrywasher.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOperationalStateEndpoint.cpp ../../src/MatterEndpoints/MatterLaundryWasher.cpp ../../src/MatterEndpoints/MatterDishwasher.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_dishwasher: test_dishwasher.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOperationalStateEndpoint.cpp ../../src/MatterEndpoints/MatterDishwasher.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+test_laundrydryer: test_laundrydryer.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOperationalStateEndpoint.cpp ../../src/MatterEndpoints/MatterLaundryDryer.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all

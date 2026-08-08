@@ -158,7 +158,13 @@ public:
   // onLock()/onUnlock() above. Fails closed (false) with no callback
   // registered, for the wrong cluster, or for any command id this class
   // does not recognise.
-  bool hearthOnForwardedCommand(uint32_t cluster_id, uint32_t command_id) override;
+  //
+  // Task C7 mechanical update: the base virtual widened to carry S3.17's
+  // reserved fifth `+MTCMD` field (hasPayload/payload); LockDoor/UnlockDoor
+  // carry no payload, so this override's body still ignores both, but the
+  // signature must repeat them verbatim or `override` stops compiling (see
+  // MatterEndPoint.h's own comment on the widening).
+  bool hearthOnForwardedCommand(uint32_t cluster_id, uint32_t command_id, bool hasPayload, uint32_t payload) override;
 
 protected:
   bool started = false;
