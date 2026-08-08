@@ -187,6 +187,20 @@ once a second sees controller-driven changes up to a second late. There is
 no upstream analogue of `Hearth.poll()` to hide this behind, which is why
 it carries a Hearth name rather than being smuggled onto `Matter`.
 
+**Late is not the only cost of calling in rarely: the link is lossy if you
+leave it alone too long.** Nothing on this hardware can throttle the
+co-processor (no C6 board routes RTS/CTS, so the firmware's `AT+MTFLOW`
+accepts only mode 0), so the host UART's receive buffer is the only thing
+holding a burst of URCs until the sketch reads it. The library raises that
+buffer to `HEARTH_LINK_RX_BUFFER` bytes, 1024 by default, which is about
+89 ms of continuous traffic at 115200. That was not always so: on the stock
+arduino-pico buffer of 31 usable bytes, one controller `SelfTestRequest`
+(53 contiguous bytes, with the `+MTCMD` the sketch needs arriving last) lost
+its tail inside the UART driver every single time, and
+`MatterSmokeCOAlarm::onSelfTest()` never ran. A `loop()` that can block for
+longer than that between library calls should raise `HEARTH_LINK_RX_BUFFER`
+rather than assume the link is lossless.
+
 Two further consequences of the link being single-threaded and cooperative:
 
 - A change callback runs **inside** whichever library call happened to

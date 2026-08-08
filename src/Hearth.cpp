@@ -34,6 +34,47 @@ void HearthClass::begin(Stream &serial, unsigned long baud) {
   _expectedRebootTimeoutMs = 0;
 }
 
+#ifdef ARDUINO
+namespace {
+/*
+ * Grow the port's receive buffer to HEARTH_LINK_RX_BUFFER before it is
+ * opened (bug B166; see that macro's comment in Hearth.h for the measured
+ * burst this exists to survive).
+ *
+ * Detected rather than called outright: setFIFOSize() is arduino-pico's
+ * SerialUART/SerialPIO API, not part of Arduino's Stream or HardwareSerial
+ * contract, and HEARTH_SERIAL_PORT is whatever a board variant names --
+ * possibly a USB CDC object, or another core's HardwareSerial, neither of
+ * which has the method. The overload pair below picks the real call when
+ * the type offers it and compiles to nothing when it does not, so a board
+ * without it still builds and simply keeps its own buffer, which is what
+ * "no core-specific #ifdef ladder in a variant-driven library" costs. The
+ * int/long parameter is the usual tie-break: 0 is an int, so the first
+ * overload wins whenever its return type is valid.
+ *
+ * The end() is not defensive tidying, it is the whole reason this works.
+ * setFIFOSize() refuses outright while the port is running (`if (!size ||
+ * _running) return false;`) and it is begin() that allocates the queue, so
+ * the port has to be closed first -- and on this board it is ALREADY open
+ * before a single line of the sketch runs. The Challenger variant's
+ * initVariant() (variants/challenger_2350_wifi6_ble5/board_init.cpp) calls
+ * Challenger2040WiFi.reset(), which calls ESP_SERIAL_PORT.begin() to talk
+ * to whatever esp-at firmware the board normally carries. Measured, not
+ * assumed: without the end(), setFIFOSize() returned false and the buffer
+ * stayed at 32 (bug B166 bench transcript). end() is a no-op on a port
+ * that is not running, so it costs nothing on a board with no such
+ * variant hook.
+ */
+template <typename T>
+auto hearthSetRxBuffer(T &port, size_t bytes, int) -> decltype(port.setFIFOSize(bytes), (void)0) {
+  port.end();
+  port.setFIFOSize(bytes);
+}
+template <typename T>
+void hearthSetRxBuffer(T &, size_t, long) {}
+}  // namespace
+#endif
+
 /*
  * begin() was never called, which is the normal case: bring the link up on
  * the UART the board variant wires to the co-processor, then reset the
@@ -58,6 +99,7 @@ void HearthClass::hearthEnsureLink() {
 #ifndef HEARTH_SERIAL_PORT
 #error "iLabs Hearth requires a board variant that defines ESP_SERIAL_PORT (the UART wired to the ESP32-C6 co-processor), e.g. an iLabs Challenger WiFi6 board. Override with -DHEARTH_SERIAL_PORT=... for a board no variant describes."
 #else
+  hearthSetRxBuffer(HEARTH_SERIAL_PORT, (size_t)HEARTH_LINK_RX_BUFFER, 0);
   HEARTH_SERIAL_PORT.begin(HEARTH_LINK_BAUD);
   begin(HEARTH_SERIAL_PORT, HEARTH_LINK_BAUD);
   hearthResetCoprocessor();

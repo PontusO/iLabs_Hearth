@@ -155,6 +155,44 @@
 #endif
 
 /*
+ * RX buffer for the AT link, in bytes (bug B166, bench finding F-C10-3).
+ *
+ * The co-processor sends URCs unsolicited and this link has no flow
+ * control: no C6 board routes RTS/CTS (the firmware's AT+MTFLOW accepts
+ * only mode 0 for that reason), so nothing can tell the C6 to wait. The
+ * only thing standing between a burst of URCs and lost bytes is the host
+ * UART's own receive buffer, and that buffer has to survive the whole gap
+ * between two of the sketch's poll() calls.
+ *
+ * arduino-pico's SerialUART defaults to 32 entries, 31 usable
+ * (cores/rp2040/SerialUART.h, `size_t _fifoSize = 32`), and its ISR drops
+ * the NEWEST byte once the queue is full (SerialUART.cpp, `if
+ * (!_queue->write(val)) { _overflow = true; }`). One controller
+ * SelfTestRequest makes the firmware emit 53 contiguous bytes -- measured
+ * on the wire, 2026-08-08:
+ *
+ *   +MTATTR:1,92,5,1\r\n  +MTATTR:1,92,0,4\r\n  +MTCMD:0,1,92,0\r\n
+ *
+ * with the +MTCMD the SmokeCoAlarm self test needs arriving LAST, at
+ * offset 36. On the default buffer the tail of that burst was discarded by
+ * the UART driver before HearthLink ever saw it, five times out of five,
+ * and MatterSmokeCOAlarm::onSelfTest() never ran. A single-line burst
+ * (every adjudicated +MTCMD, e.g. the OperationalState trio's 17 bytes)
+ * fits in 31 and worked throughout, which is exactly why this looked like
+ * a defect in the notify-only dispatch path and was invisible to the host
+ * test suite, whose MockStream has no bounded buffer at all.
+ *
+ * 1024 bytes is ~89 ms of continuous 115200 traffic, which covers the
+ * delay(10)-per-iteration cadence the examples use with two orders of
+ * magnitude to spare, and costs 1 KB of the RP2350's 520 KB. A sketch
+ * whose loop() blocks for longer than that between poll() calls should
+ * raise this rather than assume the link is lossless.
+ */
+#ifndef HEARTH_LINK_RX_BUFFER
+#define HEARTH_LINK_RX_BUFFER 1024
+#endif
+
+/*
  * Max wait for +MTREADY after releasing the co-processor's reset.
  *
  * Deliberately far more generous than the 3000 ms the ESP-NOW library
@@ -221,6 +259,12 @@ public:
    * ignored), and no automatic co-processor reset is performed, because the
    * pins that would drive it are not implied by an arbitrary Stream. Call
    * hearthResetCoprocessor() afterwards if the variant does define them.
+   *
+   * The caller also owns the receive buffer, and on this link that is not a
+   * formality: HEARTH_LINK_RX_BUFFER above documents a real 53-byte
+   * unsolicited burst that a stock arduino-pico UART buffer loses the tail
+   * of (bug B166). Size the stream's own buffer accordingly, because
+   * nothing here can: Stream exposes no way to.
    *
    * The normal path is not to call this at all. The first use of the link
    * then brings up HEARTH_SERIAL_PORT at HEARTH_LINK_BAUD and resets the
