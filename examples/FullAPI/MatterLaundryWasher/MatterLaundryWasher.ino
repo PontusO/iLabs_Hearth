@@ -124,7 +124,7 @@ void setup() {
     }
   });
 
-  Washer.begin();  // starts Stopped; reaches the C6 at the Matter.begin() reconcile
+  Washer.begin();  // starts Stopped; declares the endpoint only. The C6's cluster defaults apply until a setter writes state.
   Matter.begin();
   Serial.println("FullAPI MatterLaundryWasher ready; '?' for menu");
 }

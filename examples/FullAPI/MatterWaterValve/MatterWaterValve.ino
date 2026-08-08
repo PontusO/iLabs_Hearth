@@ -107,7 +107,7 @@ void setup() {
     }
   });
 
-  Valve.begin();  // starts Closed; reaches the C6 at the Matter.begin() reconcile
+  Valve.begin();  // starts Closed; declares the endpoint only. The C6's cluster defaults apply until a setter writes state.
   Matter.begin();
   Serial.println("FullAPI MatterWaterValve ready; '?' for menu");
 }

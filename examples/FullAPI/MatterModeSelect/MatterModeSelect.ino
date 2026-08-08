@@ -79,15 +79,19 @@ void setup() {
   });
 
   Modes.begin();
+  Matter.begin();
 
   // Three mode/label pairs, one label containing a comma to exercise the
   // AT+MTMODES quoting path (a comma inside a quoted label is legal and
-  // part of its text, per the header comment).
+  // part of its text, per the header comment). Called AFTER Matter.begin():
+  // before the reconcile the endpoint id is still 0, and setSupportedModes()
+  // refuses an unaddressable endpoint (error 2, no wire traffic at all), the
+  // same post-reconcile placement MatterTemperatureControlledCabinet's
+  // FullAPI example uses for setSupportedTemperatureLevelLabels().
   static const uint8_t kModes[3] = { 0, 1, 2 };
   static const char *kLabels[3] = { "Quiet", "Normal, standard", "Boost" };
   Serial.println(Modes.setSupportedModes(kModes, kLabels, 3) ? "setSupportedModes: OK" : "setSupportedModes: failed");
 
-  Matter.begin();
   Serial.println("FullAPI MatterModeSelect ready; '?' for menu");
 }
 

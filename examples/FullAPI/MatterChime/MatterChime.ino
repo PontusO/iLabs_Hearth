@@ -114,11 +114,16 @@ void setup() {
   });
 
   Chime.begin();
+  Matter.begin();
 
   // Two id/name pairs, one name containing a comma to exercise the
   // AT+MTCHIMESOUNDS quoting path (a comma inside a quoted name is legal
   // and part of its text, the same grammar MatterModeSelect's
-  // setSupportedModes() enforces).
+  // setSupportedModes() enforces). Called AFTER Matter.begin(): before the
+  // reconcile the endpoint id is still 0, and every setter here refuses an
+  // unaddressable endpoint (error 2, no wire traffic at all), the same
+  // post-reconcile placement MatterTemperatureControlledCabinet's FullAPI
+  // example uses for setSupportedTemperatureLevelLabels().
   static const uint8_t kIds[2] = { 1, 2 };
   static const char *kNames[2] = { "Doorbell, classic", "Two-tone" };
   Serial.println(Chime.setInstalledChimeSounds(kIds, kNames, 2) ? "setInstalledChimeSounds: OK" : "setInstalledChimeSounds: failed");
@@ -126,7 +131,6 @@ void setup() {
   Chime.setSelectedChime(1);
   Chime.setEnabled(true);
 
-  Matter.begin();
   Serial.println("FullAPI MatterChime ready; '?' for menu");
 }
 

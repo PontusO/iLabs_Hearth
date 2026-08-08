@@ -124,7 +124,7 @@ void setup() {
     }
   });
 
-  Dryer.begin();  // starts Stopped; reaches the C6 at the Matter.begin() reconcile
+  Dryer.begin();  // starts Stopped; declares the endpoint only. The C6's cluster defaults apply until a setter writes state.
   Matter.begin();
   Serial.println("FullAPI MatterLaundryDryer ready; '?' for menu");
 }
