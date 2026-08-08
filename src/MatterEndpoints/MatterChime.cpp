@@ -41,6 +41,11 @@ bool MatterChime::begin() {
   selectedChime = 0;
   enabled = false;
   installedCount = 0;
+  /* Finding 2 (final-review fix wave): a fresh cache means neither field
+   * has been written on the wire THIS boot yet, so the next setter call
+   * for each must go through regardless of value. See the header. */
+  writtenSelectedChime = false;
+  writtenEnabled = false;
   started = true;
   return true;
 }
@@ -48,6 +53,14 @@ bool MatterChime::begin() {
 void MatterChime::end() {
   started = false;
   installedCount = 0;
+  /* Reset alongside installedCount, for the same reason: a class torn
+   * down and later begin()-again must not carry over "already written
+   * this boot" state from before end(). begin() also resets these two
+   * (defensive redundancy, matching how it re-zeros selectedChime/enabled
+   * despite their own default member initializers), so this is the
+   * "coherent even without a following begin()" half of that guarantee. */
+  writtenSelectedChime = false;
+  writtenEnabled = false;
 }
 
 void MatterChime::onPlayChime(std::function<bool(uint8_t chimeID)> cb) {
@@ -149,13 +162,18 @@ bool MatterChime::setSelectedChime(uint8_t id) {
   if (!started) {
     return false;
   }
-  if (selectedChime == id) {
+  /* Finding 2: only a write that has ALREADY reached the wire this boot
+   * may be skipped as a no-op; the very first one always goes through,
+   * since a host reboot may leave the firmware holding a value this fresh
+   * cache cannot distinguish from "never sent". See the header comment. */
+  if (writtenSelectedChime && selectedChime == id) {
     return true;
   }
   if (!hearthSendChimeField(kWhatSelectedChime, id)) {
     return false;  // cache untouched on a failed write
   }
   selectedChime = id;
+  writtenSelectedChime = true;
   return true;
 }
 
@@ -167,13 +185,15 @@ bool MatterChime::setEnabled(bool on) {
   if (!started) {
     return false;
   }
-  if (enabled == on) {
+  /* Finding 2: same forced-first-write shape as setSelectedChime() above. */
+  if (writtenEnabled && enabled == on) {
     return true;
   }
   if (!hearthSendChimeField(kWhatEnabled, on ? 1 : 0)) {
     return false;  // cache untouched on a failed write
   }
   enabled = on;
+  writtenEnabled = true;
   return true;
 }
 

@@ -340,11 +340,39 @@ static void test_setselectedchime_exact_wire_pin_and_cache_update(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
-static void test_setselectedchime_noop_on_unchanged_value(void) {
+/*
+ * Final-review fix wave, Finding 2: SelectedChime/Enabled persist
+ * firmware-side across AT+MTRESET (S3.24), but this class's cache always
+ * re-initializes to 0/false in begin(), every boot. A host reboot is
+ * exactly such a reset, so the firmware may be holding a genuinely
+ * different value than the cache's fresh 0/false starting point, and the
+ * OLD == guard silently swallowed the FIRST write of each field whenever
+ * it happened to equal that starting point, the one case this host has no
+ * way to tell "the wire already matches" from "nothing was ever sent".
+ * The first post-begin() write of each field must therefore always reach
+ * the wire, matching completeSelfTest()'s always-writes shape
+ * (MatterSmokeCOAlarm.cpp), even when the value given equals the cache's
+ * starting value. This test is RED against the old == guard.
+ */
+static void test_setselectedchime_first_write_reaches_wire_even_if_matching_cache(void) {
   MockStream s; MatterChime chime;
   bringUp(s, chime); /* cache starts 0 */
-  check("setSelectedChime(0), already the cache, is a no-op", chime.setSelectedChime(0));
-  check("no AT traffic issued", s.scriptDrained());
+  s.expect("AT+MTCHIME=1,0,0", "OK\r\n");
+  check("the first setSelectedChime(0) still reaches the wire", chime.setSelectedChime(0));
+  check("script drained", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/* Once a value has actually reached the wire, a repeat of that SAME value
+ * is still a no-op: the == guard's original purpose (skip redundant wire
+ * traffic) still holds for every write after the first. */
+static void test_setselectedchime_second_write_noop_on_unchanged_value(void) {
+  MockStream s; MatterChime chime;
+  bringUp(s, chime);
+  s.expect("AT+MTCHIME=1,0,0", "OK\r\n");
+  check("first write reaches the wire", chime.setSelectedChime(0));
+  check("a second setSelectedChime(0), now matching an ACTUAL write, is a no-op", chime.setSelectedChime(0));
+  check("no further AT traffic issued", s.scriptDrained());
   check("no unexpected commands", s.unexpected().empty());
 }
 
@@ -370,11 +398,23 @@ static void test_setenabled_exact_wire_pin_and_cache_update(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
-static void test_setenabled_noop_on_unchanged_value(void) {
+/* Same Finding 2 fix, Enabled's side: RED against the old == guard. */
+static void test_setenabled_first_write_reaches_wire_even_if_matching_cache(void) {
   MockStream s; MatterChime chime;
   bringUp(s, chime); /* cache starts false */
-  check("setEnabled(false), already the cache, is a no-op", chime.setEnabled(false));
-  check("no AT traffic issued", s.scriptDrained());
+  s.expect("AT+MTCHIME=1,1,0", "OK\r\n");
+  check("the first setEnabled(false) still reaches the wire", chime.setEnabled(false));
+  check("script drained", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+static void test_setenabled_second_write_noop_on_unchanged_value(void) {
+  MockStream s; MatterChime chime;
+  bringUp(s, chime);
+  s.expect("AT+MTCHIME=1,1,0", "OK\r\n");
+  check("first write reaches the wire", chime.setEnabled(false));
+  check("a second setEnabled(false), now matching an ACTUAL write, is a no-op", chime.setEnabled(false));
+  check("no further AT traffic issued", s.scriptDrained());
   check("no unexpected commands", s.unexpected().empty());
 }
 
@@ -415,10 +455,12 @@ int main(void) {
   test_reconcile_with_nothing_set_sends_nothing();
   test_selectedchime_and_enabled_not_resent_on_reconcile();
   test_setselectedchime_exact_wire_pin_and_cache_update();
-  test_setselectedchime_noop_on_unchanged_value();
+  test_setselectedchime_first_write_reaches_wire_even_if_matching_cache();
+  test_setselectedchime_second_write_noop_on_unchanged_value();
   test_setselectedchime_failed_write_leaves_cache();
   test_setenabled_exact_wire_pin_and_cache_update();
-  test_setenabled_noop_on_unchanged_value();
+  test_setenabled_first_write_reaches_wire_even_if_matching_cache();
+  test_setenabled_second_write_noop_on_unchanged_value();
   test_setselectedchime_before_reconcile_fails_without_traffic();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;

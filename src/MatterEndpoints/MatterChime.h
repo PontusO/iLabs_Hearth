@@ -120,7 +120,12 @@ public:
   // SelectedChime / Enabled (AT_MT_SPEC.md S3.24, AT+MTCHIME's <what> 0/1).
   // Cache-only in both directions: neither attribute has an AT+MTATTR path
   // (see the header comment), but both persist on the firmware side across
-  // AT+MTRESET, so this class needs no reconcile push for either.
+  // AT+MTRESET, so this class needs no reconcile push for either. The
+  // FIRST call to each setter after begin() always reaches the wire, even
+  // if the value given equals the cache's 0/false starting point: a host
+  // reboot is itself an AT+MTRESET-equivalent reset, so the firmware may
+  // already hold a different value than this fresh cache (Finding 2, the
+  // final-review fix wave; see the protected flags below).
   bool setSelectedChime(uint8_t id);
   uint8_t getSelectedChime();
   bool setEnabled(bool on);
@@ -142,6 +147,19 @@ protected:
   bool started = false;
   uint8_t selectedChime = 0;
   bool enabled = false;
+
+  // Final-review fix wave, Finding 2: SelectedChime/Enabled persist
+  // firmware-side across AT+MTRESET (S3.24), but this cache always
+  // re-initializes to 0/false in begin(), every boot including a host
+  // reboot -- exactly the kind of reset S3.24 means. The == guard in
+  // setSelectedChime()/setEnabled() below would otherwise silently
+  // swallow the FIRST write of a boot whenever it happened to equal the
+  // cache's fresh 0/false starting point, the one case this host cannot
+  // tell "the wire already matches" from "nothing was ever sent". These
+  // flags force exactly that first write through regardless of value;
+  // see the .cpp for the guard shape.
+  bool writtenSelectedChime = false;
+  bool writtenEnabled = false;
 
   // clang-format off
   static const uint8_t kMaxSounds  = 8;  // AT_MT_SPEC.md S3.23: 1..8 pairs
