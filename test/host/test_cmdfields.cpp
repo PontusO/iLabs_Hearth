@@ -14,9 +14,9 @@
  *   hearthOnForwardedCommandFields(): it exists to prove the base class's
  *   default Fields implementation still delegates down to the legacy
  *   virtual byte-identically, which is the whole backward-compatibility
- *   contract this task exists to keep. Every one of the other 41 test
- *   binaries in this suite is really the same proof, run against a real
- *   endpoint type instead of a probe.
+ *   contract this task exists to keep. Most of the other suites in this
+ *   directory are really the same proof, run against a real endpoint type
+ *   instead of a probe.
  */
 #include <stdio.h>
 #include <string.h>
@@ -293,6 +293,105 @@ static void test_overlong_tail_truncates_at_four(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
+/*
+ * Review round 2 (Task 6, IMPORTANT): the mandatory <command> header field
+ * had no consumption/delimiter check at all, unlike seq/ep/cluster right
+ * next to it. "+MTCMD:9,2,95,X" used to parse command as 0 from zero
+ * consumed digits (garbage in, fabricated zero out) and dispatch with an
+ * empty tail. Now malformed and dropped whole, mirroring the tail-field
+ * garbage cases above one field earlier in the same line.
+ */
+static void test_garbage_command_field_drops_dispatch(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  MockStream s;
+  FieldsProbe ep;
+  MatterEndPoint::hearthDeclare(&ep, 0x0100);
+  ep.setEndPointId(2);
+  Hearth.begin(s);
+
+  s.injectURC("+MTCMD:9,2,95,X");
+  Hearth.poll();
+
+  check("garbage command field never reaches the endpoint", ep.calls == 0);
+  check("no AT+MTCMDRESP is issued", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/*
+ * The digits-then-junk half of the same command-field bug:
+ * "+MTCMD:9,2,95,0X,5" used to parse command as 0 from the leading "0" and
+ * then silently drop ",5" instead of even attempting to parse it as a tail
+ * (the loop's own first character check, "X", never matched a comma).
+ * Malformed now, same as above.
+ */
+static void test_command_digits_then_junk_drops_dispatch(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  MockStream s;
+  FieldsProbe ep;
+  MatterEndPoint::hearthDeclare(&ep, 0x0100);
+  ep.setEndPointId(2);
+  Hearth.begin(s);
+
+  s.injectURC("+MTCMD:9,2,95,0X,5");
+  Hearth.poll();
+
+  check("digits-then-junk command field never reaches the endpoint", ep.calls == 0);
+  check("no AT+MTCMDRESP is issued", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/*
+ * Review round 2's verification pass on seq/ep/cluster found ep and
+ * cluster shared a narrower version of the same disease: each checked only
+ * "does the parse land on a comma", which a genuinely EMPTY field (two
+ * commas back to back) also satisfies, since strtoul() with nothing to
+ * parse leaves its out-pointer sitting on that very comma. An empty ep
+ * field ("9,,95,0") used to parse as ep=0 rather than being rejected;
+ * ep 0 never matches a declared endpoint (see hearthFindByEndPointId()),
+ * so the practical effect was a deny reply instead of no reply at all.
+ * Now malformed and dropped whole, matching seq's own (already correct)
+ * check.
+ */
+static void test_empty_ep_field_is_malformed(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  MockStream s;
+  FieldsProbe ep;
+  MatterEndPoint::hearthDeclare(&ep, 0x0100);
+  ep.setEndPointId(2);
+  Hearth.begin(s);
+
+  s.injectURC("+MTCMD:9,,95,0");
+  Hearth.poll();
+
+  check("an empty ep field never reaches the endpoint", ep.calls == 0);
+  check("no AT+MTCMDRESP is issued (not even a deny)", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/*
+ * Same hole, the cluster field. This one was the more dangerous of the two:
+ * unlike an empty ep (which always misses, since ep 0 never resolves), an
+ * empty cluster field on a VALID, declared endpoint used to reach that
+ * endpoint's hearthOnForwardedCommandFields() with cluster_id=0, a real
+ * dispatch on fabricated input rather than a fail-closed deny. Now
+ * malformed and dropped whole, same as ep above.
+ */
+static void test_empty_cluster_field_is_malformed(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  MockStream s;
+  FieldsProbe ep;
+  MatterEndPoint::hearthDeclare(&ep, 0x0100);
+  ep.setEndPointId(2);
+  Hearth.begin(s);
+
+  s.injectURC("+MTCMD:9,2,,0");
+  Hearth.poll();
+
+  check("an empty cluster field never reaches the endpoint", ep.calls == 0);
+  check("no AT+MTCMDRESP is issued", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 int main(void) {
   printf("\n===== HearthCmdFields / multi-field +MTCMD dispatch tests =====\n");
   test_four_fields_all_present();
@@ -305,6 +404,10 @@ int main(void) {
   test_garbage_last_field_drops_dispatch();
   test_trailing_junk_after_digits_drops_dispatch();
   test_overlong_tail_truncates_at_four();
+  test_garbage_command_field_drops_dispatch();
+  test_command_digits_then_junk_drops_dispatch();
+  test_empty_ep_field_is_malformed();
+  test_empty_cluster_field_is_malformed();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }
