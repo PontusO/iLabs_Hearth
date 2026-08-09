@@ -70,6 +70,12 @@
  * sketch to declare, and the "no cycle" one-way dependency this comment
  * already establishes covers it transitively. Same reasoning as every
  * class before it, same "Hearth originals" section.
+ *
+ * Task 7 (RVC + Microwave batch) adds the fortieth: MatterRoboticVacuum.h.
+ * Same reasoning again, same "Hearth originals" section: no arduino-esp32
+ * counterpart, a sketch's bare `#include <Matter.h>` plus a file-scope
+ * `MatterRoboticVacuum vacuum;` must work with no endpoint header of its
+ * own.
  */
 #pragma once
 
@@ -117,6 +123,7 @@
 #include "MatterEndpoints/MatterLaundryWasher.h"
 #include "MatterEndpoints/MatterDishwasher.h"
 #include "MatterEndpoints/MatterLaundryDryer.h"
+#include "MatterEndpoints/MatterRoboticVacuum.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART

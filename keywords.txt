@@ -87,6 +87,15 @@ MatterLaundryWasher	KEYWORD1
 MatterDishwasher	KEYWORD1
 MatterLaundryDryer	KEYWORD1
 
+# Task 7 (RVC + Microwave batch): the fortieth device type, no
+# arduino-esp32 counterpart. See README.md, "Hearth originals".
+# HearthCmdFields (MatterEndPoint.h, Task 6) is the multi-field +MTCMD
+# payload struct hearthOnForwardedCommandFields() carries; this class is
+# its first sketch-visible consumer, since Task 6 added the mechanism with
+# no class of its own to expose it through.
+MatterRoboticVacuum	KEYWORD1
+HearthCmdFields	KEYWORD1
+
 # Event and callback types.
 hearthEvent_t	KEYWORD1
 hearthEventCB	KEYWORD1
@@ -153,6 +162,15 @@ ValveState_t	KEYWORD1
 # (kStateStopped/kStateRunning/kStatePaused below) than MatterWindowCovering's
 # STALL/MOVING_UP_OR_OPEN/MOVING_DOWN_OR_CLOSE. Not re-listed as a datatype:
 # same name, same as this file's existing precedent for a reused type name.
+
+# RvcState_t (MatterRoboticVacuum.h, Task 7), a genuinely new type name (not
+# reused): the RvcOperationalState-cluster subset of OperationalStateEnum,
+# transcribed from the pinned esp-matter checkout, not upstream (no
+# arduino-esp32 counterpart exists). Shares three enumerator names with
+# OperationalState_t above (kStateStopped/kStateRunning/kStatePaused, listed
+# there, not repeated in the Constants section below); the three RVC-only
+# values (kStateSeekingCharger/kStateCharging/kStateDocked) are new.
+RvcState_t	KEYWORD1
 
 # The esp_matter attribute-value shim (HearthCompat.h). Public because
 # getAttributeVal/setAttributeVal/updateAttributeVal and attributeChangeCB
@@ -465,6 +483,22 @@ onPause	KEYWORD2
 onResume	KEYWORD2
 onStart	KEYWORD2
 
+# Task 7 (RVC + Microwave batch): MatterRoboticVacuum. Names already listed
+# above (begin, end, onPause, onResume, setOperationalState,
+# getOperationalState, attributeChangeCB, hearthAttrTypeFor) are not
+# repeated here. hearthOnForwardedCommandFields is MatterEndPoint's Task 6
+# addition (this class is its first override, not to be confused with
+# hearthOnForwardedCommand, the legacy four-argument form, already listed
+# above).
+setSupportedRunModes	KEYWORD2
+setSupportedCleanModes	KEYWORD2
+onChangeRunMode	KEYWORD2
+onChangeCleanMode	KEYWORD2
+onGoHome	KEYWORD2
+getCurrentRunMode	KEYWORD2
+getCurrentCleanMode	KEYWORD2
+hearthOnForwardedCommandFields	KEYWORD2
+
 # HearthColorUtil.h conversions, called out from MatterEnhancedColorLight's
 # getColorRGB()/setColorRGB(), and from examples/MatterEnhancedColorLight's
 # own temperature simulation (espCTToRgbColor/espCTColorToRgbColor).
@@ -656,6 +690,14 @@ kStateTransitioning	LITERAL1
 kStateStopped	LITERAL1
 kStateRunning	LITERAL1
 kStatePaused	LITERAL1
+
+# RvcState_t (MatterRoboticVacuum.h, Task 7): the three RVC-only
+# OperationalStateEnum values (AT_MT_SPEC.md S3.21) past the base cluster's
+# range. kStateStopped/kStateRunning/kStatePaused above (OperationalState_t)
+# cover the three RvcState_t shares with the base cluster; not repeated here.
+kStateSeekingCharger	LITERAL1
+kStateCharging	LITERAL1
+kStateDocked	LITERAL1
 
 # AirQuality_t (MatterAirQualitySensor.h, ten-type swoop C2), transcribed from
 # AirQualityEnum in the pinned esp-matter checkout.

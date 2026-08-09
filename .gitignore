@@ -45,6 +45,7 @@ build/
 /test/host/test_laundrywasher
 /test/host/test_dishwasher
 /test/host/test_laundrydryer
+/test/host/test_roboticvacuum
 
 *.bin
 *.uf2
