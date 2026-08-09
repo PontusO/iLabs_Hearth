@@ -564,11 +564,9 @@ Eight more classes, none with an `arduino-esp32` counterpart (Tasks C7-C8),
 join `MatterDoorLock` and the ten-type swoop in this section rather than
 the parity table above, which stays at 20/20. The firmware's own device
 type table (`iLabs_AT_Hearth`'s `docs/AT_MT_SPEC.md`, "Supported device
-types") now lists 38 rows; this batch supplies the last eight of them,
-taking this section's own class count to nineteen (`MatterDoorLock`, the
-ten-type swoop's ten, and these eight) and the library's total public
-`Matter*` endpoint class count to thirty-nine: twenty parity classes plus
-nineteen Hearth originals.
+types") listed 38 rows at this point; this batch supplied the last eight of
+them at the time, taking this section's own class count to nineteen
+(`MatterDoorLock`, the ten-type swoop's ten, and these eight).
 
 Three add no shared implementation (C7):
 
@@ -666,6 +664,76 @@ into the command's own `OperationalCommandResponse`, so `onPause()`/
 `onResume()`/`onStart()`/`onStop()`'s return value is a real allow/deny
 the controller observes, the same shape as the door lock and the chime.
 
+### The RVC + Microwave batch
+
+Two more classes, neither with an `arduino-esp32` counterpart (Tasks 7-8),
+join the sections above rather than the parity table, which stays at 20/20.
+The firmware's own device type table (`iLabs_AT_Hearth`'s
+`docs/AT_MT_SPEC.md`, "Supported device types") now lists 40 rows; this
+batch supplies the last two of them, taking this section's own class count
+to twenty-one (`MatterDoorLock`, the ten-type swoop's ten, the seven-type
+batch's eight, and these two) and the library's total public `Matter*`
+endpoint class count to forty-one: twenty parity classes plus twenty-one
+Hearth originals.
+
+- `MatterRoboticVacuum` (`0x0074`): one endpoint carrying three clusters at
+  once, `RvcRunMode` (`84`), `RvcCleanMode` (`85`) and `RvcOperationalState`
+  (`97`). `setSupportedRunModes()`/`setSupportedCleanModes()` each replace
+  one cluster's `SupportedModes` list over the cluster-aware `AT+MTMODES`
+  form (`AT_MT_SPEC.md` S3.20.1: mode/tag/label triples, an addition over
+  `MatterModeSelect`'s own mode/label pairs), independent stores on the same
+  endpoint, both re-sent on every reconcile since the firmware does not
+  persist either. `onChangeRunMode()`/`onChangeCleanMode()` register the
+  verdict for a forwarded `ChangeToMode`; `onPause()`/`onResume()`/
+  `onGoHome()` do the same for `RvcOperationalState`'s three supported
+  commands (`Start`/`Stop` are not supported on this derived cluster at
+  all). **`CurrentMode`/`OperationalState` have no ember-level signal of any
+  kind on these three clusters**: `AttributeAccessInterface` intercepts both
+  the read and the change-notification path the same way it does for
+  `MatterModeSelect`'s stale-`AT+MTATTR` finding, so
+  `getCurrentRunMode()`/`getCurrentCleanMode()`/`getOperationalState()` are
+  this host's own bookkeeping, updated only when the matching `on*()`
+  callback itself allows the forward; no `+MTATTR` URC ever fires for any of
+  them, from the firmware's own clamp or a controller-driven change. A deny
+  IS the wire response for `Pause`/`Resume`/`GoHome` (the `OperationalState`
+  trio's own `GenericOperationalError` shape), `RvcState_t` extends
+  `OperationalState_t`'s three shared values with three derived-cluster-only
+  ones (`kStateSeekingCharger` `0x40`, `kStateCharging` `0x41`,
+  `kStateDocked` `0x42`).
+- `MatterMicrowaveOven` (`0x0079`): another single endpoint carrying three
+  clusters, `MicrowaveOvenMode` (`94`), `MicrowaveOvenControl` (`95`), and
+  the plain `OperationalState` (`96`, not the RVC's derived cluster) this
+  class inherits unchanged from `MatterOperationalStateEndpoint` rather than
+  reimplementing it: `onPause()`/`onResume()`/`onStart()`/`onStop()` and
+  `setOperationalState()`/`getOperationalState()` are the identical trio
+  members, subclassed the same way `MatterLaundryWasher` and its siblings
+  are. **`MicrowaveOvenMode` has no `ChangeToMode` command at all** (its own
+  generated `CommandIds.h` declares zero accepted commands): mode selection
+  rides `SetCookingParameters`' `cookMode` field instead, so this class
+  registers no mode-change handler for that cluster, only
+  `setSupportedModes()` to publish the list itself, same cluster-aware
+  `AT+MTMODES` grammar as the RVC's two lists, narrowed to the one this
+  class has. `onCookingParameters(std::function<bool(const
+  HearthCookingParams &)>)` registers the verdict for a forwarded
+  `SetCookingParameters`; the callback's argument carries all four fields
+  (`cookMode`, `cookTimeSec`, `powerPercent`, `startAfterSetting`) with
+  honest `has*` flags read from the wire's own present/absent tail
+  positions, not assumed always-present, even though this firmware's server
+  resolves every optional before the callback ever runs in practice.
+  `onAddMoreTime(std::function<bool(uint32_t finalCookTimeSec)>)` registers
+  the verdict for a forwarded `AddMoreTime`; its argument is the
+  server-computed ABSOLUTE new cook time, not a delta to add to anything.
+  Both use the chime's `PlayChimeSound` verdict shape (`Status::Success`/
+  `Status::Failure` passed straight through), not the `OperationalState`
+  family's `GenericOperationalError` indirection its own inherited
+  `onPause()`/`onResume()`/`onStart()`/`onStop()` still use. **No getters
+  for `CookTime`/`PowerSetting`**: both are Instance/delegate-owned,
+  command-driven state that never reaches `esp_matter::attribute::set_val()`,
+  so no `+MTATTR` URC ever fires for either and `AT+MTATTR` cannot serve
+  them, the identical finding the RVC's own `CurrentMode` note above
+  documents for a different pair of attributes. A sketch reads `CookTime`/
+  `PowerSetting` back only through a commissioned controller.
+
 ## Examples
 
 `examples/` holds three tiers of sketches, each proving a different thing:
@@ -677,7 +745,7 @@ the controller observes, the same shape as the door lock and the chime.
   erase the proof, so this tier stays untouched.
 - **FullAPI references**, one per class under `examples/FullAPI/`
   (documented below, in its own subsection): a sketch that exercises the
-  complete public surface of exactly one `Matter*` endpoint class, thirty-nine
+  complete public surface of exactly one `Matter*` endpoint class, forty-one
   in total. Each opens with a banner comment listing every public member and
   where the sketch exercises it; the banner is a coverage checklist against
   the class header, not narrative.
@@ -810,7 +878,7 @@ Full commands and output for the original three-blocker analysis are in
 ### FullAPI references (`examples/FullAPI/`)
 
 One sketch per concrete `Matter*` endpoint class this library implements,
-thirty-nine in total, folder name equal to sketch name. Where the tiers
+forty-one in total, folder name equal to sketch name. Where the tiers
 above prove "an unmodified upstream sketch builds" and "several classes
 compose into something demo-able", this tier proves "every public member of
 this one class actually works", one class at a time.

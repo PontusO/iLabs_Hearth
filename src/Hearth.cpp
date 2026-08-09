@@ -505,6 +505,76 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
  *   structurally nothing pending under seq 0 for hearthDrainCmdRespQueue()
  *   to answer, and enqueuing anyway would just earn the host its own
  *   +MTERR:1 for asking.
+ *
+ * Task 6 widening (RVC + Microwave batch): the tail widens again, from
+ * Task C7's single optional field to up to four,
+ * "[,<p1>[,<p2>[,<p3>[,<p4>]]]]" (HearthCmdFields, MatterEndPoint.h), and
+ * any of those four positions may be empty ("," immediately followed by
+ * another "," or the end of line) rather than merely absent. The loop below
+ * walks the tail one comma at a time: reaching a position at all sets
+ * `count` past it regardless of whether it was empty, and only an empty
+ * position leaves its `present[i]` false. This always calls the new
+ * hearthOnForwardedCommandFields() rather than hearthOnForwardedCommand()
+ * directly; the base class's default for the new virtual is what still
+ * calls the old one (MatterEndPoint.cpp), so this single call site covers
+ * both old-style and new-style endpoint types without needing to know which
+ * one `target` actually is.
+ *
+ * A fifth or later tail field is silently ignored: the loop only ever
+ * walks four positions (`i < 4`), so a line with more commas than that
+ * still parses its first four fields normally and just never looks past
+ * them. Nothing on the wire today sends more than four, and there is no
+ * documented grammar for a fifth, so this is truncation, not validation --
+ * it is not treated as malformed the way a bad *value* in one of the four
+ * positions is (next paragraph).
+ *
+ * Review round 1 fix (Task 6, IMPORTANT): a non-empty field position must
+ * consume at least one digit and land exactly on the next "," or the end
+ * of line, or the whole line is malformed. Two failure shapes matter here.
+ * strtoul() on a position that starts with a non-digit (e.g. the "X" in
+ * "...,X,80,1") consumes zero characters and returns 0 with `fend == p`:
+ * unchecked, that silently recorded present=true, value=0 -- a wire zero
+ * indistinguishable from garbage -- and then, because `p` never advanced
+ * past the garbage, the loop's own "," check failed on the next iteration
+ * and every field after the bad one was dropped with no signal at all.
+ * strtoul() on a position with trailing junk after real digits (e.g. the
+ * "x" in "80x") has the same silent-truncation shape one field later:
+ * `fend` lands mid-field, not on a delimiter. Both are now treated as
+ * malformed and handled the same way the four mandatory header fields
+ * (seq/ep/cluster/command, below) are: the whole dispatch is dropped, no
+ * target lookup, no verdict, no reply, matching this function's own
+ * documented drop policy rather than quietly fabricating a zero or losing
+ * fields with no trace.
+ *
+ * Review round 2 fix (Task 6, IMPORTANT): that parity claim did not
+ * actually hold for `command` at the time it was written. `command`'s own
+ * parse had no consumption/delimiter check at all -- unlike `seq`, `ep` and
+ * `cluster` just above it, which each check their strtoul() out-pointer
+ * before trusting the value -- so "+MTCMD:9,2,95,X" parsed `command` as 0
+ * from zero consumed digits, and "+MTCMD:9,2,95,0X,5" parsed it as 0 from
+ * "0" with "X,5" left unconsumed, in both cases dispatching a fabricated
+ * command 0 with the tail silently emptied (the wire's ",5" in the second
+ * example was never even looked at) rather than being dropped. `command`
+ * now gets the identical check the tail-field loop above already has:
+ * `end == <command's own start pointer>` (zero digits) or the terminator
+ * being neither "," (a tail follows) nor NUL (no tail, the legacy
+ * four-field shape) is malformed. NUL is a valid terminator here and
+ * nowhere else in the header, because `command` is the one header field
+ * that is legitimately the last thing on the line.
+ *
+ * The same review pass checked `ep` and `cluster` for the identical hole,
+ * since both trust their own strtoul() out-pointer no more carefully than
+ * `command` used to. Each was missing the "zero digits consumed" half of
+ * the check: `seq` guards it explicitly (`end == rest`), but `ep` and
+ * `cluster` only checked `*end != ','`, which a genuinely EMPTY field
+ * (two commas back to back, e.g. the "," in "9,,95,0") also satisfies,
+ * since strtoul() with nothing to parse leaves its out-pointer sitting on
+ * that very comma. That silently produced ep=0 or cluster=0 from a field
+ * that was never there, rather than the malformed-drop every other empty
+ * or garbage field in this line now gets; the header fields are mandatory,
+ * unlike the optional tail positions, so an empty one is exactly as
+ * malformed as a garbage one. Both now carry the same zero-digits check
+ * `seq` already had.
  */
 void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
   char *end;
@@ -512,25 +582,56 @@ void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
   if (end == rest || *end != ',') {
     return;
   }
-  unsigned long ep = strtoul(end + 1, &end, 10);
-  if (*end != ',') {
+  const char *epStart = end + 1;
+  unsigned long ep = strtoul(epStart, &end, 10);
+  if (end == epStart || *end != ',') {
     return;
   }
-  unsigned long cluster = strtoul(end + 1, &end, 10);
-  if (*end != ',') {
+  const char *clusterStart = end + 1;
+  unsigned long cluster = strtoul(clusterStart, &end, 10);
+  if (end == clusterStart || *end != ',') {
     return;
   }
-  unsigned long command = strtoul(end + 1, &end, 10);
+  const char *commandStart = end + 1;
+  unsigned long command = strtoul(commandStart, &end, 10);
+  if (end == commandStart || (*end != ',' && *end != '\0')) {
+    return;
+  }
 
-  bool hasPayload = false;
-  unsigned long payload = 0;
-  if (*end == ',') {
-    payload = strtoul(end + 1, &end, 10);
-    hasPayload = true;
+  HearthCmdFields fields;
+  fields.count = 0;
+  for (int i = 0; i < 4; i++) {
+    fields.present[i] = false;
+    fields.value[i] = 0;
+  }
+  const char *p = end;
+  int i = 0;
+  while (*p == ',' && i < 4) {
+    p++;  // consume the comma leading into position i
+    if (*p == ',' || *p == '\0') {
+      // empty position: present stays false, value stays 0, but it was
+      // still reached, so it counts.
+    } else {
+      char *fend;
+      unsigned long v = strtoul(p, &fend, 10);
+      if (fend == p || (*fend != ',' && *fend != '\0')) {
+        // Zero digits consumed (a non-numeric position, e.g. "X"), or
+        // digits followed by something that is not the next delimiter
+        // (e.g. "80x"): malformed per the header comment above. Drop the
+        // whole dispatch rather than record a fabricated value or silently
+        // lose the fields after it.
+        return;
+      }
+      fields.present[i] = true;
+      fields.value[i] = (uint32_t)v;
+      p = fend;
+    }
+    fields.count = (uint8_t)(i + 1);
+    i++;
   }
 
   MatterEndPoint *target = MatterEndPoint::hearthFindByEndPointId((uint16_t)ep);
-  bool verdict = target && target->hearthOnForwardedCommand((uint32_t)cluster, (uint32_t)command, hasPayload, (uint32_t)payload);
+  bool verdict = target && target->hearthOnForwardedCommandFields((uint32_t)cluster, (uint32_t)command, fields);
 
   if (seq == 0) {
     return;  // notify-only: dispatch already ran above, no verdict to send

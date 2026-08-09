@@ -317,6 +317,24 @@ bool MatterEndPoint::hearthOnForwardedCommand(uint32_t cluster_id, uint32_t comm
   return false;
 }
 
+/*
+ * Base default: delegate to the legacy four-argument virtual using only the
+ * first tail position, exactly the shape hearthDispatchCmd() used to hand
+ * that virtual directly before this task. This is what keeps every existing
+ * endpoint type's behaviour byte-identical: the call below is itself a
+ * virtual call on `this`, so a subclass that overrides only
+ * hearthOnForwardedCommand() (every one in this library as of this task)
+ * still has its override reached, with the same hasPayload/payload it
+ * always got. A subclass that overrides THIS method instead never runs this
+ * body at all. See the header comment for why there are two virtuals rather
+ * than one widened signature.
+ */
+bool MatterEndPoint::hearthOnForwardedCommandFields(uint32_t cluster_id, uint32_t command_id, const HearthCmdFields &fields) {
+  bool hasPayload = fields.count > 0 && fields.present[0];
+  uint32_t payload = fields.count > 0 ? fields.value[0] : 0;
+  return hearthOnForwardedCommand(cluster_id, command_id, hasPayload, payload);
+}
+
 MatterEndPoint *MatterEndPoint::hearthFindByEndPointId(uint16_t ep) {
   /* 0 is the Root Node and also the "not reconciled yet" value every
    * declared endpoint carries, so a match on it is never right: see the
