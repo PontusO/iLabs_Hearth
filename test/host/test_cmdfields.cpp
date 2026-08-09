@@ -202,6 +202,97 @@ static void test_seq_zero_notify_only_still_dispatches_fields(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
+/*
+ * Review round 1 (Task 6, IMPORTANT): a non-numeric interior field must not
+ * be recorded as a fabricated zero, and must not silently truncate the
+ * fields after it. The whole dispatch is malformed and dropped: no target
+ * call, no AT+MTCMDRESP at all, the same policy a malformed seq/ep/cluster/
+ * command already gets.
+ */
+static void test_garbage_interior_field_drops_dispatch(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  MockStream s;
+  FieldsProbe ep;
+  MatterEndPoint::hearthDeclare(&ep, 0x0100);
+  ep.setEndPointId(2);
+  Hearth.begin(s);
+
+  s.injectURC("+MTCMD:9,2,95,0,1,X,80,1");
+  Hearth.poll();
+
+  check("garbage in an interior field never reaches the endpoint", ep.calls == 0);
+  check("no AT+MTCMDRESP is issued", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/* Same shape, garbage in the last of the four positions instead of an
+ * interior one: still malformed, still dropped whole. */
+static void test_garbage_last_field_drops_dispatch(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  MockStream s;
+  FieldsProbe ep;
+  MatterEndPoint::hearthDeclare(&ep, 0x0100);
+  ep.setEndPointId(2);
+  Hearth.begin(s);
+
+  s.injectURC("+MTCMD:9,2,95,0,1,30,80,X");
+  Hearth.poll();
+
+  check("garbage in the last field never reaches the endpoint", ep.calls == 0);
+  check("no AT+MTCMDRESP is issued", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/*
+ * Digits followed by junk before the next delimiter (e.g. "80x") is the
+ * same silent-truncation shape one step later: strtoul() happily returns
+ * 80 and leaves fend pointing at "x", not at a "," or the end of line.
+ * Decided strict: this is malformed too, not "80 with trailing garbage
+ * ignored", because accepting it would mean the wire's own field boundary
+ * (the comma) is no longer the authority on where a field ends.
+ */
+static void test_trailing_junk_after_digits_drops_dispatch(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  MockStream s;
+  FieldsProbe ep;
+  MatterEndPoint::hearthDeclare(&ep, 0x0100);
+  ep.setEndPointId(2);
+  Hearth.begin(s);
+
+  s.injectURC("+MTCMD:9,2,95,0,1,30,80x,1");
+  Hearth.poll();
+
+  check("digits-then-junk never reaches the endpoint", ep.calls == 0);
+  check("no AT+MTCMDRESP is issued", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/*
+ * MINOR (folded into this round): a fifth or later tail field is not an
+ * error, just ignored. The parse stops at four positions and the dispatch
+ * proceeds normally on the first four, exactly as documented on
+ * hearthDispatchCmd() in Hearth.cpp.
+ */
+static void test_overlong_tail_truncates_at_four(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  MockStream s;
+  FieldsProbe ep;
+  MatterEndPoint::hearthDeclare(&ep, 0x0100);
+  ep.setEndPointId(2);
+  Hearth.begin(s);
+
+  s.expect("AT+MTCMDRESP=9,1", "OK\r\n");
+  s.injectURC("+MTCMD:9,2,95,0,1,2,3,4,5");
+  Hearth.poll();
+
+  check("dispatched exactly once", ep.calls == 1);
+  check("count stays 4", ep.seenFields.count == 4);
+  check("only the first four values are kept", ep.seenFields.value[0] == 1 && ep.seenFields.value[1] == 2 &&
+                                                    ep.seenFields.value[2] == 3 && ep.seenFields.value[3] == 4);
+  check("a fifth field does not block the reply", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 int main(void) {
   printf("\n===== HearthCmdFields / multi-field +MTCMD dispatch tests =====\n");
   test_four_fields_all_present();
@@ -210,6 +301,10 @@ int main(void) {
   test_legacy_single_payload_unchanged();
   test_fields_deny_sends_verdict_0();
   test_seq_zero_notify_only_still_dispatches_fields();
+  test_garbage_interior_field_drops_dispatch();
+  test_garbage_last_field_drops_dispatch();
+  test_trailing_junk_after_digits_drops_dispatch();
+  test_overlong_tail_truncates_at_four();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

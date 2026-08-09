@@ -519,6 +519,31 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
  * calls the old one (MatterEndPoint.cpp), so this single call site covers
  * both old-style and new-style endpoint types without needing to know which
  * one `target` actually is.
+ *
+ * A fifth or later tail field is silently ignored: the loop only ever
+ * walks four positions (`i < 4`), so a line with more commas than that
+ * still parses its first four fields normally and just never looks past
+ * them. Nothing on the wire today sends more than four, and there is no
+ * documented grammar for a fifth, so this is truncation, not validation --
+ * it is not treated as malformed the way a bad *value* in one of the four
+ * positions is (next paragraph).
+ *
+ * Review round 1 fix (Task 6, IMPORTANT): a non-empty field position must
+ * consume at least one digit and land exactly on the next "," or the end
+ * of line, or the whole line is malformed. Two failure shapes matter here.
+ * strtoul() on a position that starts with a non-digit (e.g. the "X" in
+ * "...,X,80,1") consumes zero characters and returns 0 with `fend == p`:
+ * unchecked, that silently recorded present=true, value=0 -- a wire zero
+ * indistinguishable from garbage -- and then, because `p` never advanced
+ * past the garbage, the loop's own "," check failed on the next iteration
+ * and every field after the bad one was dropped with no signal at all.
+ * strtoul() on a position with trailing junk after real digits (e.g. the
+ * "x" in "80x") has the same silent-truncation shape one field later:
+ * `fend` lands mid-field, not on a delimiter. Both are now treated as
+ * malformed and handled exactly like a malformed seq/ep/cluster/command
+ * field above: the whole dispatch is dropped, no target lookup, no verdict,
+ * no reply, matching this function's own documented drop policy rather
+ * than quietly fabricating a zero or losing fields with no trace.
  */
 void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
   char *end;
@@ -552,6 +577,14 @@ void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
     } else {
       char *fend;
       unsigned long v = strtoul(p, &fend, 10);
+      if (fend == p || (*fend != ',' && *fend != '\0')) {
+        // Zero digits consumed (a non-numeric position, e.g. "X"), or
+        // digits followed by something that is not the next delimiter
+        // (e.g. "80x"): malformed per the header comment above. Drop the
+        // whole dispatch rather than record a fabricated value or silently
+        // lose the fields after it.
+        return;
+      }
       fields.present[i] = true;
       fields.value[i] = (uint32_t)v;
       p = fend;
