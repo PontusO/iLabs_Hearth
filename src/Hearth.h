@@ -76,6 +76,13 @@
  * counterpart, a sketch's bare `#include <Matter.h>` plus a file-scope
  * `MatterRoboticVacuum vacuum;` must work with no endpoint header of its
  * own.
+ *
+ * Task 8 (RVC + Microwave batch, last library task) adds the forty-first
+ * and last: MatterMicrowaveOven.h. Same reasoning again, same "Hearth
+ * originals" section. It includes MatterEndpoints/
+ * MatterOperationalStateEndpoint.h itself (it subclasses that shared core,
+ * the same way the OperationalState trio's three headers do), so that
+ * header is still not listed separately here.
  */
 #pragma once
 
@@ -124,6 +131,7 @@
 #include "MatterEndpoints/MatterDishwasher.h"
 #include "MatterEndpoints/MatterLaundryDryer.h"
 #include "MatterEndpoints/MatterRoboticVacuum.h"
+#include "MatterEndpoints/MatterMicrowaveOven.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART

@@ -138,6 +138,17 @@ MatterLaundryDryer umbrellaLaundryDryer;
  */
 MatterRoboticVacuum umbrellaRoboticVacuum;
 
+/*
+ * Task 8 (RVC + Microwave batch, last library task): the forty-first and
+ * last device type, no arduino-esp32 counterpart, same reasoning as every
+ * Hearth-original class above. It subclasses MatterOperationalStateEndpoint
+ * (same as the trio above), so that header is still not included directly
+ * by Hearth.h and not declared here either. Declared here only, same
+ * compile/link guard: dropping its include from Hearth.h's list fails this
+ * build too.
+ */
+MatterMicrowaveOven umbrellaMicrowaveOven;
+
 static int g_pass = 0, g_fail = 0;
 static void check(const char *name, bool cond) {
   printf("  [%s] %s\n", cond ? "PASS" : "FAIL", name);

@@ -96,6 +96,14 @@ MatterLaundryDryer	KEYWORD1
 MatterRoboticVacuum	KEYWORD1
 HearthCmdFields	KEYWORD1
 
+# Task 8 (RVC + Microwave batch, last library task): the forty-first and
+# last device type, no arduino-esp32 counterpart. See README.md, "Hearth
+# originals". HearthCookingParams (MatterMicrowaveOven.h) is the
+# SetCookingParameters payload struct onCookingParameters() carries, with
+# honest has-flags per field (see the class header).
+MatterMicrowaveOven	KEYWORD1
+HearthCookingParams	KEYWORD1
+
 # Event and callback types.
 hearthEvent_t	KEYWORD1
 hearthEventCB	KEYWORD1
@@ -498,6 +506,13 @@ onGoHome	KEYWORD2
 getCurrentRunMode	KEYWORD2
 getCurrentCleanMode	KEYWORD2
 hearthOnForwardedCommandFields	KEYWORD2
+
+# Task 8 (RVC + Microwave batch, last library task): MatterMicrowaveOven.
+# Names already listed above (begin, setSupportedModes, onPause, onResume,
+# onStart, onStop, setOperationalState, getOperationalState,
+# hearthOnForwardedCommandFields) are not repeated here.
+onCookingParameters	KEYWORD2
+onAddMoreTime	KEYWORD2
 
 # HearthColorUtil.h conversions, called out from MatterEnhancedColorLight's
 # getColorRGB()/setColorRGB(), and from examples/MatterEnhancedColorLight's

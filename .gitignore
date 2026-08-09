@@ -46,6 +46,7 @@ build/
 /test/host/test_dishwasher
 /test/host/test_laundrydryer
 /test/host/test_roboticvacuum
+/test/host/test_microwaveoven
 
 *.bin
 *.uf2
