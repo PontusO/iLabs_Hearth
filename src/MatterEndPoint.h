@@ -46,6 +46,28 @@
 #define HEARTH_MAX_ENDPOINTS 16
 #endif
 
+/*
+ * Task 6 (RVC + Microwave batch): the wire grammar's tail widened again,
+ * from Task C7's single optional field to up to four,
+ * "+MTCMD:<seq>,<ep>,<cluster>,<cmd>[,<p1>[,<p2>[,<p3>[,<p4>]]]]" (the
+ * RoboticVacuumCleaner's GoHome/SelectAreas and the Microwave Oven's
+ * SetCookingParameters are the first consumers that need more than one
+ * value at once). `count` is how many of the four tail positions the wire
+ * line actually reached, counting an empty one; `present[i]` is false only
+ * where that position was empty (",,"), not where the line ended before it.
+ * A four-field line where the wire always sends every position but leaves
+ * some empty (the ",,30,,1" shape Task 6's brief calls out, since the
+ * firmware resolves optionals on its side today) parses to count 4 with a
+ * mixed `present` array; a legacy line that never reaches a given position
+ * at all leaves it both absent and, since the struct is zero-initialised by
+ * hearthDispatchCmd() before parsing, value 0.
+ */
+struct HearthCmdFields {
+  uint8_t count;
+  bool present[4];
+  uint32_t value[4];
+};
+
 class MatterEndPoint {
 public:
   /*
@@ -205,6 +227,27 @@ public:
    * carry a payload -- they do not, so it ignores both new parameters.
    */
   virtual bool hearthOnForwardedCommand(uint32_t cluster_id, uint32_t command_id, bool hasPayload = false, uint32_t payload = 0);
+
+  /*
+   * Task 6 (RVC + Microwave batch) widening: the multi-field successor to
+   * hearthOnForwardedCommand() above, carrying every tail position
+   * HearthCmdFields (this file, above) can hold instead of just the first.
+   * hearthDispatchCmd() (Hearth.cpp) now always calls THIS virtual, never
+   * the four-argument one directly; the base class default below is what
+   * still calls the four-argument one, so every endpoint type in this
+   * library that overrides only the old virtual (every one of them, as of
+   * this task) keeps working unmodified -- the whole point of adding a
+   * second virtual instead of widening the first one's signature, which
+   * would have forced a mechanical override update in every existing class
+   * the way MatterDoorLock's Task C7 update did for the hasPayload/payload
+   * pair. A class with genuine multi-field needs (MatterRoboticVacuum,
+   * MatterMicrowaveOven, both Tasks 7-8) overrides this one instead and
+   * never touches the four-argument form at all.
+   *
+   * Same fail-closed default as hearthOnForwardedCommand(): a cluster_id/
+   * command_id pair this override does not recognise returns false.
+   */
+  virtual bool hearthOnForwardedCommandFields(uint32_t cluster_id, uint32_t command_id, const HearthCmdFields &fields);
 
 protected:
   uint16_t endpoint_id = 0;

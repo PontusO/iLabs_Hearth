@@ -505,6 +505,20 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
  *   structurally nothing pending under seq 0 for hearthDrainCmdRespQueue()
  *   to answer, and enqueuing anyway would just earn the host its own
  *   +MTERR:1 for asking.
+ *
+ * Task 6 widening (RVC + Microwave batch): the tail widens again, from
+ * Task C7's single optional field to up to four,
+ * "[,<p1>[,<p2>[,<p3>[,<p4>]]]]" (HearthCmdFields, MatterEndPoint.h), and
+ * any of those four positions may be empty ("," immediately followed by
+ * another "," or the end of line) rather than merely absent. The loop below
+ * walks the tail one comma at a time: reaching a position at all sets
+ * `count` past it regardless of whether it was empty, and only an empty
+ * position leaves its `present[i]` false. This always calls the new
+ * hearthOnForwardedCommandFields() rather than hearthOnForwardedCommand()
+ * directly; the base class's default for the new virtual is what still
+ * calls the old one (MatterEndPoint.cpp), so this single call site covers
+ * both old-style and new-style endpoint types without needing to know which
+ * one `target` actually is.
  */
 void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
   char *end;
@@ -522,15 +536,32 @@ void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
   }
   unsigned long command = strtoul(end + 1, &end, 10);
 
-  bool hasPayload = false;
-  unsigned long payload = 0;
-  if (*end == ',') {
-    payload = strtoul(end + 1, &end, 10);
-    hasPayload = true;
+  HearthCmdFields fields;
+  fields.count = 0;
+  for (int i = 0; i < 4; i++) {
+    fields.present[i] = false;
+    fields.value[i] = 0;
+  }
+  const char *p = end;
+  int i = 0;
+  while (*p == ',' && i < 4) {
+    p++;  // consume the comma leading into position i
+    if (*p == ',' || *p == '\0') {
+      // empty position: present stays false, value stays 0, but it was
+      // still reached, so it counts.
+    } else {
+      char *fend;
+      unsigned long v = strtoul(p, &fend, 10);
+      fields.present[i] = true;
+      fields.value[i] = (uint32_t)v;
+      p = fend;
+    }
+    fields.count = (uint8_t)(i + 1);
+    i++;
   }
 
   MatterEndPoint *target = MatterEndPoint::hearthFindByEndPointId((uint16_t)ep);
-  bool verdict = target && target->hearthOnForwardedCommand((uint32_t)cluster, (uint32_t)command, hasPayload, (uint32_t)payload);
+  bool verdict = target && target->hearthOnForwardedCommandFields((uint32_t)cluster, (uint32_t)command, fields);
 
   if (seq == 0) {
     return;  // notify-only: dispatch already ran above, no verdict to send

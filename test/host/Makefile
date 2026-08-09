@@ -4,7 +4,7 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer test_cmdfields
 
 all: $(TESTS)
 
@@ -188,6 +188,12 @@ test_dishwasher: test_dishwasher.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 test_laundrydryer: test_laundrydryer.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOperationalStateEndpoint.cpp ../../src/MatterEndpoints/MatterLaundryDryer.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+# Task 6 (RVC + Microwave batch): the multi-field +MTCMD dispatch
+# (HearthCmdFields), a probe-only test with no endpoint type of its own, so
+# it needs Hearth.cpp/MatterEndPoint.cpp but no MatterEndpoints/*.cpp.
+test_cmdfields: test_cmdfields.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all
