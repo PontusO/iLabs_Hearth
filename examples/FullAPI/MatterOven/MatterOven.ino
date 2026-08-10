@@ -95,9 +95,12 @@
  *   chip-tool ovencavityoperationalstate read operational-state <node> 2
  *   chip-tool ovencavityoperationalstate stop <node> 2
  *   chip-tool ovencavityoperationalstate start <node> 2
- *   chip-tool ovencavityoperationalstate pause <node> 2   (answers
- *     UNSUPPORTED_COMMAND 0x81 by design: the cluster disallows Pause and
- *     the firmware never registers it; resume behaves the same)
+ *   chip-tool ovencavityoperationalstate command-by-id 0 "{}" <node> 2
+ *     (the pause probe: the pinned chip-tool has no pause verb for this
+ *     cluster, so Pause is invoked by id, cluster 0x48 command 0, with an
+ *     empty payload; it answers UNSUPPORTED_COMMAND 0x81 by design, the
+ *     cluster disallows Pause and the firmware never registers it; resume,
+ *     command-by-id 3, behaves the same)
  *   chip-tool temperaturecontrol read temperature-setpoint <node> 2
  *
  * Error handling pattern (applies to every setter in this library):
