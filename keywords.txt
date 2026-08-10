@@ -104,6 +104,14 @@ HearthCmdFields	KEYWORD1
 MatterMicrowaveOven	KEYWORD1
 HearthCookingParams	KEYWORD1
 
+# Task 8 (composed-appliance round): the forty-second device type, the
+# first composed appliance (a 0x0070 parent owning Temperature Controlled
+# Cabinet children), no arduino-esp32 counterpart. See README.md, "Hearth
+# originals". CabinetFlavour_t (MatterRefrigerator.h) maps to the 0x0071
+# variant byte.
+MatterRefrigerator	KEYWORD1
+CabinetFlavour_t	KEYWORD1
+
 # Event and callback types.
 hearthEvent_t	KEYWORD1
 hearthEventCB	KEYWORD1
@@ -514,6 +522,15 @@ hearthOnForwardedCommandFields	KEYWORD2
 onCookingParameters	KEYWORD2
 onAddMoreTime	KEYWORD2
 
+# Task 8 (composed-appliance round): MatterRefrigerator with owned
+# Temperature Controlled Cabinets. Names already listed above (begin,
+# setSupportedModes, onChangeMode, getCurrentMode,
+# hearthOnForwardedCommandFields; the owned cabinet's modes API reuses the
+# same three names) are not repeated here.
+addCabinet	KEYWORD2
+setDoorOpenAlarm	KEYWORD2
+setAlarmState	KEYWORD2
+
 # HearthColorUtil.h conversions, called out from MatterEnhancedColorLight's
 # getColorRGB()/setColorRGB(), and from examples/MatterEnhancedColorLight's
 # own temperature simulation (espCTToRgbColor/espCTColorToRgbColor).
@@ -713,6 +730,12 @@ kStatePaused	LITERAL1
 kStateSeekingCharger	LITERAL1
 kStateCharging	LITERAL1
 kStateDocked	LITERAL1
+
+# CabinetFlavour_t (MatterRefrigerator.h, Task 8, composed-appliance
+# round): the 0x0071 variant byte an owned cabinet is declared with
+# (NUMBER = TemperatureNumber, LEVELS = TemperatureLevel).
+NUMBER	LITERAL1
+LEVELS	LITERAL1
 
 # AirQuality_t (MatterAirQualitySensor.h, ten-type swoop C2), transcribed from
 # AirQualityEnum in the pinned esp-matter checkout.

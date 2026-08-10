@@ -35,6 +35,17 @@ const uint32_t kSelectedTemperatureLevelAttributeId = 0x0004;
  * this a firmware-side hard requirement, not just an API convention). */
 const uint8_t kVariantTemperatureNumber = 0;
 const uint8_t kVariantTemperatureLevel = 1;
+
+/* Task 8 (composed-appliance round):
+ * RefrigeratorAndTemperatureControlledCabinetMode::Id (0x00000052,
+ * connectedhomeip's zap-generated clusters/
+ * RefrigeratorAndTemperatureControlledCabinetMode/ClusterId.h, "cluster
+ * code: 82/0x52"), the conditional cluster the firmware derives onto a
+ * Cooler cabinet composed under a Refrigerator (AT_MT_SPEC.md S3.9's 0x0071
+ * note); ChangeToMode is ModeBase's command 0x0000, the same id every
+ * ModeBase derivation shares (see MatterRoboticVacuum.h's quoted source). */
+const uint32_t kRefrigeratorTccModeClusterId = 0x0052;  // 82 decimal
+const uint32_t kChangeToModeCommandId = 0x0000;
 }  // namespace
 
 MatterTemperatureControlledCabinet::MatterTemperatureControlledCabinet() {}
@@ -54,10 +65,25 @@ bool MatterTemperatureControlledCabinet::begin(double tempSetpoint, double minTe
 }
 
 bool MatterTemperatureControlledCabinet::begin(int16_t _rawTempSetpoint, int16_t _rawMinTemperature, int16_t _rawMaxTemperature, int16_t _rawStep) {
-  /* Deviation 1: hearthDeclare() first (it is what actually refuses a
-   * re-begin after reconcile, +MTERR:10), before any member state changes,
-   * so a refused call leaves the cache exactly as it was. */
-  if (!hearthDeclare(this, kCabinetDeviceType, kVariantTemperatureNumber)) {
+  /* Task 8 owned path: the parent already declared this cabinet, parent
+   * index and all, so a hearthDeclare() here would update the entry in
+   * place and wipe that parent index (see the header comment). The owned
+   * begin() therefore only validates and caches: refused outright on the
+   * inert reject cabinet, on a re-begin while started (the same refusal
+   * hearthDeclare()'s post-reconcile check gives the unowned path), and on
+   * a flavour that does not match the declared variant. */
+  if (hearthOwnedInert) {
+    return false;
+  }
+  if (hearthOwnedByFridge) {
+    if (started || hearthOwnedLevels) {
+      return false;
+    }
+  } else if (!hearthDeclare(this, kCabinetDeviceType, kVariantTemperatureNumber)) {
+    /* Deviation 1 (unowned path): hearthDeclare() first (it is what
+     * actually refuses a re-begin after reconcile, +MTERR:10), before any
+     * member state changes, so a refused call leaves the cache exactly as
+     * it was. */
     return false;
   }
   rawTempSetpoint = _rawTempSetpoint;
@@ -67,6 +93,8 @@ bool MatterTemperatureControlledCabinet::begin(int16_t _rawTempSetpoint, int16_t
   selectedTempLevel = 0;
   supportedLevelsCount = 0;
   levelLabelCount = 0;
+  fridgeModesCount = 0;
+  currentFridgeMode = 0;
   useTemperatureNumber = true;
   started = true;
   return true;
@@ -92,7 +120,18 @@ bool MatterTemperatureControlledCabinet::begin(uint8_t *supportedLevels, uint16_
 }
 
 bool MatterTemperatureControlledCabinet::beginInternal(uint8_t *supportedLevels, uint16_t levelCount, uint8_t selectedLevel) {
-  if (!hearthDeclare(this, kCabinetDeviceType, kVariantTemperatureLevel)) {
+  /* Task 8 owned path, the mirror image of the TemperatureNumber begin()
+   * above: no declaration (the parent's is authoritative), refused on the
+   * inert cabinet, on a re-begin while started, and on a NUMBER-declared
+   * cabinet (the flavour mismatch). */
+  if (hearthOwnedInert) {
+    return false;
+  }
+  if (hearthOwnedByFridge) {
+    if (started || !hearthOwnedLevels) {
+      return false;
+    }
+  } else if (!hearthDeclare(this, kCabinetDeviceType, kVariantTemperatureLevel)) {
     return false;
   }
   memcpy(supportedLevelsArray, supportedLevels, levelCount * sizeof(uint8_t));
@@ -103,6 +142,8 @@ bool MatterTemperatureControlledCabinet::beginInternal(uint8_t *supportedLevels,
   rawMinTemperature = 0;
   rawMaxTemperature = 0;
   rawStep = 0;
+  fridgeModesCount = 0;
+  currentFridgeMode = 0;
   hearthGenerateDefaultLabels();
   started = true;
   return true;
@@ -194,17 +235,29 @@ void MatterTemperatureControlledCabinet::hearthOnReconciled() {
     updateAttributeVal(kTemperatureControlClusterId, kStepAttributeId, &stepVal);
     esp_matter_attr_val_t setpointVal = esp_matter_int16(rawTempSetpoint);
     updateAttributeVal(kTemperatureControlClusterId, kTemperatureSetpointAttributeId, &setpointVal);
-    return;
+  } else {
+    const char *ptrs[kMaxSupportedLevels];
+    for (uint16_t i = 0; i < levelLabelCount; i++) {
+      ptrs[i] = levelLabels[i];
+    }
+    hearthSendLevelLabels(ptrs, levelLabelCount);
+
+    esp_matter_attr_val_t val = esp_matter_uint8(selectedTempLevel);
+    updateAttributeVal(kTemperatureControlClusterId, kSelectedTemperatureLevelAttributeId, &val);
   }
 
-  const char *ptrs[kMaxSupportedLevels];
-  for (uint16_t i = 0; i < levelLabelCount; i++) {
-    ptrs[i] = levelLabels[i];
+  /* Task 8: an owned Cooler cabinet resends its cached 0x0052 mode list on
+   * every reconcile, after the temperature push above, which the firmware
+   * does not persist across a reboot (S3.20.1). A no-op when nothing has
+   * been set yet, and structurally unreachable for an unowned cabinet
+   * (setSupportedModes() refuses to populate the cache there). */
+  if (hearthOwnedByFridge && fridgeModesCount > 0) {
+    const char *labelPtrs[kMaxFridgeModes];
+    for (uint8_t i = 0; i < fridgeModesCount; i++) {
+      labelPtrs[i] = fridgeModeLabels[i];
+    }
+    hearthSendFridgeModes(fridgeModes, fridgeTags, labelPtrs, fridgeModesCount);
   }
-  hearthSendLevelLabels(ptrs, levelLabelCount);
-
-  esp_matter_attr_val_t val = esp_matter_uint8(selectedTempLevel);
-  updateAttributeVal(kTemperatureControlClusterId, kSelectedTemperatureLevelAttributeId, &val);
 }
 
 bool MatterTemperatureControlledCabinet::setRawTemperatureSetpoint(int16_t _rawTemperature) {
@@ -459,6 +512,118 @@ bool MatterTemperatureControlledCabinet::attributeChangeCB(uint16_t endpoint_id,
     }
   }
   return true;
+}
+
+/*
+ * Builds and sends "AT+MTMODES=<ep>,82,<mode1>,<tag1>,"<label1>",..."
+ * (AT_MT_SPEC.md S3.20.1's cluster-aware form) for exactly the triples
+ * given. Wire-only: the caller decides whether/what to commit to the cache
+ * afterwards (house discipline: a failed write must not update it). Same
+ * shape as MatterRoboticVacuum::hearthSendModes() with the cluster fixed.
+ */
+bool MatterTemperatureControlledCabinet::hearthSendFridgeModes(const uint8_t *modes, const uint16_t *tags, const char *const *labels, uint8_t count) {
+  char cmd[500];
+  int n = snprintf(cmd, sizeof(cmd), "AT+MTMODES=%u,%lu", (unsigned)getEndPointId(), (unsigned long)kRefrigeratorTccModeClusterId);
+  for (uint8_t i = 0; i < count && n > 0 && (size_t)n < sizeof(cmd); i++) {
+    n += snprintf(cmd + n, sizeof(cmd) - (size_t)n, ",%u,%u,\"%s\"", (unsigned)modes[i], (unsigned)tags[i], labels[i]);
+  }
+  return Hearth.hearthCommand(cmd) == 0;
+}
+
+/*
+ * Task 8: replace the owned cabinet's 0x0052 SupportedModes list. Refused
+ * outright on an unowned (or inert, or unstarted) cabinet: the cluster only
+ * exists when the firmware derived it from a Refrigerator parent (S3.9's
+ * 0x0071 note), so there is nothing on the wire for this to reach. The
+ * grammar enforcement below is S3.20.1 verbatim, the identical discipline
+ * MatterRoboticVacuum::hearthSetModeList() established: count bounds, mode
+ * uniqueness within this call, per-label length/printability/quote
+ * exclusion, every violation Hearth.hearthSetError(1) with no wire traffic;
+ * an unaddressable endpoint (pre-reconcile) is hearthSetError(2). Cache
+ * commit only after a successful wire write.
+ */
+bool MatterTemperatureControlledCabinet::setSupportedModes(const uint8_t *modes, const uint16_t *tags, const char *const *labels, uint8_t count) {
+  if (!hearthOwnedByFridge || hearthOwnedInert || !started) {
+    return false;
+  }
+  if (modes == nullptr || tags == nullptr || labels == nullptr || count == 0 || count > kMaxFridgeModes) {
+    Hearth.hearthSetError(1);
+    return false;
+  }
+  for (uint8_t i = 0; i < count; i++) {
+    for (uint8_t j = (uint8_t)(i + 1); j < count; j++) {
+      if (modes[i] == modes[j]) {
+        Hearth.hearthSetError(1);
+        return false;
+      }
+    }
+    if (labels[i] == nullptr) {
+      Hearth.hearthSetError(1);
+      return false;
+    }
+    size_t len = strlen(labels[i]);
+    if (len == 0 || len > kMaxFridgeModeLabelLen) {
+      Hearth.hearthSetError(1);
+      return false;
+    }
+    /* S3.20.1's own grammar, checked host-side before the wire would have
+     * to: every byte printable ASCII (0x20..0x7E), and never a '"'. A comma
+     * is deliberately NOT rejected: legal inside a quoted label. */
+    for (const char *p = labels[i]; *p != '\0'; p++) {
+      unsigned char ch = (unsigned char)*p;
+      if (ch < 0x20 || ch > 0x7E || ch == '"') {
+        Hearth.hearthSetError(1);
+        return false;
+      }
+    }
+  }
+  if (getEndPointId() == 0) {
+    Hearth.hearthSetError(2);
+    return false;
+  }
+  if (!hearthSendFridgeModes(modes, tags, labels, count)) {
+    return false;  // cache untouched on a failed write
+  }
+  memcpy(fridgeModes, modes, count * sizeof(uint8_t));
+  memcpy(fridgeTags, tags, count * sizeof(uint16_t));
+  for (uint8_t i = 0; i < count; i++) {
+    strncpy(fridgeModeLabels[i], labels[i], kMaxFridgeModeLabelLen);
+    fridgeModeLabels[i][kMaxFridgeModeLabelLen] = '\0';
+  }
+  fridgeModesCount = count;
+  return true;
+}
+
+void MatterTemperatureControlledCabinet::onChangeMode(std::function<bool(uint8_t)> cb) {
+  _onChangeModeCB = cb;
+}
+
+uint8_t MatterTemperatureControlledCabinet::getCurrentMode() {
+  return currentFridgeMode;
+}
+
+/*
+ * Task 8: a controller-invoked ChangeToMode on this cabinet's own 0x0052
+ * cluster arrives here for a verdict (S3.17/S3.20.1), the requested mode as
+ * fields.value[0]. Only an owned, started cabinet ever adjudicates: an
+ * unowned cabinet has no such cluster, so a (spurious) forward defers to
+ * the base class default and is denied, registered callback or not. The
+ * cache updates ONLY on an allow, the 0.6.0 CurrentMode rule (see the
+ * header comment): there is no ember-level signal of any kind for a
+ * CurrentMode change on a ModeBase-derived cluster, so the verdict this
+ * host itself gives is the only trustworthy record of what the device's
+ * CurrentMode actually became.
+ */
+bool MatterTemperatureControlledCabinet::hearthOnForwardedCommandFields(uint32_t cluster_id, uint32_t command_id, const HearthCmdFields &fields) {
+  if (hearthOwnedByFridge && !hearthOwnedInert && started && cluster_id == kRefrigeratorTccModeClusterId && command_id == kChangeToModeCommandId) {
+    uint8_t requested = (fields.count > 0 && fields.present[0]) ? (uint8_t)fields.value[0] : 0;
+    bool allow = _onChangeModeCB ? _onChangeModeCB(requested) : false;
+    if (allow) {
+      currentFridgeMode = requested;
+    }
+    return allow;
+  }
+  return MatterEndPoint::hearthOnForwardedCommandFields(cluster_id, command_id, fields);
 }
 
 esp_matter_val_type_t MatterTemperatureControlledCabinet::hearthAttrTypeFor(uint32_t cluster_id, uint32_t attribute_id) const {
