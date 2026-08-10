@@ -14,6 +14,10 @@
 MatterEndPoint::HearthDeclaration MatterEndPoint::_hearthDeclared[HEARTH_MAX_ENDPOINTS];
 uint8_t MatterEndPoint::_hearthDeclaredCount = 0;
 bool MatterEndPoint::_hearthReconciled = false;
+/* Out-of-line definition for the in-class initialized constant: C++11 still
+ * requires one wherever the constant is odr-used (bound to a reference or
+ * has its address taken), and a sketch is free to do either. */
+const uint8_t MatterEndPoint::HEARTH_NO_PARENT;
 
 MatterEndPoint::~MatterEndPoint() {
   hearthUndeclare(this);
@@ -171,7 +175,15 @@ bool MatterEndPoint::hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId) {
   return hearthDeclare(ep, deviceTypeId, 0);
 }
 
+/* Both narrower forms forward to the four-arg one with HEARTH_NO_PARENT
+ * rather than duplicating the declare/refuse logic: an unparented
+ * declaration is the same declaration it always was, just stored with an
+ * explicit "no parent" instead of an implicit one. */
 bool MatterEndPoint::hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId, uint8_t variant) {
+  return hearthDeclare(ep, deviceTypeId, variant, HEARTH_NO_PARENT);
+}
+
+bool MatterEndPoint::hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId, uint8_t variant, uint8_t parentIndex) {
   if (ep == nullptr) {
     return false;
   }
@@ -213,6 +225,7 @@ bool MatterEndPoint::hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId, ui
     }
     _hearthDeclared[i].deviceTypeId = deviceTypeId;
     _hearthDeclared[i].variant = variant;
+    _hearthDeclared[i].parentIndex = parentIndex;
     return true;
   }
   if (_hearthDeclaredCount >= HEARTH_MAX_ENDPOINTS) {
@@ -233,6 +246,7 @@ bool MatterEndPoint::hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId, ui
   _hearthDeclared[_hearthDeclaredCount].ep = ep;
   _hearthDeclared[_hearthDeclaredCount].deviceTypeId = deviceTypeId;
   _hearthDeclared[_hearthDeclaredCount].variant = variant;
+  _hearthDeclared[_hearthDeclaredCount].parentIndex = parentIndex;
   _hearthDeclaredCount++;
   return true;
 }
@@ -260,6 +274,7 @@ void MatterEndPoint::hearthUndeclare(MatterEndPoint *ep) {
     _hearthDeclared[_hearthDeclaredCount].ep = nullptr;
     _hearthDeclared[_hearthDeclaredCount].deviceTypeId = 0;
     _hearthDeclared[_hearthDeclaredCount].variant = 0;
+    _hearthDeclared[_hearthDeclaredCount].parentIndex = HEARTH_NO_PARENT;
     return;
   }
 }
@@ -287,6 +302,16 @@ uint8_t MatterEndPoint::hearthDeclaredVariantAt(size_t index) {
     return 0;
   }
   return _hearthDeclared[index].variant;
+}
+
+/* HEARTH_NO_PARENT out of range, not 0: 0 is a real composition index (the
+ * first declared endpoint, a perfectly legal parent), so the accessors'
+ * usual "0 for out of range" convention would alias it. */
+uint8_t MatterEndPoint::hearthDeclaredParentAt(uint8_t index) {
+  if (index >= _hearthDeclaredCount) {
+    return HEARTH_NO_PARENT;
+  }
+  return _hearthDeclared[index].parentIndex;
 }
 
 void MatterEndPoint::hearthClearDeclarations() {

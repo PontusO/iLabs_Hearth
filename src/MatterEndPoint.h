@@ -159,14 +159,32 @@ public:
    * part of what makes two compositions identical (see hearthOnReconciled()
    * below and ArduinoMatter::begin()'s comparison in Hearth.cpp), so a
    * changed variant on an otherwise-identical declaration must trigger a
-   * rebuild the same way a changed device type does. */
+   * rebuild the same way a changed device type does.
+   *
+   * The four-arg form carries the composed-appliance parent index the wire
+   * grammar's third field added (`AT+MTEP=<id>[,<variant>[,<parent_idx>]]`):
+   * the composition index (declaration order, decimal on the wire) of an
+   * EARLIER entry this endpoint sits under, e.g. a Temperature Controlled
+   * Cabinet under a Refrigerator. HEARTH_NO_PARENT means unparented, which
+   * is what the two- and three-arg forms forward, so every existing call
+   * site keeps its exact behaviour. The parent is part of what makes two
+   * compositions identical for the same reason the variant is: a changed
+   * parent on an otherwise-identical declaration must trigger a rebuild,
+   * since the composed data model the C6 builds from it is different. The
+   * firmware validates the parent (earlier entry only, legal parent type
+   * for the child, +MTERR:1 otherwise); the registry stores what the sketch
+   * declared and leaves that verdict to the wire, where reconcile already
+   * aborts loudly on any rejected write. */
+  static const uint8_t HEARTH_NO_PARENT = 0xFF;
   static bool hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId);
   static bool hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId, uint8_t variant);
+  static bool hearthDeclare(MatterEndPoint *ep, uint32_t deviceTypeId, uint8_t variant, uint8_t parentIndex);
   static void hearthUndeclare(MatterEndPoint *ep);
   static uint8_t hearthDeclaredCount();
   static MatterEndPoint *hearthDeclaredAt(uint8_t index);
   static uint32_t hearthDeclaredTypeAt(uint8_t index);
   static uint8_t hearthDeclaredVariantAt(size_t index);
+  static uint8_t hearthDeclaredParentAt(uint8_t index);
   static void hearthClearDeclarations();
 
   /*
@@ -258,6 +276,7 @@ private:
     MatterEndPoint *ep;
     uint32_t deviceTypeId;
     uint8_t variant;
+    uint8_t parentIndex;
   };
   static HearthDeclaration _hearthDeclared[HEARTH_MAX_ENDPOINTS];
   static uint8_t _hearthDeclaredCount;

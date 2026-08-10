@@ -48,6 +48,7 @@ build/
 /test/host/test_cmdfields
 /test/host/test_roboticvacuum
 /test/host/test_microwaveoven
+/test/host/test_composition_parent
 
 *.bin
 *.uf2

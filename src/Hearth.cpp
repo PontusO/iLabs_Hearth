@@ -791,11 +791,16 @@ namespace {
 /* One declared-or-live endpoint entry, as reported by AT+MTEP?. variant is
  * the optional fourth field (AT_MT_SPEC.md S3.9); it defaults to 0 when the
  * line carries only three fields, exactly matching what a variant-0
- * declaration (the two-arg hearthDeclare()) would report on the wire. */
+ * declaration (the two-arg hearthDeclare()) would report on the wire.
+ * parent is the optional fifth field, the composition index of an earlier
+ * entry this endpoint sits under; its absence means unparented
+ * (HEARTH_NO_PARENT), exactly matching what an unparented declaration
+ * would report. */
 struct HearthEpEntry {
   uint16_t endpoint_id;
   uint32_t device_type;
   uint8_t variant;
+  uint8_t parent;
 };
 
 struct HearthEpQueryCtx {
@@ -803,13 +808,18 @@ struct HearthEpQueryCtx {
   uint8_t count;
 };
 
-/* "+MTEP:<index>,<endpoint_id>,<device_type>[,<variant>]" per line
- * (AT_MT_SPEC.md S3.9). <index> is the line's own position, already implied
- * by arrival order, so it is parsed only to skip past it. <device_type> is
- * always hex on the wire ("0x%04lX", per the firmware's cmd_mtep()); strtoul's
- * base-16 mode accepts the "0x" prefix directly. The fourth field is present
- * only when the variant is nonzero (the firmware's own byte-identical-output
- * guarantee for existing hosts); its absence means variant 0, not "unknown". */
+/* "+MTEP:<index>,<endpoint_id>,<device_type>[,<variant>[,<parent_idx>]]"
+ * per line (AT_MT_SPEC.md S3.9). <index> is the line's own position, already
+ * implied by arrival order, so it is parsed only to skip past it.
+ * <device_type> is always hex on the wire ("0x%04lX", per the firmware's
+ * cmd_mtep()); strtoul's base-16 mode accepts the "0x" prefix directly. The
+ * fourth field is present only when the variant is nonzero OR a parent
+ * exists (the parent cannot be sent without it, so a parented line carries
+ * the variant explicitly even at 0); the fifth only when the endpoint has a
+ * parent, decimal like the variant. Both absences mean the value an
+ * unparented variant-0 declaration would report (0 and HEARTH_NO_PARENT),
+ * not "unknown": that is the firmware's byte-identical-output guarantee for
+ * existing hosts. */
 void hearthOnEpLine(const char *line, void *arg) {
   HearthEpQueryCtx *ctx = (HearthEpQueryCtx *)arg;
   if (strncmp(line, "+MTEP:", 6) != 0 || ctx->count >= HEARTH_MAX_ENDPOINTS) {
@@ -826,13 +836,18 @@ void hearthOnEpLine(const char *line, void *arg) {
   }
   unsigned long devtype = strtoul(end + 1, &end, 16);
   unsigned long variant = 0;
+  unsigned long parent = MatterEndPoint::HEARTH_NO_PARENT;
   if (*end == ',') {
     variant = strtoul(end + 1, &end, 10);
+    if (*end == ',') {
+      parent = strtoul(end + 1, &end, 10);
+    }
   }
 
   ctx->entries[ctx->count].endpoint_id = (uint16_t)ep;
   ctx->entries[ctx->count].device_type = (uint32_t)devtype;
   ctx->entries[ctx->count].variant = (uint8_t)variant;
+  ctx->entries[ctx->count].parent = (uint8_t)parent;
   ctx->count++;
 }
 
@@ -1129,7 +1144,8 @@ void ArduinoMatter::begin() {
     bool identical = (ctx.count == declaredCount);
     for (uint8_t i = 0; identical && i < declaredCount; i++) {
       if (ctx.entries[i].device_type != MatterEndPoint::hearthDeclaredTypeAt(i)
-          || ctx.entries[i].variant != MatterEndPoint::hearthDeclaredVariantAt(i)) {
+          || ctx.entries[i].variant != MatterEndPoint::hearthDeclaredVariantAt(i)
+          || ctx.entries[i].parent != MatterEndPoint::hearthDeclaredParentAt(i)) {
         identical = false;
       }
     }
@@ -1185,9 +1201,17 @@ void ArduinoMatter::begin() {
     }
     int writeRc = 0;
     for (uint8_t i = 0; i < declaredCount; i++) {
-      char cmd[24];
+      char cmd[32];
       uint8_t variant = MatterEndPoint::hearthDeclaredVariantAt(i);
-      if (variant != 0) {
+      uint8_t parent = MatterEndPoint::hearthDeclaredParentAt(i);
+      if (parent != MatterEndPoint::HEARTH_NO_PARENT) {
+        /* Parented: the wire cannot carry the third field without the
+         * second, so the variant is emitted explicitly even at 0, exactly
+         * as the firmware's own +MTEP? output does it. */
+        snprintf(
+          cmd, sizeof(cmd), "AT+MTEP=0x%04lX,%u,%u", (unsigned long)MatterEndPoint::hearthDeclaredTypeAt(i), (unsigned)variant, (unsigned)parent
+        );
+      } else if (variant != 0) {
         /* AT_MT_SPEC.md S3.9: the variant field is present only when
          * nonzero, so a variant-0 declaration keeps sending the exact
          * command every existing host and firmware revision already

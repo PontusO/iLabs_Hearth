@@ -4,7 +4,7 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer test_cmdfields test_roboticvacuum test_microwaveoven
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer test_cmdfields test_roboticvacuum test_microwaveoven test_composition_parent
 
 all: $(TESTS)
 
@@ -207,6 +207,12 @@ test_roboticvacuum: test_roboticvacuum.cpp ArduinoShim.cpp $(SRC) ../../src/Hear
 # OperationalState trio uses), so its .cpp is linked too, the same pattern
 # test_laundrywasher/test_dishwasher/test_laundrydryer establish.
 test_microwaveoven: test_microwaveoven.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOperationalStateEndpoint.cpp ../../src/MatterEndpoints/MatterMicrowaveOven.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+# Task 7 (composed-appliance round): parent-aware declaration and reconcile.
+# Uses only the generic TestEndPoint, so no MatterEndpoints/*.cpp is linked,
+# the same shape as test_cmdfields.
+test_composition_parent: test_composition_parent.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all
