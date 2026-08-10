@@ -157,6 +157,16 @@ MatterMicrowaveOven umbrellaMicrowaveOven;
  */
 MatterRefrigerator umbrellaRefrigerator;
 
+/*
+ * Task 9 (composed-appliance round): the forty-third device type, the
+ * second composed appliance (owned MatterOvenCavity children under a
+ * 0x007B bare parent; the cavity's header rides in transitively through
+ * MatterOven.h, the same reasoning as the trio's shared core above), no
+ * arduino-esp32 counterpart. Declared here only, same compile/link guard:
+ * dropping its include from Hearth.h's list fails this build too.
+ */
+MatterOven umbrellaOven;
+
 static int g_pass = 0, g_fail = 0;
 static void check(const char *name, bool cond) {
   printf("  [%s] %s\n", cond ? "PASS" : "FAIL", name);

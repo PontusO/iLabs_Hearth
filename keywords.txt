@@ -96,9 +96,10 @@ MatterLaundryDryer	KEYWORD1
 MatterRoboticVacuum	KEYWORD1
 HearthCmdFields	KEYWORD1
 
-# Task 8 (RVC + Microwave batch, last library task): the forty-first and
-# last device type, no arduino-esp32 counterpart. See README.md, "Hearth
-# originals". HearthCookingParams (MatterMicrowaveOven.h) is the
+# Task 8 (RVC + Microwave batch, last library task): the forty-first
+# device type (the last of that batch, not of the library: the
+# composed-appliance round below kept counting), no arduino-esp32
+# counterpart. See README.md, "Hearth originals". HearthCookingParams (MatterMicrowaveOven.h) is the
 # SetCookingParameters payload struct onCookingParameters() carries, with
 # honest has-flags per field (see the class header).
 MatterMicrowaveOven	KEYWORD1
@@ -111,6 +112,15 @@ HearthCookingParams	KEYWORD1
 # variant byte.
 MatterRefrigerator	KEYWORD1
 CabinetFlavour_t	KEYWORD1
+
+# Task 9 (composed-appliance round): the forty-third device type, the
+# second composed appliance (a 0x007B bare parent owning MatterOvenCavity
+# children, the first typed owned child class), no arduino-esp32
+# counterpart. See README.md, "Hearth originals". CabinetFlavour_t
+# (already listed above; MatterOvenCavity declares its own with the same
+# NUMBER/LEVELS values) maps to the 0x0071 variant byte here too.
+MatterOven	KEYWORD1
+MatterOvenCavity	KEYWORD1
 
 # Event and callback types.
 hearthEvent_t	KEYWORD1
@@ -530,6 +540,15 @@ onAddMoreTime	KEYWORD2
 addCabinet	KEYWORD2
 setDoorOpenAlarm	KEYWORD2
 setAlarmState	KEYWORD2
+
+# Task 9 (composed-appliance round): MatterOven and MatterOvenCavity.
+# Names already listed above (begin, setSupportedModes, onChangeMode,
+# getCurrentMode, onStop, onStart, setOperationalState,
+# getOperationalState, hearthOnForwardedCommandFields, and the whole
+# inherited cabinet temperature surface) are not repeated here. There are
+# deliberately no onPause/onResume rows: the cavity's cluster disallows
+# both commands and the class has no such members (see MatterOvenCavity.h).
+addCavity	KEYWORD2
 
 # HearthColorUtil.h conversions, called out from MatterEnhancedColorLight's
 # getColorRGB()/setColorRGB(), and from examples/MatterEnhancedColorLight's

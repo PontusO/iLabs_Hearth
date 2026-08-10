@@ -50,6 +50,7 @@ build/
 /test/host/test_microwaveoven
 /test/host/test_composition_parent
 /test/host/test_refrigerator
+/test/host/test_oven
 
 *.bin
 *.uf2

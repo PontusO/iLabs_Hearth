@@ -94,6 +94,19 @@
  * MatterEndpoints/MatterTemperatureControlledCabinet.h itself (its owned
  * cabinets are members of that class), which this list also carries
  * directly, as it always has: both routes are one-way includes, no cycle.
+ *
+ * Task 9 (composed-appliance round) adds the forty-third: MatterOven.h,
+ * the second composed appliance (a 0x007B bare parent owning
+ * MatterOvenCavity children, this library's first TYPED owned child
+ * class). No arduino-esp32 counterpart, same "Hearth originals" reasoning:
+ * a sketch's bare `#include <Matter.h>` plus a file-scope `MatterOven
+ * oven;` must work with no endpoint header of its own. MatterOven.h
+ * includes MatterEndpoints/MatterOvenCavity.h itself (its owned cavities
+ * are members of that class), so the cavity header is not listed
+ * separately here, the same transitive-coverage reasoning as the
+ * OperationalState trio's shared core; MatterOvenCavity.h in turn includes
+ * MatterTemperatureControlledCabinet.h (its base class), which this list
+ * also carries directly. All routes are one-way includes, no cycle.
  */
 #pragma once
 
@@ -144,6 +157,7 @@
 #include "MatterEndpoints/MatterRoboticVacuum.h"
 #include "MatterEndpoints/MatterMicrowaveOven.h"
 #include "MatterEndpoints/MatterRefrigerator.h"
+#include "MatterEndpoints/MatterOven.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART
