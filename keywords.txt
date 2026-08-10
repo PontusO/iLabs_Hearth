@@ -122,6 +122,13 @@ CabinetFlavour_t	KEYWORD1
 MatterOven	KEYWORD1
 MatterOvenCavity	KEYWORD1
 
+# Task 10 (composed-appliance round): MatterCookSurface, the owned child of
+# the now-composed MatterCooktop (already listed above), a 0x0077 child the
+# firmware only accepts parented under a 0x0078. CabinetFlavour_t (already
+# listed above; MatterCookSurface declares its own with the same
+# NUMBER/LEVELS values) maps to the 0x0077 variant byte here too.
+MatterCookSurface	KEYWORD1
+
 # Event and callback types.
 hearthEvent_t	KEYWORD1
 hearthEventCB	KEYWORD1
@@ -549,6 +556,14 @@ setAlarmState	KEYWORD2
 # deliberately no onPause/onResume rows: the cavity's cluster disallows
 # both commands and the class has no such members (see MatterOvenCavity.h).
 addCavity	KEYWORD2
+
+# Task 10 (composed-appliance round): the composed MatterCooktop and
+# MatterCookSurface. Names already listed above (begin, setOnOff, getOnOff,
+# and the whole inherited cabinet temperature surface) are not repeated
+# here; onOffChange is the surface's remote-delivered-change callback (per
+# OffOnly a controller can only ever deliver false).
+addSurface	KEYWORD2
+onOffChange	KEYWORD2
 
 # HearthColorUtil.h conversions, called out from MatterEnhancedColorLight's
 # getColorRGB()/setColorRGB(), and from examples/MatterEnhancedColorLight's

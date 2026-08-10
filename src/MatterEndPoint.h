@@ -41,9 +41,14 @@
 #include <functional>
 #include "HearthCompat.h"
 
-/* Registry capacity. Matches the firmware's MT_COMP_MAX_ENDPOINTS. */
+/* Registry capacity. Matches the firmware's MT_COMP_MAX_ENDPOINTS, raised
+ * 16 -> 24 alongside it in the composed-appliance round (0.7.0). The cap
+ * also bounds Hearth.cpp's hearthOnEpLine() parse of the AT+MTEP? reply, so
+ * lagging behind the firmware would silently drop reply lines past the old
+ * cap and make a large live composition compare unequal (or worse, falsely
+ * equal against a truncated declared registry) on every boot. */
 #ifndef HEARTH_MAX_ENDPOINTS
-#define HEARTH_MAX_ENDPOINTS 16
+#define HEARTH_MAX_ENDPOINTS 24
 #endif
 
 /*

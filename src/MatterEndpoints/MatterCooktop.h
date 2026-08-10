@@ -46,16 +46,47 @@
  * updateAttributeVal would be an infinite loop with the real device. This
  * is the entire reason AT+MTATTR has a silent write mode; see
  * MatterEndPoint.h's header comment.
+ *
+ * Composed-appliance round, Task 10: the cooktop is now also a composing
+ * OWNER, the third in this library (MatterRefrigerator, MatterOven).
+ * addSurface() (pre-begin only) hands back a MatterCookSurface this
+ * cooktop owns: begin() declares the cooktop first, exactly as it always
+ * did, then every added surface (0x0077, the flavour as the variant byte)
+ * with parentIndex = this cooktop's own registry index, which is what the
+ * firmware REQUIRES for 0x0077 (the first parent-mandatory device type,
+ * AT_MT_SPEC.md S3.9). The owned surface's begin() then declares NOTHING
+ * (a self-declare would wipe the parent index via the registry's in-place
+ * update) and only caches its temperature configuration for the reconcile
+ * push; see MatterCookSurface.h for that whole surface, including the
+ * OnOff OffOnly asymmetry against this class. A cooktop with ZERO surfaces
+ * keeps the 0.6.0 behaviour byte for byte: one bare unparented 0x0078
+ * declaration and the three-method OffOnly API above, nothing else.
  */
 #pragma once
 
 #include <cstddef>
 #include "MatterEndPoint.h"
+#include "MatterEndpoints/MatterCookSurface.h"
 
 class MatterCooktop : public MatterEndPoint {
 public:
+  static constexpr uint8_t kMaxSurfaces = 4;
+
   MatterCooktop();
   ~MatterCooktop();
+
+  // Add an owned cook surface (pre-begin only). Returns a reference the
+  // sketch keeps to configure the surface (its own begin() with the
+  // matching flavour, its temperature and OnOff APIs). Past kMaxSurfaces,
+  // or after this cooktop's begin(), returns an inert reject surface whose
+  // every call fails, so the error surfaces at the surface's begin()
+  // rather than as a silent extra endpoint.
+  MatterCookSurface &addSurface(MatterCookSurface::CabinetFlavour_t flavour);
+
+  // declares self (0x0078), then every added surface (0x0077, flavour as
+  // the variant) with parentIndex = this cooktop's own registry index.
+  // With zero surfaces this is exactly the 0.6.0 declaration, byte for
+  // byte on the wire.
   virtual bool begin();
   void end();
 
@@ -85,4 +116,15 @@ protected:
   bool onOffState = false;
   EndPointCB _onChangeCB = NULL;
   EndPointCB _onChangeOnOffCB = NULL;
+
+  MatterCookSurface _surfaces[kMaxSurfaces];
+  uint8_t _surfaceCount = 0;
+
+private:
+  // The reject reference addSurface() returns when it must refuse: marked
+  // inert in the constructor, so its begin() (and everything else) fails
+  // without ever reaching the registry or the wire. A member, not a
+  // function-local static, so two cooktop objects never share reject
+  // state. The MatterOven pattern, verbatim.
+  MatterCookSurface _inertSurface;
 };

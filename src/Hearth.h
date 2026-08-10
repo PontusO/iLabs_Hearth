@@ -107,6 +107,15 @@
  * OperationalState trio's shared core; MatterOvenCavity.h in turn includes
  * MatterTemperatureControlledCabinet.h (its base class), which this list
  * also carries directly. All routes are one-way includes, no cycle.
+ *
+ * Task 10 (composed-appliance round) adds the forty-fourth and last of the
+ * round: MatterCookSurface.h, the owned child of the now-composed
+ * MatterCooktop (0x0077 under 0x0078, the first parent-mandatory device
+ * type). It is NOT listed below: MatterCooktop.h, already in this list,
+ * includes it itself (its owned surfaces are members of that class), the
+ * same transitive-coverage reasoning as MatterOven.h and its cavity above.
+ * One-way includes only, no cycle: MatterCookSurface.h includes the
+ * cabinet base header, never MatterCooktop.h.
  */
 #pragma once
 

@@ -613,6 +613,47 @@ static void test_doorlock_reconcile_rebuild_pushes_lock_state(void) {
   check("cache reflects the begun state", lock.getLockState() == MatterDoorLock::kStateUnlocked);
 }
 
+/*
+ * Task 10 (composed-appliance round, routed from Task 7's review): the
+ * firmware's MT_COMP_MAX_ENDPOINTS is 24 now, so a live composition can
+ * legally answer AT+MTEP? with more than 16 lines. HEARTH_MAX_ENDPOINTS
+ * must match: at the old 16, hearthOnEpLine() silently dropped every line
+ * past the sixteenth, so a 17-endpoint declared registry could never
+ * compare equal to its own live composition and every boot recomposed (and
+ * rebooted the C6) for no reason. Pin the whole path: 17 declared
+ * endpoints, a 17-line reply, one query, zero writes, every endpoint
+ * adopting its ID, including the seventeenth.
+ */
+static void test_seventeen_endpoint_composition_adopts_without_recompose(void) {
+  MatterEndPoint::hearthClearDeclarations();
+  static const int kCount = 17;
+  static TestEndPoint eps[kCount];
+  bool allDeclared = true;
+  for (int i = 0; i < kCount; i++) {
+    allDeclared &= MatterEndPoint::hearthDeclare(&eps[i], 0x0100);
+  }
+  check("all 17 declarations are accepted (cap is 24 now)", allDeclared);
+
+  std::string reply;
+  for (int i = 0; i < kCount; i++) {
+    char line[48];
+    snprintf(line, sizeof(line), "+MTEP:%d,%d,0x0100\r\n", i, i + 1);
+    reply += line;
+  }
+  reply += "OK\r\n";
+
+  MockStream s;
+  s.expect("AT+MTEP?", reply);
+  Hearth.begin(s);
+  Matter.begin();
+
+  check("a 17-line reply parses completely: one query, no recompose", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  check("endpoint 1 adopts ID 1", eps[0].getEndPointId() == 1);
+  check("endpoint 16 adopts ID 16", eps[15].getEndPointId() == 16);
+  check("endpoint 17 adopts ID 17, past the old 16-line parse cap", eps[16].getEndPointId() == 17);
+}
+
 int main(void) {
   printf("\n===== reconcile and ArduinoMatter tests =====\n");
   test_identical_composition_adopts_ids();
@@ -638,6 +679,7 @@ int main(void) {
   test_declared_variant_zero_vs_stored_4field_variant_triggers_rebuild();
   test_doorlock_reconcile_adopt_pushes_lock_state();
   test_doorlock_reconcile_rebuild_pushes_lock_state();
+  test_seventeen_endpoint_composition_adopts_without_recompose();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }
