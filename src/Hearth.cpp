@@ -1000,9 +1000,10 @@ void hearthAbortReconcile(int rc) {
  * discover a mismatch and apply, one re-query to confirm it took. A
  * composition that still does not match after that is not going to start
  * matching by looping again with the same inputs; something on the wire is
- * rejecting a write (unknown device type, the firmware's 16-endpoint cap,
- * ...), and every command in the path below is checked for exactly that
- * reason. Retrying anyway would mean unbounded AT+MTEPCLEAR / AT+MTEPAPPLY
+ * rejecting a write (unknown device type, the firmware's endpoint cap,
+ * which HEARTH_MAX_ENDPOINTS mirrors, ...), and every command in the path
+ * below is checked for exactly that reason. Retrying anyway would mean
+ * unbounded AT+MTEPCLEAR / AT+MTEPAPPLY
  * cycles, i.e. unbounded NVS writes, on a state that cannot resolve itself.
  */
 static const int kHearthMaxReconcileAttempts = 2;
@@ -1120,9 +1121,10 @@ void ArduinoMatter::begin() {
    * A reconcile that already failed this boot is not attempted again. The
    * retry cap below is per call; this is per boot, and the two are not the
    * same bound because a sketch may call begin() from loop(). Without it, a
-   * composition the C6 rejects (unknown device type, past its 16-endpoint
-   * cap) runs AT+MTEPCLEAR, the writes, AT+MTEPAPPLY and a co-processor
-   * reboot on every iteration, forever. Nothing about the inputs changes
+   * composition the C6 rejects (unknown device type, past the endpoint
+   * cap HEARTH_MAX_ENDPOINTS mirrors) runs AT+MTEPCLEAR, the writes,
+   * AT+MTEPAPPLY and a co-processor reboot on every iteration, forever.
+   * Nothing about the inputs changes
    * between those iterations, so a retry can only repeat the NVS wear and
    * keep the C6 permanently rebooting. Silent rather than re-raising
    * HEARTH_PROTOCOL_ERROR: the event fired once, on the attempt that
