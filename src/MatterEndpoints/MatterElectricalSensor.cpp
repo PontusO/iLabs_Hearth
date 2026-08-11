@@ -4,13 +4,19 @@
  * Instance-served rule (cache updates on successful local push only), why
  * measurements are never re-pushed on reconcile, and the energy adders'
  * accumulate-locally-push-the-total contract.
+ *
+ * Since round B (design spec 4.1) the mechanics live in
+ * HearthMeasurementPush.cpp, moved there verbatim; what remains here is
+ * the endpoint lifecycle (declare, started guard, variant validation) and
+ * one-line delegation per method. The started guard stays HERE, in front
+ * of every delegation: a not-yet-begun sensor returns false with no
+ * Hearth error and no wire traffic, exactly as before the extraction.
  */
 #include "MatterEndpoints/MatterElectricalSensor.h"
 /* HearthGlobal.h, not Hearth.h: this is a library .cpp, and the Hearth
  * global must stay declared even in a build that set NO_GLOBAL_INSTANCES /
  * NO_GLOBAL_HEARTH build-wide. See that header's own comment. */
 #include "HearthGlobal.h"
-#include <stdio.h>
 
 namespace {
 /* electrical_sensor (ESP_MATTER_ELECTRICAL_SENSOR_DEVICE_TYPE_ID),
@@ -21,7 +27,7 @@ namespace {
 const uint32_t kElectricalSensorDeviceType = 0x0510;
 }  // namespace
 
-MatterElectricalSensor::MatterElectricalSensor() {}
+MatterElectricalSensor::MatterElectricalSensor() : meas(this) {}
 
 MatterElectricalSensor::~MatterElectricalSensor() {
   end();
@@ -47,223 +53,97 @@ bool MatterElectricalSensor::hearthBeginElectrical(uint32_t deviceTypeId, Varian
     return false;
   }
   variantSel = variant;
-  voltage = activeCurrent = activePower = frequency = 0;
-  hasVoltage = hasActiveCurrent = hasActivePower = hasFrequency = false;
-  energyImported = energyExported = 0;
+  meas.reset();
+  /* POWER_ONLY builds no energy cluster, so the helper's energy adders
+   * refuse host-side with error 1 and zero wire traffic (the gate the
+   * helper's `enabled` flag carries since the round B extraction). */
+  meas.enabled = (variant == FULL);
   started = true;
   return true;
 }
 
-/*
- * "AT+MTMEAS=<ep>,144,<field>,<value>[,...]" (AT_MT_SPEC.md S3.25).
- * getEndPointId() == 0 is checked directly here, not through
- * hearthEndPointAddressable(): that guard is private to MatterEndPoint and
- * used internally by the AT+MTATTR paths, which AT+MTMEAS does not go
- * through; a custom wire verb repeats the check locally, the
- * MatterWaterValve::hearthSendValveState() pattern.
- *
- * Buffer math: "AT+MTMEAS=" (10) + ep (up to 5) + ",144" (4) = 19, plus at
- * most three pairs of ",<f>,<value>" where the worst value is
- * "-9223372036854775808" (20 chars), so 3 * 23 = 69; 88 total plus NUL.
- */
-bool MatterElectricalSensor::hearthSendPowerPairs(const uint8_t *fields, const int64_t *values, uint8_t count) {
-  if (getEndPointId() == 0) {
-    Hearth.hearthSetError(2);
-    return false;
-  }
-  char cmd[112];
-  int n = snprintf(cmd, sizeof(cmd), "AT+MTMEAS=%u,%lu", (unsigned)getEndPointId(), (unsigned long)kPowerMeasurementClusterId);
-  for (uint8_t i = 0; i < count; i++) {
-    n += snprintf(cmd + n, sizeof(cmd) - n, ",%u,%lld", (unsigned)fields[i], (long long)values[i]);
-  }
-  return Hearth.hearthCommand(cmd) == 0;
-}
-
-/* Same shape on cluster 145. The counters are unsigned on the wire (the
- * firmware rejects a leading minus at parse), so %llu, never %lld: the
- * Task 6 signedness-first rule. */
-bool MatterElectricalSensor::hearthSendEnergyTotal(uint8_t field, uint64_t total) {
-  if (getEndPointId() == 0) {
-    Hearth.hearthSetError(2);
-    return false;
-  }
-  char cmd[64];
-  snprintf(
-    cmd, sizeof(cmd), "AT+MTMEAS=%u,%lu,%u,%llu", (unsigned)getEndPointId(), (unsigned long)kEnergyMeasurementClusterId, (unsigned)field,
-    (unsigned long long)total
-  );
-  return Hearth.hearthCommand(cmd) == 0;
-}
-
-/* The four setters share one shape: no-op only when the field has been
- * pushed before AND the value is unchanged (the fabric-side value starts
- * null, so the zero-initialised cache must not suppress a first push of
- * 0); cache and has-flag commit only on a successful write. */
 bool MatterElectricalSensor::setVoltage(int64_t mv) {
   if (!started) {
     return false;
   }
-  if (hasVoltage && voltage == mv) {
-    return true;
-  }
-  const uint8_t f = kFieldVoltage;
-  if (!hearthSendPowerPairs(&f, &mv, 1)) {
-    return false;  // the cache is left untouched: the device's idea of the
-                    // state and the host's idea of it must not diverge
-  }
-  voltage = mv;
-  hasVoltage = true;
-  return true;
+  return meas.setVoltage(mv);
 }
 
 bool MatterElectricalSensor::setActiveCurrent(int64_t ma) {
   if (!started) {
     return false;
   }
-  if (hasActiveCurrent && activeCurrent == ma) {
-    return true;
-  }
-  const uint8_t f = kFieldActiveCurrent;
-  if (!hearthSendPowerPairs(&f, &ma, 1)) {
-    return false;
-  }
-  activeCurrent = ma;
-  hasActiveCurrent = true;
-  return true;
+  return meas.setActiveCurrent(ma);
 }
 
 bool MatterElectricalSensor::setActivePower(int64_t mw) {
   if (!started) {
     return false;
   }
-  if (hasActivePower && activePower == mw) {
-    return true;
-  }
-  const uint8_t f = kFieldActivePower;
-  if (!hearthSendPowerPairs(&f, &mw, 1)) {
-    return false;
-  }
-  activePower = mw;
-  hasActivePower = true;
-  return true;
+  return meas.setActivePower(mw);
 }
 
 bool MatterElectricalSensor::setFrequency(int64_t mhz) {
   if (!started) {
     return false;
   }
-  if (hasFrequency && frequency == mhz) {
-    return true;
-  }
-  const uint8_t f = kFieldFrequency;
-  if (!hearthSendPowerPairs(&f, &mhz, 1)) {
-    return false;
-  }
-  frequency = mhz;
-  hasFrequency = true;
-  return true;
+  return meas.setFrequency(mhz);
 }
 
-/* Always writes, even byte-identical to the previous sample: a batch is a
- * fresh reading and each push re-reports the fields dirty (see the header
- * comment). All three caches commit atomically with the one wire line:
- * the firmware applies the pairs validate-then-apply, so a refused line
- * changed nothing on the device and must change nothing here. */
 bool MatterElectricalSensor::pushMeasurements(int64_t mv, int64_t ma, int64_t mw) {
   if (!started) {
     return false;
   }
-  const uint8_t fields[3] = {kFieldVoltage, kFieldActiveCurrent, kFieldActivePower};
-  const int64_t values[3] = {mv, ma, mw};
-  if (!hearthSendPowerPairs(fields, values, 3)) {
-    return false;
-  }
-  voltage = mv;
-  activeCurrent = ma;
-  activePower = mw;
-  hasVoltage = hasActiveCurrent = hasActivePower = true;
-  return true;
+  return meas.pushMeasurements(mv, ma, mw);
 }
 
-/* FULL only: POWER_ONLY builds no energy cluster, so refuse host-side
- * with error 1 and no wire traffic (the header comment's rationale). The
- * accumulator commits only on a successful push, so a refused or failed
- * line never lets the host's running total drift from what the fabric
- * last saw. Overflow past 2^64 wraps as unsigned arithmetic does; the
- * firmware's own range cap is 2^62 (S3.25), hit long before. */
 bool MatterElectricalSensor::addEnergyImported(uint64_t mwh) {
   if (!started) {
     return false;
   }
-  if (variantSel != FULL) {
-    Hearth.hearthSetError(1);
-    return false;
-  }
-  uint64_t total = energyImported + mwh;
-  if (!hearthSendEnergyTotal(kFieldEnergyImported, total)) {
-    return false;
-  }
-  energyImported = total;
-  return true;
+  return meas.addEnergyImported(mwh);
 }
 
 bool MatterElectricalSensor::addEnergyExported(uint64_t mwh) {
   if (!started) {
     return false;
   }
-  if (variantSel != FULL) {
-    Hearth.hearthSetError(1);
-    return false;
-  }
-  uint64_t total = energyExported + mwh;
-  if (!hearthSendEnergyTotal(kFieldEnergyExported, total)) {
-    return false;
-  }
-  energyExported = total;
-  return true;
+  return meas.addEnergyExported(mwh);
 }
 
 int64_t MatterElectricalSensor::getVoltage() {
-  return voltage;
+  return meas.getVoltage();
 }
 
 int64_t MatterElectricalSensor::getActiveCurrent() {
-  return activeCurrent;
+  return meas.getActiveCurrent();
 }
 
 int64_t MatterElectricalSensor::getActivePower() {
-  return activePower;
+  return meas.getActivePower();
 }
 
 int64_t MatterElectricalSensor::getFrequency() {
-  return frequency;
+  return meas.getFrequency();
 }
 
 uint64_t MatterElectricalSensor::getEnergyImported() {
-  return energyImported;
+  return meas.getEnergyImported();
 }
 
 uint64_t MatterElectricalSensor::getEnergyExported() {
-  return energyExported;
+  return meas.getEnergyExported();
 }
 
 /*
  * Hearth's own reconcile hook (MatterEndPoint.h), on every reconcile, not
- * only the first. Unlike the label/mode-list overrides in the sibling
- * classes this resends NOTHING: measurements are volatile readings, and
- * re-pushing the cache would report a stale sample as fresh. It exists
- * because a reconcile means the co-processor rebooted (or first came up)
- * and the fabric-side fields are null again, so the "already on the wire"
- * memory is stale: cleared here, a setter repeating its pre-reboot value
- * writes instead of no-opping forever against a null fabric field. The
- * cache VALUES stay (the getters keep answering the last pushed sample),
- * and the energy accumulators stay too: they are the host-side source of
- * truth and the adders always push the cumulative total anyway, so the
- * first add after the reboot re-seeds the fabric's counter by
- * construction. Zero wire traffic here, deliberately.
+ * only the first. The B229 semantics (resend NOTHING, clear only the
+ * wire-pushed memory so a repeated setter writes again; cache values and
+ * energy accumulators survive) moved verbatim into the helper's
+ * onReconciled(); see HearthMeasurementPush.cpp for the full rationale.
  */
 void MatterElectricalSensor::hearthOnReconciled() {
-  hasVoltage = hasActiveCurrent = hasActivePower = hasFrequency = false;
+  meas.onReconciled();
 }
 
 /*
