@@ -52,6 +52,7 @@ build/
 /test/host/test_refrigerator
 /test/host/test_oven
 /test/host/test_cooksurface
+/test/host/test_attr64
 
 *.bin
 *.uf2
