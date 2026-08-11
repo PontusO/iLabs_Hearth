@@ -25,7 +25,12 @@
  *   the class's own machinery ever consults the fields override.
  * - Measurements are NOT re-pushed on reconcile (volatile readings, unlike
  *   the cabinet's labels): hearthOnReconciled() on a sensor holding pushed
- *   values must issue no traffic.
+ *   values must issue no traffic. It DOES invalidate the wire-pushed
+ *   memory (the has-value flags): after a co-processor reboot the
+ *   fabric-side fields are null again, so a setter repeating its
+ *   pre-reboot value must reach the wire, not no-op against a fabric
+ *   state that no longer exists. The host cache values and the energy
+ *   accumulators survive the reconcile untouched.
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -391,6 +396,13 @@ static void test_no_cmd_dispatch_path_consulted(void) {
 
 /* ===== reconcile: volatile readings are NOT re-pushed ===== */
 
+/* The override is protected (the sibling-class convention); the base's
+ * public virtual is the dispatch surface Hearth.cpp itself uses, so the
+ * tests invoke the hook the same way. */
+static void reconcile(MatterEndPoint &ep) {
+  ep.hearthOnReconciled();
+}
+
 static void test_reconcile_does_not_repush_measurements(void) {
   MockStream s; MatterElectricalSensor dev;
   bringUpSensor(s, dev);
@@ -401,13 +413,76 @@ static void test_reconcile_does_not_repush_measurements(void) {
   /* The reconcile hook every stateful class overrides to resend
    * non-persisted configuration: measurements are volatile READINGS, not
    * configuration. A re-push would report a stale sample as fresh, so the
-   * class deliberately does not override the hook. After a co-processor
-   * reboot the fabric-side fields are null again until the sketch's own
-   * next sample, which is the honest state. */
-  dev.hearthOnReconciled();
+   * class's override resends NOTHING; it only clears the wire-pushed
+   * memory (pinned by the two tests below). After a co-processor reboot
+   * the fabric-side fields are null again until the sketch's own next
+   * sample, which is the honest state. */
+  reconcile(dev);
   check("hearthOnReconciled() issues no traffic", s.scriptDrained());
   check("and nothing unscripted was sent either", s.unexpected().empty());
   check("caches survive locally regardless", dev.getVoltage() == 230000 && dev.getEnergyImported() == 1500000ULL);
+}
+
+/* The other half of the reconcile contract, the review finding on the
+ * first cut of this class: the fabric-side fields are null again after a
+ * co-processor reboot, but the has-value flags still said "pushed", so a
+ * setter repeating its pre-reboot value no-opped and the fabric field
+ * stayed null forever (setFrequency, typically set once, was the classic
+ * victim). hearthOnReconciled() must clear the wire-pushed memory so the
+ * next setter call writes, while the host cache values themselves survive
+ * (the getters keep answering the last pushed sample). */
+static void test_reconcile_clears_wire_pushed_memory(void) {
+  MockStream s; MatterElectricalSensor dev;
+  bringUpSensor(s, dev);
+  s.expect("AT+MTMEAS=1,144,3,50000", "OK\r\n");
+  check("baseline setFrequency(50000)", dev.setFrequency(50000));
+  s.expect("AT+MTMEAS=1,144,0,230000,1,433,2,99590", "OK\r\n");
+  check("baseline batch", dev.pushMeasurements(230000, 433, 99590));
+  check("repeat setFrequency(50000) before reconcile is a no-op", dev.setFrequency(50000));
+  reconcile(dev);
+  check("getters still answer the cached values after reconcile",
+        dev.getFrequency() == 50000 && dev.getVoltage() == 230000 && dev.getActiveCurrent() == 433 && dev.getActivePower() == 99590);
+  s.expect("AT+MTMEAS=1,144,3,50000", "OK\r\n");
+  check("setFrequency(50000) after reconcile reaches the wire again", dev.setFrequency(50000));
+  s.expect("AT+MTMEAS=1,144,0,230000", "OK\r\n");
+  check("setVoltage(230000) after reconcile reaches the wire again", dev.setVoltage(230000));
+  check("a repeat after the re-push is a no-op again", dev.setFrequency(50000) && dev.setVoltage(230000));
+  check("script drained", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/* The energy side of the same finding, decided deliberately: the
+ * accumulators are the HOST-side running totals, the single source of
+ * truth, so the reconcile must NOT reset them. There is no wire-pushed
+ * flag to clear either: the adders always push the cumulative total, so
+ * the first add after the reboot re-seeds the fabric's counter with the
+ * preserved total by construction, even an add of 0. */
+static void test_reconcile_preserves_energy_accumulators(void) {
+  MockStream s; MatterElectricalSensor dev;
+  bringUpSensor(s, dev);
+  s.expect("AT+MTMEAS=1,145,0,1500000", "OK\r\n");
+  check("baseline energy add", dev.addEnergyImported(1500000));
+  reconcile(dev);
+  check("accumulator survives the reconcile", dev.getEnergyImported() == 1500000ULL);
+  s.expect("AT+MTMEAS=1,145,0,1500250", "OK\r\n");
+  check("the next add pushes the preserved total plus the delta", dev.addEnergyImported(250));
+  s.expect("AT+MTMEAS=1,145,0,1500250", "OK\r\n");
+  check("an add of 0 re-seeds the fabric with the unchanged total", dev.addEnergyImported(0));
+  check("script drained", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/* the meter inherits the override with everything else */
+static void test_meter_inherits_reconcile_invalidation(void) {
+  MockStream s; MatterElectricalMeter dev;
+  bringUpMeter(s, dev);
+  s.expect("AT+MTMEAS=1,144,0,230000", "OK\r\n");
+  check("meter baseline setVoltage(230000)", dev.setVoltage(230000));
+  reconcile(dev);
+  s.expect("AT+MTMEAS=1,144,0,230000", "OK\r\n");
+  check("meter setVoltage(230000) after reconcile reaches the wire again", dev.setVoltage(230000));
+  check("script drained", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
 }
 
 /* ===== the meter inherits the whole surface ===== */
@@ -452,6 +527,9 @@ int main(void) {
   test_injected_mtattr_on_measurement_clusters_ignored();
   test_no_cmd_dispatch_path_consulted();
   test_reconcile_does_not_repush_measurements();
+  test_reconcile_clears_wire_pushed_memory();
+  test_reconcile_preserves_energy_accumulators();
+  test_meter_inherits_reconcile_invalidation();
   test_meter_inherits_the_full_surface();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;

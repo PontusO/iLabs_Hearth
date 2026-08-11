@@ -39,16 +39,27 @@
  * readings and each push re-reports the fields dirty so subscriptions fire
  * per sample.
  *
- * MEASUREMENTS ARE NOT RE-PUSHED ON RECONCILE. Unlike the cabinet's level
- * labels (configuration the firmware does not persist), these are volatile
- * readings: re-pushing the cache after a link re-establishment would
- * report a stale sample as fresh. hearthOnReconciled() is therefore NOT
- * overridden; after a co-processor reboot the fabric-side fields are null
- * again until the sketch pushes its own next sample, and begin() after
- * reconcile leaves them null the same way. The energy accumulators live
- * host-side and also start over at 0 on a fresh boot of the HOST; a sketch
- * that needs lifetime totals across host reboots persists them itself
- * (e.g. via Preferences) and seeds the first addEnergyImported() call.
+ * MEASUREMENTS ARE NOT RE-PUSHED ON RECONCILE, BUT THE WIRE-PUSHED MEMORY
+ * IS CLEARED. Unlike the cabinet's level labels (configuration the
+ * firmware does not persist), these are volatile readings: re-pushing the
+ * cache after a link re-establishment would report a stale sample as
+ * fresh. hearthOnReconciled() therefore resends NOTHING; after a
+ * co-processor reboot the fabric-side fields are null again until the
+ * sketch pushes its own next sample, which is the honest state. What the
+ * override DOES do is clear the has-value flags, because the fabric's
+ * nulls have made the "already on the wire" memory stale: without that, a
+ * setter repeating its pre-reboot value (setFrequency is typically set
+ * once) would no-op forever against a fabric field that is null. So after
+ * a reconcile the host cache survives (the getters keep answering the
+ * last pushed sample) but the wire-pushed memory does not: the next
+ * setter call writes, even with an unchanged value, and re-arms the
+ * usual no-op guard. The energy accumulators are NOT touched either way:
+ * they are the host-side source of truth, the adders always push the
+ * cumulative total, and so the first add after the reboot (even of 0)
+ * re-seeds the fabric's counter by construction. The accumulators still
+ * start over at 0 on a fresh boot of the HOST; a sketch that needs
+ * lifetime totals across host reboots persists them itself (e.g. via
+ * Preferences) and seeds the first addEnergyImported() call.
  *
  * The energy adders ACCUMULATE LOCALLY AND PUSH THE TOTAL: the firmware
  * serves cumulative counters wrapped in timestamped measurement structs
@@ -150,6 +161,12 @@ protected:
   // to the cache (house discipline: a failed write must not update it).
   bool hearthSendPowerPairs(const uint8_t *fields, const int64_t *values, uint8_t count);
   bool hearthSendEnergyTotal(uint8_t field, uint64_t total);
+
+  // Hearth's own hook (MatterEndPoint.h), on every reconcile, not only the
+  // first: resends nothing (measurements are volatile readings), only
+  // clears the has-value flags so the next setter call reaches the wire
+  // again. See the header comment.
+  void hearthOnReconciled() override;
 
   bool started = false;
   Variant_t variantSel = FULL;

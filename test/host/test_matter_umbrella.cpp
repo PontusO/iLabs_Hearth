@@ -170,10 +170,12 @@ MatterOven umbrellaOven;
 /*
  * Task 7 (energy round A): the forty-fourth and forty-fifth device type
  * classes, the two AT+MTMEAS measurement-push types, no arduino-esp32
- * counterpart. Declared here only, same compile/link guard: dropping
- * either include from Hearth.h's list fails this build too (the meter's
- * header pulls the sensor's in transitively, so the sensor global is what
- * pins the sensor's own listing).
+ * counterpart. Declared here only. The compile/link guard is weaker here
+ * than for the siblings: dropping the METER's include from Hearth.h's
+ * list fails this build, but dropping the sensor's own line does not,
+ * because MatterElectricalMeter.h includes MatterElectricalSensor.h and
+ * the class still arrives transitively. The sensor global below pins
+ * that the class itself compiles and links, not that Hearth.h lists it.
  */
 MatterElectricalSensor umbrellaElectricalSensor;
 MatterElectricalMeter umbrellaElectricalMeter;

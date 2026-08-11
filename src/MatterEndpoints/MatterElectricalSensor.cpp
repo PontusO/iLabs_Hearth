@@ -248,6 +248,25 @@ uint64_t MatterElectricalSensor::getEnergyExported() {
 }
 
 /*
+ * Hearth's own reconcile hook (MatterEndPoint.h), on every reconcile, not
+ * only the first. Unlike the label/mode-list overrides in the sibling
+ * classes this resends NOTHING: measurements are volatile readings, and
+ * re-pushing the cache would report a stale sample as fresh. It exists
+ * because a reconcile means the co-processor rebooted (or first came up)
+ * and the fabric-side fields are null again, so the "already on the wire"
+ * memory is stale: cleared here, a setter repeating its pre-reboot value
+ * writes instead of no-opping forever against a null fabric field. The
+ * cache VALUES stay (the getters keep answering the last pushed sample),
+ * and the energy accumulators stay too: they are the host-side source of
+ * truth and the adders always push the cumulative total anyway, so the
+ * first add after the reboot re-seeds the fabric's counter by
+ * construction. Zero wire traffic here, deliberately.
+ */
+void MatterElectricalSensor::hearthOnReconciled() {
+  hasVoltage = hasActiveCurrent = hasActivePower = hasFrequency = false;
+}
+
+/*
  * S3.25: no +MTATTR URC ever reports these clusters (Instance-served, the
  * 0.6.0 rule), so there is nothing legitimate to cache here, and an
  * injected line naming cluster 144/145 anyway must NOT move the cache:
