@@ -53,11 +53,14 @@
 
 /*
  * Task 6 (RVC + Microwave batch): the wire grammar's tail widened again,
- * from Task C7's single optional field to up to four,
- * "+MTCMD:<seq>,<ep>,<cluster>,<cmd>[,<p1>[,<p2>[,<p3>[,<p4>]]]]" (the
+ * from Task C7's single optional field to up to four (the
  * RoboticVacuumCleaner's GoHome/SelectAreas and the Microwave Oven's
  * SetCookingParameters are the first consumers that need more than one
- * value at once). `count` is how many of the four tail positions the wire
+ * value at once). Energy round B widened it once more, to five,
+ * "+MTCMD:<seq>,<ep>,<cluster>,<cmd>[,<p1>[,<p2>[,<p3>[,<p4>[,<p5>]]]]]"
+ * (AT_MT_SPEC.md S3.17: the water heater's Boost is the first five-field
+ * consumer, duration + presence mask + up to three appended numeric
+ * optionals). `count` is how many of the five tail positions the wire
  * line actually reached, counting an empty one; `present[i]` is false only
  * where that position was empty (",,"), not where the line ended before it.
  * A four-field line where the wire always sends every position but leaves
@@ -67,10 +70,11 @@
  * at all leaves it both absent and, since the struct is zero-initialised by
  * hearthDispatchCmd() before parsing, value 0.
  */
+#define HEARTH_CMD_FIELDS_MAX 5
 struct HearthCmdFields {
   uint8_t count;
-  bool present[4];
-  uint32_t value[4];
+  bool present[HEARTH_CMD_FIELDS_MAX];
+  uint32_t value[HEARTH_CMD_FIELDS_MAX];
 };
 
 class MatterEndPoint {
@@ -271,6 +275,23 @@ public:
    * command_id pair this override does not recognise returns false.
    */
   virtual bool hearthOnForwardedCommandFields(uint32_t cluster_id, uint32_t command_id, const HearthCmdFields &fields);
+
+  /*
+   * Hearth's own addition (Task 6, energy round B; same precedent as
+   * hearthOnReconciled() above): called on every declared endpoint by
+   * HearthClass::hearthDrainDeferredWork() (Hearth.cpp) after any queued
+   * AT+MTCMDRESP verdicts have been sent, once the link's busy gate is
+   * released. It exists because a wire write from inside a +MTCMD dispatch
+   * is refused HEARTH_CMD_REENTRANT (HearthLink.h), so an endpoint type
+   * whose accepted command must be FOLLOWED by a wire push of its own (the
+   * water heater's BoostState push after an allowed Boost/CancelBoost,
+   * AT_MT_SPEC.md S3.17/S3.25) records the intent in the dispatch and
+   * performs the push here, after its verdict has gone out. Default no-op;
+   * an override that has nothing pending must also be a no-op, since this
+   * runs after every verdict drain, not only its own. Endpoint types call
+   * Hearth.hearthRequestDeferredWork() from their dispatch to arm a drain.
+   */
+  virtual void hearthOnDeferredWork();
 
 protected:
   uint16_t endpoint_id = 0;

@@ -268,12 +268,16 @@ static void test_trailing_junk_after_digits_drops_dispatch(void) {
 }
 
 /*
- * MINOR (folded into this round): a fifth or later tail field is not an
- * error, just ignored. The parse stops at four positions and the dispatch
- * proceeds normally on the first four, exactly as documented on
- * hearthDispatchCmd() in Hearth.cpp.
+ * MINOR (folded into the RVC + Microwave round, widened by energy round B):
+ * a tail field past the parse window is not an error, just ignored. The
+ * window is FIVE positions since energy round B ("+MTCMD:<seq>,<ep>,
+ * <cluster>,<cmd>[,<p1>[,<p2>[,<p3>[,<p4>[,<p5>]]]]]", AT_MT_SPEC.md
+ * S3.17: the water heater's Boost is the first five-field consumer,
+ * duration + mask + up to three appended numeric optionals), so a
+ * five-field line arrives whole and the truncation pin sits on the sixth
+ * position, exactly as documented on hearthDispatchCmd() in Hearth.cpp.
  */
-static void test_overlong_tail_truncates_at_four(void) {
+static void test_five_field_tail_parses_and_sixth_truncates(void) {
   MatterEndPoint::hearthClearDeclarations();
   MockStream s;
   FieldsProbe ep;
@@ -282,15 +286,24 @@ static void test_overlong_tail_truncates_at_four(void) {
   Hearth.begin(s);
 
   s.expect("AT+MTCMDRESP=9,1", "OK\r\n");
-  s.injectURC("+MTCMD:9,2,95,0,1,2,3,4,5");
+  s.injectURC("+MTCMD:9,2,148,0,1,2,3,4,5");
   Hearth.poll();
 
   check("dispatched exactly once", ep.calls == 1);
-  check("count stays 4", ep.seenFields.count == 4);
-  check("only the first four values are kept", ep.seenFields.value[0] == 1 && ep.seenFields.value[1] == 2 &&
-                                                    ep.seenFields.value[2] == 3 && ep.seenFields.value[3] == 4);
-  check("a fifth field does not block the reply", s.scriptDrained());
+  check("count is 5 (energy round B widened the tail)", ep.seenFields.count == 5);
+  check("all five values are kept", ep.seenFields.value[0] == 1 && ep.seenFields.value[1] == 2 && ep.seenFields.value[2] == 3 &&
+                                        ep.seenFields.value[3] == 4 && ep.seenFields.value[4] == 5);
+  check("a five-field line does not block the reply", s.scriptDrained());
   check("no unexpected commands", s.unexpected().empty());
+
+  s.expect("AT+MTCMDRESP=10,1", "OK\r\n");
+  s.injectURC("+MTCMD:10,2,148,0,1,2,3,4,5,6");
+  Hearth.poll();
+
+  check("a sixth field is truncated: count stays 5", ep.seenFields.count == 5);
+  check("only the first five values are kept", ep.seenFields.value[4] == 5);
+  check("a sixth field does not block the reply", s.scriptDrained());
+  check("no unexpected commands after the overlong line", s.unexpected().empty());
 }
 
 /*
@@ -403,7 +416,7 @@ int main(void) {
   test_garbage_interior_field_drops_dispatch();
   test_garbage_last_field_drops_dispatch();
   test_trailing_junk_after_digits_drops_dispatch();
-  test_overlong_tail_truncates_at_four();
+  test_five_field_tail_parses_and_sixth_truncates();
   test_garbage_command_field_drops_dispatch();
   test_command_digits_then_junk_drops_dispatch();
   test_empty_ep_field_is_malformed();

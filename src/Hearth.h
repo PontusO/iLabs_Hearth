@@ -125,6 +125,13 @@
  * endpoint header of its own. The meter header includes the sensor's (its
  * base class) itself; listing both below is belt-and-braces coverage, not
  * a cycle.
+ *
+ * Task 6 (energy round B) adds the forty-sixth and forty-seventh:
+ * MatterWaterHeater.h and MatterHeatPump.h, both Hearth originals and
+ * both direct MatterEndPoint children embedding the shared
+ * HearthMeasurementPush helper (never a thin subclass: the water heater
+ * carries three more surfaces on its one endpoint). Same umbrella
+ * reasoning as every class above; one-way includes only, no cycle.
  */
 #pragma once
 
@@ -178,6 +185,8 @@
 #include "MatterEndpoints/MatterOven.h"
 #include "MatterEndpoints/MatterElectricalSensor.h"
 #include "MatterEndpoints/MatterElectricalMeter.h"
+#include "MatterEndpoints/MatterWaterHeater.h"
+#include "MatterEndpoints/MatterHeatPump.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART
@@ -497,6 +506,17 @@ public:
    * e.g. an attribute value type the AT protocol cannot carry. */
   void hearthSetError(int code);
 
+  /*
+   * Arm a deferred-work drain (Task 6, energy round B). Called by an
+   * endpoint type from inside a +MTCMD dispatch, where a wire write of its
+   * own would be refused HEARTH_CMD_REENTRANT: once the queued
+   * AT+MTCMDRESP verdicts have been sent and the busy gate is released,
+   * hearthDrainDeferredWork() calls every declared endpoint's
+   * hearthOnDeferredWork() (MatterEndPoint.h) exactly once. The endpoint
+   * itself records WHAT is pending; this only records THAT something is.
+   */
+  void hearthRequestDeferredWork();
+
   /* The underlying transport, for callers that need it directly. */
   HearthLink &link() {
     return _link;
@@ -563,6 +583,23 @@ private:
   void hearthEnqueueCmdResp(uint32_t seq, bool verdict);
   void hearthDrainCmdRespQueue();
 
+  /*
+   * The verdict-then-push half of the same fix (Task 6, energy round B):
+   * an endpoint whose ACCEPTED command must be followed by a wire push of
+   * its own (the water heater's BoostState push, AT_MT_SPEC.md
+   * S3.17/S3.25) has exactly the same re-entrancy problem the verdict
+   * itself had, one step later. It arms this flag from its dispatch via
+   * hearthRequestDeferredWork() above; hearthDrainDeferredWork() -- called
+   * from hearthCommand() and poll() AFTER hearthDrainCmdRespQueue(), so
+   * the verdict always precedes the push on the wire -- clears the flag
+   * FIRST and then walks the declared registry calling each endpoint's
+   * hearthOnDeferredWork(). Clearing first is the re-entrancy guard: the
+   * endpoint's own wire write runs poll() at its top, which reaches this
+   * same drain and finds the flag already down. A busy link bails with the
+   * flag intact, the hearthDrainCmdRespQueue() discipline.
+   */
+  void hearthDrainDeferredWork();
+
   HearthLink _link;
   int _lastError;
   bool _warnedAboutRecommission;
@@ -574,6 +611,7 @@ private:
   hearthEventCB _linkEventCB;
   HearthPendingCmdResp _cmdRespQueue[kHearthCmdRespQueueDepth];
   uint8_t _cmdRespQueueCount;
+  bool _deferredWorkPending;
 };
 
 /*

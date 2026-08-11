@@ -839,6 +839,49 @@ measurements are deliberately NOT re-pushed on reconcile, since a stale
 sample re-reported as fresh would be a lie (the class headers carry the
 full reasoning).
 
+### The energy round B
+
+Two more energy classes (library 0.9.0, firmware 0.9.0), neither with an
+`arduino-esp32` counterpart, taking the total to forty-nine. Both are
+direct `MatterEndPoint` children embedding the round's extracted
+`HearthMeasurementPush` helper (the electrical push surface as a shared
+member, byte-identical semantics, pinned by the electrical suite passing
+untouched across the extraction):
+
+- `MatterWaterHeater` (`0x050F`): four surfaces on one endpoint.
+  `WaterHeaterManagement` state rides `AT+MTMEAS`'s `0x94` field table
+  (HeaterTypes, HeatDemand, BoostState, and at the `FULL` variant
+  TankVolume, EstimatedHeatRequired int64 mWh, TankPercentage); `Boost` and
+  `CancelBoost` arrive as adjudicated `+MTCMD` forwards, the wire's first
+  five-field tail, whose packed presence mask the library unpacks into
+  `BoostInfo` (the sketch never touches the encoding). The verdict answers
+  the controller, and on an accept the library itself pushes BoostState
+  right after the verdict, which is what makes the firmware derive the
+  `BoostStarted`/`BoostEnded` events; `endBoost()` is the sketch's own
+  timer path. `WaterHeaterMode` carries the ModeBase surface
+  (`setSupportedModes`, tag 0 = `kManual`, plus the cluster-qualified
+  `onChangeWaterHeaterMode`/`getCurrentWaterHeaterMode`), and the
+  Thermostat cluster (heating-only) carries `MatterThermostat`'s attribute
+  helpers, ember-served with `+MTATTR`-driven callbacks. The thermostat
+  cache seeds from the C6's own cluster defaults (heating setpoint 2000,
+  SystemMode Auto), which is what makes an unchanged-value first write a
+  true no-op instead of a swallowed one. `MINIMAL` (variant 1) is the
+  disclosed sub-conformant SDK-bare build: the tank trio and the whole
+  measurement surface refuse host-side (error 1, zero wire traffic).
+- `MatterHeatPump` (`0x0309`): the shared measurement surface plus
+  identity, nothing else, and that is the documented point: PowerSource
+  (wired) exists at composition with no host surface, and the composed
+  Thermostat device type the XML mandates is a disclosed gap matching the
+  SDK's own build (the class header carries the note, the variant-1
+  meter's precedent). ActivePower is signed, full-width int64: a heat
+  pump moving energy out reports negative milliwatts.
+
+The reconcile split is test-pinned in both directions: HeaterTypes,
+TankVolume and the mode list are configuration and re-pushed on every
+reconcile; HeatDemand, BoostState, TankPercentage, EstimatedHeatRequired
+and every electrical field follow the B229 volatile rule (wire-pushed
+memory cleared, values not re-sent).
+
 ## Examples
 
 `examples/` holds three tiers of sketches, each proving a different thing:
@@ -850,8 +893,8 @@ full reasoning).
   erase the proof, so this tier stays untouched.
 - **FullAPI references**, one per class under `examples/FullAPI/`
   (documented below, in its own subsection): a sketch that exercises the
-  complete public surface of exactly one `Matter*` endpoint class, forty-six
-  in total. Each opens with a banner comment listing every public member and
+  complete public surface of exactly one `Matter*` endpoint class,
+  forty-eight in total. Each opens with a banner comment listing every public member and
   where the sketch exercises it; the banner is a coverage checklist against
   the class header, not narrative.
 - **Scenario showcases**: `MatterDoorLockAdjudicated` and
@@ -983,7 +1026,7 @@ Full commands and output for the original three-blocker analysis are in
 ### FullAPI references (`examples/FullAPI/`)
 
 One sketch per concrete `Matter*` endpoint class this library implements,
-forty-six in total, folder name equal to sketch name. The two typed owned
+forty-eight in total, folder name equal to sketch name. The two typed owned
 children have no folder of their own: `MatterOvenCavity` is exercised
 inside `MatterOven`'s sketch and `MatterCookSurface` inside
 `MatterCooktopComposed` (the zero-surface `MatterCooktop` folder is

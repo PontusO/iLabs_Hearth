@@ -54,6 +54,8 @@ build/
 /test/host/test_cooksurface
 /test/host/test_attr64
 /test/host/test_electrical
+/test/host/test_waterheater
+/test/host/test_heatpump
 
 *.bin
 *.uf2
