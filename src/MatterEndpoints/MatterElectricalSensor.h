@@ -72,11 +72,20 @@
  * Neither cluster has commands, so there is no +MTCMD dispatch path: this
  * class overrides no command virtual and the base class's fail-closed
  * defaults stand (pinned by a probe subclass in test_electrical.cpp).
+ *
+ * SINCE ROUND B (design spec 4.1) the mechanics live in
+ * HearthMeasurementPush, a member helper shared with the other
+ * measurement-bearing endpoint classes: the cache, has-flags,
+ * accumulators and AT+MTMEAS emission moved there verbatim, and every
+ * method below delegates. This comment remains the behaviour contract;
+ * nothing observable changed (pinned by test_electrical.cpp passing
+ * untouched across the extraction).
  */
 #pragma once
 
 #include <stdint.h>
 #include "MatterEndPoint.h"
+#include "HearthMeasurementPush.h"
 
 class MatterElectricalSensor : public MatterEndPoint {
 public:
@@ -137,52 +146,22 @@ public:
   bool attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *val) override;
 
 protected:
-  // clang-format off
-  /* Wire constants (AT_MT_SPEC.md S3.25), field ids mirrored from the
-   * firmware's main/include/mt_matter.h MT_MEAS_F_* / MT_ENERGY_F_* table
-   * (read from that source, not transcribed from memory). The two field
-   * spaces overlap numerically; only the cluster id decides which applies. */
-  static const uint32_t kPowerMeasurementClusterId  = 0x0090;  // 144, ElectricalPowerMeasurement
-  static const uint32_t kEnergyMeasurementClusterId = 0x0091;  // 145, ElectricalEnergyMeasurement
-  static const uint8_t  kFieldVoltage        = 0;  // MT_MEAS_F_VOLTAGE, mV
-  static const uint8_t  kFieldActiveCurrent  = 1;  // MT_MEAS_F_ACTIVE_CURRENT, mA
-  static const uint8_t  kFieldActivePower    = 2;  // MT_MEAS_F_ACTIVE_POWER, mW
-  static const uint8_t  kFieldFrequency      = 3;  // MT_MEAS_F_FREQUENCY, mHz
-  static const uint8_t  kFieldEnergyImported = 0;  // MT_ENERGY_F_IMPORTED, mWh
-  static const uint8_t  kFieldEnergyExported = 1;  // MT_ENERGY_F_EXPORTED, mWh
-  // clang-format on
-
   // The meter subclass's begin() calls this with its own device type
   // constant, the MatterOperationalStateEndpoint trio's shape: the wire
   // contract past declaration is identical for both types (S3.25).
   bool hearthBeginElectrical(uint32_t deviceTypeId, Variant_t variant);
 
-  // wire-only AT+MTMEAS writes; the caller decides whether/what to commit
-  // to the cache (house discipline: a failed write must not update it).
-  bool hearthSendPowerPairs(const uint8_t *fields, const int64_t *values, uint8_t count);
-  bool hearthSendEnergyTotal(uint8_t field, uint64_t total);
-
   // Hearth's own hook (MatterEndPoint.h), on every reconcile, not only the
   // first: resends nothing (measurements are volatile readings), only
   // clears the has-value flags so the next setter call reaches the wire
-  // again. See the header comment.
+  // again. See the header comment. Delegates to meas.onReconciled().
   void hearthOnReconciled() override;
 
   bool started = false;
   Variant_t variantSel = FULL;
 
-  // last-pushed cache; the has-flags model the fabric's null-until-pushed
-  // state (see the header comment).
-  int64_t voltage = 0;
-  int64_t activeCurrent = 0;
-  int64_t activePower = 0;
-  int64_t frequency = 0;
-  bool hasVoltage = false;
-  bool hasActiveCurrent = false;
-  bool hasActivePower = false;
-  bool hasFrequency = false;
-
-  // host-side cumulative accumulators, the values the adders push.
-  uint64_t energyImported = 0;
-  uint64_t energyExported = 0;
+  // The extracted push surface (round B): wire constants, last-pushed
+  // cache, has-flags and energy accumulators all live inside. begin()
+  // resets it and sets its `enabled` gate from the variant (FULL only).
+  HearthMeasurementPush meas;
 };

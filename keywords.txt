@@ -139,6 +139,17 @@ MatterElectricalSensor	KEYWORD1
 MatterElectricalMeter	KEYWORD1
 Variant_t	KEYWORD1
 
+# Task 6 (energy round B): MatterWaterHeater (0x050F) and MatterHeatPump
+# (0x0309), both direct MatterEndPoint children embedding the shared
+# measurement-push helper, no arduino-esp32 counterpart. See README.md,
+# "Hearth originals". BoostInfo (MatterWaterHeater.h) is the unpacked
+# Boost command onBoost() carries, has-flags per optional (the library
+# unpacks the wire's presence mask). The water heater's Variant_t and
+# ThermostatMode_t names are already listed above.
+MatterWaterHeater	KEYWORD1
+MatterHeatPump	KEYWORD1
+BoostInfo	KEYWORD1
+
 # Event and callback types.
 hearthEvent_t	KEYWORD1
 hearthEventCB	KEYWORD1
@@ -596,6 +607,26 @@ getFrequency	KEYWORD2
 getEnergyImported	KEYWORD2
 getEnergyExported	KEYWORD2
 
+# Task 6 (energy round B): MatterWaterHeater and MatterHeatPump. Names
+# already listed above (begin, the whole measurement surface, the
+# thermostat helpers setMode/getMode/onChangeMode/setHeatingSetpoint/
+# getHeatingSetpoint/setLocalTemperature/getLocalTemperature/onChange*,
+# and setSupportedModes) are not repeated here. The WHM setters push the
+# 0x94 field table; onBoost/onCancelBoost adjudicate the forwarded
+# commands (an accept is followed by the library's own BoostState push);
+# endBoost is the sketch's own timer path; the ChangeToMode surface is
+# cluster-qualified (see MatterWaterHeater.h's naming note).
+setHeaterTypes	KEYWORD2
+setHeatDemand	KEYWORD2
+setTankVolume	KEYWORD2
+setEstimatedHeatRequired	KEYWORD2
+setTankPercentage	KEYWORD2
+onBoost	KEYWORD2
+onCancelBoost	KEYWORD2
+endBoost	KEYWORD2
+onChangeWaterHeaterMode	KEYWORD2
+getCurrentWaterHeaterMode	KEYWORD2
+
 # HearthColorUtil.h conversions, called out from MatterEnhancedColorLight's
 # getColorRGB()/setColorRGB(), and from examples/MatterEnhancedColorLight's
 # own temperature simulation (espCTToRgbColor/espCTColorToRgbColor).
@@ -807,6 +838,12 @@ LEVELS	LITERAL1
 # power measurement only, the current-clamp case).
 FULL	LITERAL1
 POWER_ONLY	LITERAL1
+
+# Variant_t (MatterWaterHeater.h, Task 6, energy round B): the 0x050F
+# variant byte (FULL = conformant composition with the electrical graft,
+# MINIMAL = the disclosed sub-conformant SDK-bare build). FULL is already
+# listed above.
+MINIMAL	LITERAL1
 
 # AirQuality_t (MatterAirQualitySensor.h, ten-type swoop C2), transcribed from
 # AirQualityEnum in the pinned esp-matter checkout.

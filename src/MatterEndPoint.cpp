@@ -355,6 +355,11 @@ void MatterEndPoint::hearthMarkReconciled() {
 /* Base default: no state to resend. See the header comment. */
 void MatterEndPoint::hearthOnReconciled() {}
 
+/* Base default: nothing pending. See the header comment (Task 6, energy
+ * round B): only an endpoint type whose accepted command must be followed
+ * by a wire push of its own overrides this. */
+void MatterEndPoint::hearthOnDeferredWork() {}
+
 /* Base default: deny (fail closed). See the header comment. Default
  * arguments live on the declaration (the header) only, per C++ rules; this
  * definition repeats the full widened parameter list without repeating the

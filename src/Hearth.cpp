@@ -20,7 +20,8 @@ HearthClass::HearthClass()
     _expectedRebootSeen(false),
     _expectedRebootArmedAt(0),
     _expectedRebootTimeoutMs(0),
-    _cmdRespQueueCount(0) {}
+    _cmdRespQueueCount(0),
+    _deferredWorkPending(false) {}
 
 void HearthClass::begin(Stream &serial, unsigned long baud) {
   (void)baud;  // see the header: a caller-supplied Stream has no begin() of its own to call with it;
@@ -186,6 +187,10 @@ void HearthClass::poll() {
    * hearthDrainCmdRespQueue()'s own comment for why this cannot happen
    * inside dispatchURC() itself. */
   hearthDrainCmdRespQueue();
+  /* Task 6 (energy round B): then any endpoint wire pushes the dispatch
+   * deferred behind its verdict, so the AT+MTCMDRESP always precedes the
+   * push on the wire. See hearthDrainDeferredWork()'s own comment. */
+  hearthDrainDeferredWork();
 }
 
 void HearthClass::hearthOnVerLine(const char *line, void *arg) {
@@ -245,6 +250,11 @@ int HearthClass::hearthCommand(const char *cmd, HearthLink::LineCb onLine, void 
    * lastError(). See hearthDrainCmdRespQueue()'s comment for the full
    * reasoning. */
   hearthDrainCmdRespQueue();
+  /* Task 6 (energy round B): and then any deferred endpoint pushes, same
+   * ordering reason as in poll(). Runs after _lastError was set from `rc`;
+   * the drain itself saves and restores _lastError (see its comment), so
+   * background pushes never clobber this caller's own outcome either. */
+  hearthDrainDeferredWork();
   return rc;
 }
 
@@ -510,9 +520,11 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
  *   +MTERR:1 for asking.
  *
  * Task 6 widening (RVC + Microwave batch): the tail widens again, from
- * Task C7's single optional field to up to four,
- * "[,<p1>[,<p2>[,<p3>[,<p4>]]]]" (HearthCmdFields, MatterEndPoint.h), and
- * any of those four positions may be empty ("," immediately followed by
+ * Task C7's single optional field to up to four, and energy round B widens
+ * it once more to five, "[,<p1>[,<p2>[,<p3>[,<p4>[,<p5>]]]]]"
+ * (HearthCmdFields, MatterEndPoint.h; AT_MT_SPEC.md S3.17: the water
+ * heater's Boost is the first five-field consumer). Any of those positions
+ * may be empty ("," immediately followed by
  * another "," or the end of line) rather than merely absent. The loop below
  * walks the tail one comma at a time: reaching a position at all sets
  * `count` past it regardless of whether it was empty, and only an empty
@@ -523,13 +535,13 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
  * both old-style and new-style endpoint types without needing to know which
  * one `target` actually is.
  *
- * A fifth or later tail field is silently ignored: the loop only ever
- * walks four positions (`i < 4`), so a line with more commas than that
- * still parses its first four fields normally and just never looks past
- * them. Nothing on the wire today sends more than four, and there is no
- * documented grammar for a fifth, so this is truncation, not validation --
- * it is not treated as malformed the way a bad *value* in one of the four
- * positions is (next paragraph).
+ * A tail field past the window is silently ignored: the loop only ever
+ * walks HEARTH_CMD_FIELDS_MAX positions, so a line with more commas than
+ * that still parses its leading fields normally and just never looks past
+ * them. Nothing on the wire today sends more than five, and there is no
+ * documented grammar for a sixth, so this is truncation, not validation --
+ * it is not treated as malformed the way a bad *value* in one of the
+ * parsed positions is (next paragraph).
  *
  * Review round 1 fix (Task 6, IMPORTANT): a non-empty field position must
  * consume at least one digit and land exactly on the next "," or the end
@@ -603,13 +615,13 @@ void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
 
   HearthCmdFields fields;
   fields.count = 0;
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < HEARTH_CMD_FIELDS_MAX; i++) {
     fields.present[i] = false;
     fields.value[i] = 0;
   }
   const char *p = end;
   int i = 0;
-  while (*p == ',' && i < 4) {
+  while (*p == ',' && i < HEARTH_CMD_FIELDS_MAX) {
     p++;  // consume the comma leading into position i
     if (*p == ',' || *p == '\0') {
       // empty position: present stays false, value stays 0, but it was
@@ -731,6 +743,47 @@ void HearthClass::hearthDrainCmdRespQueue() {
 void HearthClass::hearthDispatchCmdTimeout(const char *rest, HearthClass *self) {
   (void)rest;
   self->hearthRaiseEvent(HEARTH_CMD_TIMEOUT);
+}
+
+void HearthClass::hearthRequestDeferredWork() {
+  _deferredWorkPending = true;
+}
+
+/*
+ * The verdict-then-push drain (Task 6, energy round B). See the header's
+ * comment on the declaration for the shape; three details worth their own
+ * words here:
+ *
+ * - The flag is cleared BEFORE the registry walk, which is the re-entrancy
+ *   guard: an endpoint's hearthOnDeferredWork() sends its push through the
+ *   ordinary Hearth.hearthCommand() path, whose own top-of-call poll()
+ *   reaches this drain again and finds the flag already down. An endpoint
+ *   whose push could not be sent (a busy link is checked before the clear,
+ *   the hearthDrainCmdRespQueue() discipline) keeps its own pending state
+ *   and the flag with it, so the next poll() retries.
+ * - _lastError is saved and restored around the walk: the pushes are
+ *   background traffic exactly like the queued AT+MTCMDRESP replies, and
+ *   their outcome must never clobber what the CALLER's own command just
+ *   recorded (the same reasoning hearthDrainCmdRespQueue() applies by
+ *   using _link.command() directly).
+ * - Every declared endpoint is called, not a queue of requesters: the
+ *   endpoint's own pending state is the source of truth for WHAT to push,
+ *   and a default hearthOnDeferredWork() is a no-op, so the walk costs a
+ *   virtual call per declared endpoint and nothing else.
+ */
+void HearthClass::hearthDrainDeferredWork() {
+  if (!_deferredWorkPending || _link.busy()) {
+    return;
+  }
+  _deferredWorkPending = false;
+  int savedError = _lastError;
+  for (uint8_t i = 0; i < MatterEndPoint::hearthDeclaredCount(); i++) {
+    MatterEndPoint *ep = MatterEndPoint::hearthDeclaredAt(i);
+    if (ep != nullptr) {
+      ep->hearthOnDeferredWork();
+    }
+  }
+  _lastError = savedError;
 }
 
 /*

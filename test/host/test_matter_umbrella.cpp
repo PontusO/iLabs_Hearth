@@ -180,6 +180,16 @@ MatterOven umbrellaOven;
 MatterElectricalSensor umbrellaElectricalSensor;
 MatterElectricalMeter umbrellaElectricalMeter;
 
+/*
+ * Task 6 (energy round B): the forty-sixth and forty-seventh device type
+ * classes, both Hearth originals and both direct MatterEndPoint children
+ * embedding the shared HearthMeasurementPush helper (no transitive-include
+ * weakening here: neither header includes the other, so dropping EITHER
+ * line from Hearth.h's list fails this build).
+ */
+MatterWaterHeater umbrellaWaterHeater;
+MatterHeatPump umbrellaHeatPump;
+
 static int g_pass = 0, g_fail = 0;
 static void check(const char *name, bool cond) {
   printf("  [%s] %s\n", cond ? "PASS" : "FAIL", name);
