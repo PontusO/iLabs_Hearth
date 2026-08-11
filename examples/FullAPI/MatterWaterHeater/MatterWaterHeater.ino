@@ -85,7 +85,7 @@
  *   chip-tool waterheatermanagement read-event boost-started <node> <ep>
  *   chip-tool waterheatermanagement read-event boost-ended <node> <ep>
  *   chip-tool waterheatermanagement boost '{"duration": 60, "oneShot": true, "targetPercentage": 80}' <node> <ep>
- *   chip-tool waterheatermanagement cancel-boost '{}' <node> <ep>
+ *   chip-tool waterheatermanagement cancel-boost <node> <ep>
  *   chip-tool waterheatermode read supported-modes <node> <ep>
  *   chip-tool waterheatermode change-to-mode 2 <node> <ep>
  *   chip-tool thermostat read local-temperature <node> <ep>
