@@ -801,6 +801,44 @@ identical.
   zero-surface `MatterCooktop` stays byte-identical to 0.6.0, wire and
   API both.
 
+### The energy round A
+
+Two measurement-push classes (library 0.8.0, firmware 0.8.0), neither with
+an `arduino-esp32` counterpart, taking the library's total public `Matter*`
+endpoint class count to forty-seven. Both push electrical readings up to
+the fabric over `AT+MTMEAS` (`iLabs_AT_Hearth`'s `docs/AT_MT_SPEC.md`
+S3.25), riding the 64-bit value pipeline this round added: every value is
+full-width `int64_t`/`uint64_t` end to end, host cache to wire grammar.
+
+- `MatterElectricalSensor` (`0x0510`): `ElectricalPowerMeasurement`
+  (voltage mV, active current mA, active power mW, frequency mHz) plus, at
+  the `FULL` variant, `ElectricalEnergyMeasurement` (cumulative
+  imported/exported counters, mWh). `POWER_ONLY` (variant 1) builds power
+  measurement only, the current-clamp case, and is fully conformant on the
+  sensor. Individual setters push one field per wire line;
+  `pushMeasurements(mv, ma, mw)` batches the three power readings into ONE
+  line, the intended per-sample path. `addEnergyImported()`/
+  `addEnergyExported()` accumulate host-side and push the new cumulative
+  total; the firmware timestamps the measurement period and emits a
+  `CumulativeEnergyMeasured` event per push. On `POWER_ONLY` the energy
+  adders are refused host-side (error 1, zero wire traffic).
+- `MatterElectricalMeter` (`0x0514`): a thin subclass inheriting the
+  sensor's entire surface; on the wire the two differ only in device type
+  id and the sensor's `PowerTopology` cluster, which has no host surface.
+  One conformance note: the meter's device type XML marks BOTH measurement
+  clusters mandatory, so a `POWER_ONLY` meter is
+  permissive-beyond-conformance (accepted for variant scheme symmetry);
+  the strictly conformant power-only declaration is the `POWER_ONLY`
+  sensor.
+
+Every attribute both classes serve is Instance-served on the C6 (the
+0.6.0 rule at full strength): no `AT+MTATTR` path, no `+MTATTR` URC, ever.
+Getters read the host-side last-pushed cache, which updates only on a
+successful push; the fabric-side fields are null until first pushed, and
+measurements are deliberately NOT re-pushed on reconcile, since a stale
+sample re-reported as fresh would be a lie (the class headers carry the
+full reasoning).
+
 ## Examples
 
 `examples/` holds three tiers of sketches, each proving a different thing:
@@ -812,7 +850,7 @@ identical.
   erase the proof, so this tier stays untouched.
 - **FullAPI references**, one per class under `examples/FullAPI/`
   (documented below, in its own subsection): a sketch that exercises the
-  complete public surface of exactly one `Matter*` endpoint class, forty-one
+  complete public surface of exactly one `Matter*` endpoint class, forty-six
   in total. Each opens with a banner comment listing every public member and
   where the sketch exercises it; the banner is a coverage checklist against
   the class header, not narrative.
@@ -945,7 +983,7 @@ Full commands and output for the original three-blocker analysis are in
 ### FullAPI references (`examples/FullAPI/`)
 
 One sketch per concrete `Matter*` endpoint class this library implements,
-forty-four in total, folder name equal to sketch name. The two typed owned
+forty-six in total, folder name equal to sketch name. The two typed owned
 children have no folder of their own: `MatterOvenCavity` is exercised
 inside `MatterOven`'s sketch and `MatterCookSurface` inside
 `MatterCooktopComposed` (the zero-surface `MatterCooktop` folder is
