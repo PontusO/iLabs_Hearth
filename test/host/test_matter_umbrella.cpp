@@ -139,8 +139,8 @@ MatterLaundryDryer umbrellaLaundryDryer;
 MatterRoboticVacuum umbrellaRoboticVacuum;
 
 /*
- * Task 8 (RVC + Microwave batch, last library task): the forty-first and
- * last device type, no arduino-esp32 counterpart, same reasoning as every
+ * Task 8 (RVC + Microwave batch, last library task): the forty-first
+ * device type, no arduino-esp32 counterpart, same reasoning as every
  * Hearth-original class above. It subclasses MatterOperationalStateEndpoint
  * (same as the trio above), so that header is still not included directly
  * by Hearth.h and not declared here either. Declared here only, same
@@ -148,6 +148,24 @@ MatterRoboticVacuum umbrellaRoboticVacuum;
  * build too.
  */
 MatterMicrowaveOven umbrellaMicrowaveOven;
+
+/*
+ * Task 8 (composed-appliance round): the forty-second device type, the
+ * first composed appliance (owned cabinets under a 0x0070 parent), no
+ * arduino-esp32 counterpart. Declared here only, same compile/link guard:
+ * dropping its include from Hearth.h's list fails this build too.
+ */
+MatterRefrigerator umbrellaRefrigerator;
+
+/*
+ * Task 9 (composed-appliance round): the forty-third device type, the
+ * second composed appliance (owned MatterOvenCavity children under a
+ * 0x007B bare parent; the cavity's header rides in transitively through
+ * MatterOven.h, the same reasoning as the trio's shared core above), no
+ * arduino-esp32 counterpart. Declared here only, same compile/link guard:
+ * dropping its include from Hearth.h's list fails this build too.
+ */
+MatterOven umbrellaOven;
 
 static int g_pass = 0, g_fail = 0;
 static void check(const char *name, bool cond) {

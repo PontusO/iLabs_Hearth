@@ -77,12 +77,45 @@
  * `MatterRoboticVacuum vacuum;` must work with no endpoint header of its
  * own.
  *
- * Task 8 (RVC + Microwave batch, last library task) adds the forty-first
- * and last: MatterMicrowaveOven.h. Same reasoning again, same "Hearth
- * originals" section. It includes MatterEndpoints/
- * MatterOperationalStateEndpoint.h itself (it subclasses that shared core,
- * the same way the OperationalState trio's three headers do), so that
- * header is still not listed separately here.
+ * Task 8 (RVC + Microwave batch, last library task) adds the forty-first:
+ * MatterMicrowaveOven.h. Same reasoning again, same "Hearth originals"
+ * section. It includes MatterEndpoints/MatterOperationalStateEndpoint.h
+ * itself (it subclasses that shared core, the same way the
+ * OperationalState trio's three headers do), so that header is still not
+ * listed separately here.
+ *
+ * Task 8 (composed-appliance round) adds the forty-second:
+ * MatterRefrigerator.h, the first composed appliance (a 0x0070 parent
+ * owning Temperature Controlled Cabinet children over Task 7's
+ * parent-aware declaration). No arduino-esp32 counterpart, same "Hearth
+ * originals" reasoning as every class above: a sketch's bare `#include
+ * <Matter.h>` plus a file-scope `MatterRefrigerator fridge;` must work
+ * with no endpoint header of its own. It includes
+ * MatterEndpoints/MatterTemperatureControlledCabinet.h itself (its owned
+ * cabinets are members of that class), which this list also carries
+ * directly, as it always has: both routes are one-way includes, no cycle.
+ *
+ * Task 9 (composed-appliance round) adds the forty-third: MatterOven.h,
+ * the second composed appliance (a 0x007B bare parent owning
+ * MatterOvenCavity children, this library's first TYPED owned child
+ * class). No arduino-esp32 counterpart, same "Hearth originals" reasoning:
+ * a sketch's bare `#include <Matter.h>` plus a file-scope `MatterOven
+ * oven;` must work with no endpoint header of its own. MatterOven.h
+ * includes MatterEndpoints/MatterOvenCavity.h itself (its owned cavities
+ * are members of that class), so the cavity header is not listed
+ * separately here, the same transitive-coverage reasoning as the
+ * OperationalState trio's shared core; MatterOvenCavity.h in turn includes
+ * MatterTemperatureControlledCabinet.h (its base class), which this list
+ * also carries directly. All routes are one-way includes, no cycle.
+ *
+ * Task 10 (composed-appliance round) adds the forty-fourth and last of the
+ * round: MatterCookSurface.h, the owned child of the now-composed
+ * MatterCooktop (0x0077 under 0x0078, the first parent-mandatory device
+ * type). It is NOT listed below: MatterCooktop.h, already in this list,
+ * includes it itself (its owned surfaces are members of that class), the
+ * same transitive-coverage reasoning as MatterOven.h and its cavity above.
+ * One-way includes only, no cycle: MatterCookSurface.h includes the
+ * cabinet base header, never MatterCooktop.h.
  */
 #pragma once
 
@@ -132,6 +165,8 @@
 #include "MatterEndpoints/MatterLaundryDryer.h"
 #include "MatterEndpoints/MatterRoboticVacuum.h"
 #include "MatterEndpoints/MatterMicrowaveOven.h"
+#include "MatterEndpoints/MatterRefrigerator.h"
+#include "MatterEndpoints/MatterOven.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART

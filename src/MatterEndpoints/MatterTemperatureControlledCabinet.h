@@ -112,6 +112,35 @@
  *    specifically is not merely cosmetic: an unescaped '"' inside a label
  *    would corrupt the AT+MTTEMPLEVELS line's own field boundary at the
  *    firmware parser rather than coming back as a clean rejection.
+ *
+ * Composed-appliance round, Task 8: a cabinet can now be OWNED by a
+ * MatterRefrigerator (addCabinet()), which changes two things and nothing
+ * else:
+ *
+ * - An owned cabinet's begin() declares NOTHING: the parent already declared
+ *   it, with the parent's own composition index riding on the AT+MTEP line
+ *   (AT_MT_SPEC.md S3.9's third field). A hearthDeclare() from the cabinet's
+ *   own begin() would update its registry entry in place and silently wipe
+ *   that parent index back to HEARTH_NO_PARENT (the in-place-update
+ *   semantics test_composition_parent.cpp pins), so the owned path must not
+ *   go anywhere near the registry. begin() still validates its arguments,
+ *   still refuses a flavour that does not match what addCabinet() declared
+ *   (the declared variant is the wire truth; a mismatched begin() would
+ *   cache state for a cluster shape the endpoint does not have), and still
+ *   caches the sketch's values for the reconcile push, exactly as before.
+ * - An owned cabinet gains the fridge-cabinet modes API below
+ *   (setSupportedModes()/onChangeMode()/getCurrentMode()):
+ *   RefrigeratorAndTemperatureControlledCabinetMode (0x0052) is a
+ *   conditional cluster the firmware derives from the parent (S3.9's 0x0071
+ *   note: Cooler conformance under a Refrigerator), so the API refuses on
+ *   an unowned cabinet without touching the wire: there is no such cluster
+ *   on a standalone cabinet endpoint for it to reach. Same S3.20.1 grammar,
+ *   caching and adjudication discipline as MatterRoboticVacuum's mode
+ *   setters, including the 0.6.0 CurrentMode rule: the cluster's
+ *   CurrentMode is Instance-served, never raises a +MTATTR URC, so
+ *   getCurrentMode() updates only when onChangeMode() allows a forwarded
+ *   ChangeToMode (and B196 means a same-mode request never even reaches
+ *   this host).
  */
 #pragma once
 
@@ -178,6 +207,31 @@ public:
   // like the generated defaults it replaces.
   bool setSupportedTemperatureLevelLabels(const char *const *labels, uint16_t count);
 
+  // Fridge-cabinet modes API (Task 8, composed-appliance round): valid ONLY
+  // on a cabinet owned by a MatterRefrigerator (see the header comment).
+  // Replaces RefrigeratorAndTemperatureControlledCabinetMode's (0x0052)
+  // SupportedModes list on THIS cabinet's own endpoint (AT_MT_SPEC.md
+  // S3.20.1): 1..8 mode/tag/label triples, each mode 0..255 unique within
+  // the call, each tag a bare u16 (0 = the cluster's conformance default,
+  // kAuto on every mode for this cluster), each label 1..32 bytes of
+  // printable ASCII with no '"'. Re-sent automatically on every later
+  // reconcile. Refused without wire traffic on an unowned cabinet.
+  bool setSupportedModes(const uint8_t *modes, const uint16_t *tags, const char *const *labels, uint8_t count);
+  // register the host's verdict for a controller-invoked ChangeToMode on
+  // this cabinet's own 0x0052 cluster (S3.17/S3.20.1); the callback's
+  // argument is the requested mode. No callback registered denies by
+  // default (fail closed). Consulted only when owned; an unowned cabinet
+  // denies through the base class default without ever asking.
+  void onChangeMode(std::function<bool(uint8_t)> cb);
+  // cached CurrentMode, the 0.6.0 rule: never a wire read, updated only
+  // when onChangeMode() allows a forwarded ChangeToMode.
+  uint8_t getCurrentMode();
+
+  // Task 8: adjudicates ChangeToMode on this cabinet's own 0x0052 cluster
+  // when owned by a refrigerator; everything else defers to the base class
+  // default (fail closed), including the owned-only guard.
+  bool hearthOnForwardedCommandFields(uint32_t cluster_id, uint32_t command_id, const HearthCmdFields &fields) override;
+
   // this function is called by Matter internal event processor. It could be overwritten by the application, if necessary.
   bool attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id, esp_matter_attr_val_t *val);
 
@@ -225,6 +279,46 @@ protected:
   // TemperatureNumber mode, pushes the four cached min/max/step/setpoint
   // values directly to the wire (fix round 2's bench bug); in
   // TemperatureLevel mode, resends labels then SelectedTemperatureLevel, as
-  // before. See deviation 2.
+  // before (see deviation 2). Task 8: an owned cabinet additionally resends
+  // its cached 0x0052 mode list afterwards, which the firmware does not
+  // persist across a reboot (S3.20.1), the same B120 shape as
+  // MatterRoboticVacuum's own hook.
   void hearthOnReconciled() override;
+
+  /*
+   * Task 8 ownership state, set only by MatterRefrigerator (a friend, so
+   * these need no public mutators a sketch could misuse):
+   * - hearthOwnedByFridge: addCabinet() marks the cabinet owned; begin()
+   *   then skips self-declaration and the modes API unlocks.
+   * - hearthOwnedInert: the reference addCabinet() returns when it must
+   *   refuse (capacity exhausted, or called after the fridge's begin()).
+   *   Everything on an inert cabinet fails: it exists so addCabinet() can
+   *   keep its reference-returning signature without handing back an alias
+   *   of a real cabinet whose begin() would then succeed.
+   * - hearthOwnedLevels: the flavour addCabinet() declared (false =
+   *   TemperatureNumber, true = TemperatureLevel), which begin() checks its
+   *   own overload against: the declared variant is the wire truth.
+   */
+  bool hearthOwnedByFridge = false;
+  bool hearthOwnedInert = false;
+  bool hearthOwnedLevels = false;
+
+  // clang-format off
+  static const uint8_t kMaxFridgeModes        = 8;  // AT_MT_SPEC.md S3.20.1: 1..8 triples
+  static const uint8_t kMaxFridgeModeLabelLen = 32; // S3.20.1: 1..32 printable ASCII bytes
+  // clang-format on
+
+  uint8_t fridgeModes[kMaxFridgeModes];
+  uint16_t fridgeTags[kMaxFridgeModes];
+  char fridgeModeLabels[kMaxFridgeModes][kMaxFridgeModeLabelLen + 1];  // +1 for the terminating NUL
+  uint8_t fridgeModesCount = 0;
+  uint8_t currentFridgeMode = 0;
+  std::function<bool(uint8_t)> _onChangeModeCB = nullptr;
+
+  // builds and sends "AT+MTMODES=<ep>,82,<mode1>,<tag1>,\"<label1>\",..."
+  // for exactly the triples given; wire-only, no cache update (house
+  // discipline: the caller decides whether/what to commit afterwards).
+  bool hearthSendFridgeModes(const uint8_t *modes, const uint16_t *tags, const char *const *labels, uint8_t count);
+
+  friend class MatterRefrigerator;
 };

@@ -734,6 +734,73 @@ Hearth originals.
   documents for a different pair of attributes. A sketch reads `CookTime`/
   `PowerSetting` back only through a commissioned controller.
 
+### The composed appliance round
+
+Three composing appliances (library 0.7.0, firmware 0.7.0): a parent
+endpoint that OWNS child endpoints, declared with the parent's own
+registry index riding the `AT+MTEP` grammar's third field
+(`AT+MTEP=<id>,<variant>,<parent_idx>`), so the firmware composes the
+children into the parent's Descriptor `PartsList` and derives their
+conditional cluster sets from the pairing. This adds four public classes
+(`MatterRefrigerator`, `MatterOven`, `MatterOvenCavity`,
+`MatterCookSurface`) and composes the existing `MatterCooktop`, taking the
+library's total public `Matter*` endpoint class count to forty-five. The
+registry capacity (`HEARTH_MAX_ENDPOINTS`) rises 16 to 24 alongside the
+firmware's own cap, since one composed appliance can now occupy up to five
+endpoints.
+
+All three owners share one pattern. `add*()` (pre-begin only) hands back a
+reference to a child the appliance owns; the owner's `begin()` declares
+the parent first, then every added child with the flavour as the variant
+byte and `parent_idx` pointing at itself; the owned child's own `begin()`
+declares NOTHING (the parent's declaration is authoritative, parent index
+and all) and only validates its flavour and caches its temperature
+configuration for the reconcile push. Past capacity, or after the owner's
+`begin()`, `add*()` returns an inert reject child whose every call fails,
+so the mistake surfaces at that child's `begin()` instead of as a silent
+extra endpoint. A changed parent triggers a composition rebuild exactly
+the way a changed variant does: it is part of what makes two compositions
+identical.
+
+- `MatterRefrigerator` (`0x0070`): `addCabinet(flavour)` hands back up to
+  four plain `MatterTemperatureControlledCabinet` children (`NUMBER` =
+  TemperatureNumber, `LEVELS` = TemperatureLevel, the `0x0071` variant
+  byte). The parent carries `RefrigeratorAndTemperatureControlledCabinetMode`
+  (`0x52`) and `RefrigeratorAlarm`: `setSupportedModes()` (cluster-aware
+  `AT+MTMODES` triples), `onChangeMode()`/`getCurrentMode()` (the 0.6.0
+  Instance-served rule), and `setDoorOpenAlarm()`/`setAlarmState()` over
+  the cluster-aware `AT+MTALARM`, which is what makes the cluster's
+  `Notify` event actually fire. A refrigerator-owned cabinet additionally
+  gains the same three mode members on its own `0x52` cluster, refused
+  without wire traffic on a standalone cabinet (the cluster only exists
+  when the firmware derives it from the parent).
+- `MatterOven` (`0x007B`) with `MatterOvenCavity`, the first TYPED owned
+  child: the oven parent is bare by design (Descriptor plus Identify), and
+  `addCavity(flavour)` hands back a cavity whose compile-time surface is
+  exactly the legal cluster set the composition derives: the whole
+  inherited cabinet temperature API, `OvenMode` (`0x49`,
+  `setSupportedModes()` with tag `0` = kBake, `onChangeMode()`/
+  `getCurrentMode()`) and `OvenCavityOperationalState` (`0x48`):
+  `onStop()`/`onStart()` verdicts and `setOperationalState()` with plain
+  `{0,1,2}` enforced host-side. There are deliberately NO
+  `onPause`/`onResume` members: the cluster marks both commands
+  disallowConform, the firmware never forwards them, and the typed
+  reference means a sketch that tries does not compile.
+- `MatterCooktop` (`0x0078`), composed, with `MatterCookSurface`
+  (`0x0077`), the second typed owned child and the first device type the
+  firmware only accepts WITH a parent: `addSurface(flavour)` hands back a
+  cabinet-shaped surface (same temperature machinery, own endpoint) whose
+  `OnOff` cluster carries the OffOnly feature. A controller can switch a
+  surface off but never on (`Off` is the entire accepted command list), so
+  the remote side arrives as a plain `+MTATTR` URC that fires
+  `onOffChange(std::function<void(bool)>)`, per OffOnly always with
+  `false`, and turning a burner ON is always the sketch's own act:
+  `setOnOff(bool)`/`getOnOff()`, both directions, an ordinary reported
+  `AT+MTATTR` write. That is the deliberate asymmetry against the parent
+  class, which keeps its structural no-path-to-true guarantee: a
+  zero-surface `MatterCooktop` stays byte-identical to 0.6.0, wire and
+  API both.
+
 ## Examples
 
 `examples/` holds three tiers of sketches, each proving a different thing:
@@ -878,7 +945,11 @@ Full commands and output for the original three-blocker analysis are in
 ### FullAPI references (`examples/FullAPI/`)
 
 One sketch per concrete `Matter*` endpoint class this library implements,
-forty-one in total, folder name equal to sketch name. Where the tiers
+forty-four in total, folder name equal to sketch name. The two typed owned
+children have no folder of their own: `MatterOvenCavity` is exercised
+inside `MatterOven`'s sketch and `MatterCookSurface` inside
+`MatterCooktopComposed` (the zero-surface `MatterCooktop` folder is
+unchanged), since an owned child only exists through its owner. Where the tiers
 above prove "an unmodified upstream sketch builds" and "several classes
 compose into something demo-able", this tier proves "every public member of
 this one class actually works", one class at a time.

@@ -48,6 +48,10 @@ build/
 /test/host/test_cmdfields
 /test/host/test_roboticvacuum
 /test/host/test_microwaveoven
+/test/host/test_composition_parent
+/test/host/test_refrigerator
+/test/host/test_oven
+/test/host/test_cooksurface
 
 *.bin
 *.uf2

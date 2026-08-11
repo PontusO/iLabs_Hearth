@@ -4,7 +4,7 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer test_cmdfields test_roboticvacuum test_microwaveoven
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer test_cmdfields test_roboticvacuum test_microwaveoven test_composition_parent test_refrigerator test_oven test_cooksurface
 
 all: $(TESTS)
 
@@ -65,7 +65,7 @@ test_measuresensors: test_measuresensors.cpp ArduinoShim.cpp $(SRC) ../../src/He
 # include. The OperationalState trio (MatterLaundryWasher, MatterDishwasher,
 # MatterLaundryDryer) additionally needs MatterOperationalStateEndpoint.cpp,
 # their shared implementation core, linked once.
-test_matter_umbrella: test_matter_umbrella.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp ../../src/MatterEndpoints/MatterOnOffPlugin.cpp ../../src/MatterEndpoints/MatterDimmablePlugin.cpp ../../src/MatterEndpoints/MatterContactSensor.cpp ../../src/MatterEndpoints/MatterRainSensor.cpp ../../src/MatterEndpoints/MatterWaterFreezeDetector.cpp ../../src/MatterEndpoints/MatterWaterLeakDetector.cpp ../../src/MatterEndpoints/MatterHumiditySensor.cpp ../../src/MatterEndpoints/MatterPressureSensor.cpp ../../src/MatterEndpoints/MatterOccupancySensor.cpp ../../src/MatterEndpoints/MatterFan.cpp ../../src/MatterEndpoints/MatterWindowCovering.cpp ../../src/MatterEndpoints/MatterThermostat.cpp ../../src/MatterEndpoints/MatterEnhancedColorLight.cpp ../../src/MatterEndpoints/MatterGenericSwitch.cpp ../../src/MatterEndpoints/MatterColorLight.cpp ../../src/MatterEndpoints/MatterTemperatureControlledCabinet.cpp ../../src/MatterEndpoints/MatterDoorLock.cpp ../../src/MatterEndpoints/MatterLightSensor.cpp ../../src/MatterEndpoints/MatterFlowSensor.cpp ../../src/MatterEndpoints/MatterAirQualitySensor.cpp ../../src/MatterEndpoints/MatterMountedOnOffControl.cpp ../../src/MatterEndpoints/MatterMountedDimmableLoadControl.cpp ../../src/MatterEndpoints/MatterAirPurifier.cpp ../../src/MatterEndpoints/MatterExtractorHood.cpp ../../src/MatterEndpoints/MatterCooktop.cpp ../../src/MatterEndpoints/MatterRoomAirConditioner.cpp ../../src/MatterEndpoints/MatterPump.cpp ../../src/MatterEndpoints/MatterWaterValve.cpp ../../src/MatterEndpoints/MatterModeSelect.cpp ../../src/MatterEndpoints/MatterChime.cpp ../../src/MatterEndpoints/MatterSmokeCOAlarm.cpp ../../src/MatterEndpoints/MatterPowerSource.cpp ../../src/MatterEndpoints/MatterOperationalStateEndpoint.cpp ../../src/MatterEndpoints/MatterLaundryWasher.cpp ../../src/MatterEndpoints/MatterDishwasher.cpp ../../src/MatterEndpoints/MatterLaundryDryer.cpp ../../src/MatterEndpoints/MatterRoboticVacuum.cpp ../../src/MatterEndpoints/MatterMicrowaveOven.cpp
+test_matter_umbrella: test_matter_umbrella.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOnOffLight.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp ../../src/MatterEndpoints/MatterColorTemperatureLight.cpp ../../src/MatterEndpoints/MatterTemperatureSensor.cpp ../../src/MatterEndpoints/MatterOnOffPlugin.cpp ../../src/MatterEndpoints/MatterDimmablePlugin.cpp ../../src/MatterEndpoints/MatterContactSensor.cpp ../../src/MatterEndpoints/MatterRainSensor.cpp ../../src/MatterEndpoints/MatterWaterFreezeDetector.cpp ../../src/MatterEndpoints/MatterWaterLeakDetector.cpp ../../src/MatterEndpoints/MatterHumiditySensor.cpp ../../src/MatterEndpoints/MatterPressureSensor.cpp ../../src/MatterEndpoints/MatterOccupancySensor.cpp ../../src/MatterEndpoints/MatterFan.cpp ../../src/MatterEndpoints/MatterWindowCovering.cpp ../../src/MatterEndpoints/MatterThermostat.cpp ../../src/MatterEndpoints/MatterEnhancedColorLight.cpp ../../src/MatterEndpoints/MatterGenericSwitch.cpp ../../src/MatterEndpoints/MatterColorLight.cpp ../../src/MatterEndpoints/MatterTemperatureControlledCabinet.cpp ../../src/MatterEndpoints/MatterDoorLock.cpp ../../src/MatterEndpoints/MatterLightSensor.cpp ../../src/MatterEndpoints/MatterFlowSensor.cpp ../../src/MatterEndpoints/MatterAirQualitySensor.cpp ../../src/MatterEndpoints/MatterMountedOnOffControl.cpp ../../src/MatterEndpoints/MatterMountedDimmableLoadControl.cpp ../../src/MatterEndpoints/MatterAirPurifier.cpp ../../src/MatterEndpoints/MatterExtractorHood.cpp ../../src/MatterEndpoints/MatterCookSurface.cpp ../../src/MatterEndpoints/MatterCooktop.cpp ../../src/MatterEndpoints/MatterRoomAirConditioner.cpp ../../src/MatterEndpoints/MatterPump.cpp ../../src/MatterEndpoints/MatterWaterValve.cpp ../../src/MatterEndpoints/MatterModeSelect.cpp ../../src/MatterEndpoints/MatterChime.cpp ../../src/MatterEndpoints/MatterSmokeCOAlarm.cpp ../../src/MatterEndpoints/MatterPowerSource.cpp ../../src/MatterEndpoints/MatterOperationalStateEndpoint.cpp ../../src/MatterEndpoints/MatterLaundryWasher.cpp ../../src/MatterEndpoints/MatterDishwasher.cpp ../../src/MatterEndpoints/MatterLaundryDryer.cpp ../../src/MatterEndpoints/MatterRoboticVacuum.cpp ../../src/MatterEndpoints/MatterMicrowaveOven.cpp ../../src/MatterEndpoints/MatterRefrigerator.cpp ../../src/MatterEndpoints/MatterOvenCavity.cpp ../../src/MatterEndpoints/MatterOven.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 # Regression test for the final-review MINOR 1 fix: the Matter and Hearth
@@ -143,7 +143,10 @@ test_airpurifier: test_airpurifier.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.c
 test_extractorhood: test_extractorhood.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterExtractorHood.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
-test_cooktop: test_cooktop.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterCooktop.cpp
+# Task 10: MatterCooktop owns MatterCookSurface children now (the surface
+# subclasses the cabinet), so this recipe links both of their .cpps too even
+# though the test itself only drives the 0.6.0 zero-surface API.
+test_cooktop: test_cooktop.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterTemperatureControlledCabinet.cpp ../../src/MatterEndpoints/MatterCookSurface.cpp ../../src/MatterEndpoints/MatterCooktop.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 # C4: the two classes with real surface design, an OnOff leg plus a second
@@ -207,6 +210,35 @@ test_roboticvacuum: test_roboticvacuum.cpp ArduinoShim.cpp $(SRC) ../../src/Hear
 # OperationalState trio uses), so its .cpp is linked too, the same pattern
 # test_laundrywasher/test_dishwasher/test_laundrydryer establish.
 test_microwaveoven: test_microwaveoven.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterOperationalStateEndpoint.cpp ../../src/MatterEndpoints/MatterMicrowaveOven.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+# Task 7 (composed-appliance round): parent-aware declaration and reconcile.
+# Uses only the generic TestEndPoint, so no MatterEndpoints/*.cpp is linked,
+# the same shape as test_cmdfields.
+test_composition_parent: test_composition_parent.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+# Task 8 (composed-appliance round): MatterRefrigerator with owned cabinets,
+# the first concrete consumer of Task 7's parent-aware machinery. Links the
+# cabinet .cpp too: the fridge owns MatterTemperatureControlledCabinet
+# members and the owned-cabinet mode/no-declare behaviour under test lives
+# in that class.
+test_refrigerator: test_refrigerator.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterTemperatureControlledCabinet.cpp ../../src/MatterEndpoints/MatterRefrigerator.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+# Task 9 (composed-appliance round): MatterOven with owned MatterOvenCavity
+# children. The cavity subclasses MatterTemperatureControlledCabinet (its
+# temperature machinery and owned-declare mechanics), so the cabinet .cpp is
+# linked too, the same pattern test_refrigerator establishes.
+test_oven: test_oven.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterTemperatureControlledCabinet.cpp ../../src/MatterEndpoints/MatterOvenCavity.cpp ../../src/MatterEndpoints/MatterOven.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+# Task 10 (composed-appliance round): MatterCookSurface owned by a composed
+# MatterCooktop. The surface subclasses MatterTemperatureControlledCabinet
+# (its temperature machinery and owned-declare mechanics), so the cabinet
+# .cpp is linked too, the same pattern test_oven establishes; MatterCooktop
+# .cpp carries addSurface() and the parented begin() under test.
+test_cooksurface: test_cooksurface.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterTemperatureControlledCabinet.cpp ../../src/MatterEndpoints/MatterCookSurface.cpp ../../src/MatterEndpoints/MatterCooktop.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all

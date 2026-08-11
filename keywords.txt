@@ -96,13 +96,38 @@ MatterLaundryDryer	KEYWORD1
 MatterRoboticVacuum	KEYWORD1
 HearthCmdFields	KEYWORD1
 
-# Task 8 (RVC + Microwave batch, last library task): the forty-first and
-# last device type, no arduino-esp32 counterpart. See README.md, "Hearth
-# originals". HearthCookingParams (MatterMicrowaveOven.h) is the
+# Task 8 (RVC + Microwave batch, last library task): the forty-first
+# device type (the last of that batch, not of the library: the
+# composed-appliance round below kept counting), no arduino-esp32
+# counterpart. See README.md, "Hearth originals". HearthCookingParams (MatterMicrowaveOven.h) is the
 # SetCookingParameters payload struct onCookingParameters() carries, with
 # honest has-flags per field (see the class header).
 MatterMicrowaveOven	KEYWORD1
 HearthCookingParams	KEYWORD1
+
+# Task 8 (composed-appliance round): the forty-second device type, the
+# first composed appliance (a 0x0070 parent owning Temperature Controlled
+# Cabinet children), no arduino-esp32 counterpart. See README.md, "Hearth
+# originals". CabinetFlavour_t (MatterRefrigerator.h) maps to the 0x0071
+# variant byte.
+MatterRefrigerator	KEYWORD1
+CabinetFlavour_t	KEYWORD1
+
+# Task 9 (composed-appliance round): the forty-third device type, the
+# second composed appliance (a 0x007B bare parent owning MatterOvenCavity
+# children, the first typed owned child class), no arduino-esp32
+# counterpart. See README.md, "Hearth originals". CabinetFlavour_t
+# (already listed above; MatterOvenCavity declares its own with the same
+# NUMBER/LEVELS values) maps to the 0x0071 variant byte here too.
+MatterOven	KEYWORD1
+MatterOvenCavity	KEYWORD1
+
+# Task 10 (composed-appliance round): MatterCookSurface, the owned child of
+# the now-composed MatterCooktop (already listed above), a 0x0077 child the
+# firmware only accepts parented under a 0x0078. CabinetFlavour_t (already
+# listed above; MatterCookSurface declares its own with the same
+# NUMBER/LEVELS values) maps to the 0x0077 variant byte here too.
+MatterCookSurface	KEYWORD1
 
 # Event and callback types.
 hearthEvent_t	KEYWORD1
@@ -514,6 +539,32 @@ hearthOnForwardedCommandFields	KEYWORD2
 onCookingParameters	KEYWORD2
 onAddMoreTime	KEYWORD2
 
+# Task 8 (composed-appliance round): MatterRefrigerator with owned
+# Temperature Controlled Cabinets. Names already listed above (begin,
+# setSupportedModes, onChangeMode, getCurrentMode,
+# hearthOnForwardedCommandFields; the owned cabinet's modes API reuses the
+# same three names) are not repeated here.
+addCabinet	KEYWORD2
+setDoorOpenAlarm	KEYWORD2
+setAlarmState	KEYWORD2
+
+# Task 9 (composed-appliance round): MatterOven and MatterOvenCavity.
+# Names already listed above (begin, setSupportedModes, onChangeMode,
+# getCurrentMode, onStop, onStart, setOperationalState,
+# getOperationalState, hearthOnForwardedCommandFields, and the whole
+# inherited cabinet temperature surface) are not repeated here. There are
+# deliberately no onPause/onResume rows: the cavity's cluster disallows
+# both commands and the class has no such members (see MatterOvenCavity.h).
+addCavity	KEYWORD2
+
+# Task 10 (composed-appliance round): the composed MatterCooktop and
+# MatterCookSurface. Names already listed above (begin, setOnOff, getOnOff,
+# and the whole inherited cabinet temperature surface) are not repeated
+# here; onOffChange is the surface's remote-delivered-change callback (per
+# OffOnly a controller can only ever deliver false).
+addSurface	KEYWORD2
+onOffChange	KEYWORD2
+
 # HearthColorUtil.h conversions, called out from MatterEnhancedColorLight's
 # getColorRGB()/setColorRGB(), and from examples/MatterEnhancedColorLight's
 # own temperature simulation (espCTToRgbColor/espCTColorToRgbColor).
@@ -713,6 +764,12 @@ kStatePaused	LITERAL1
 kStateSeekingCharger	LITERAL1
 kStateCharging	LITERAL1
 kStateDocked	LITERAL1
+
+# CabinetFlavour_t (MatterRefrigerator.h, Task 8, composed-appliance
+# round): the 0x0071 variant byte an owned cabinet is declared with
+# (NUMBER = TemperatureNumber, LEVELS = TemperatureLevel).
+NUMBER	LITERAL1
+LEVELS	LITERAL1
 
 # AirQuality_t (MatterAirQualitySensor.h, ten-type swoop C2), transcribed from
 # AirQualityEnum in the pinned esp-matter checkout.
