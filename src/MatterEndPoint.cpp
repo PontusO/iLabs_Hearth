@@ -64,15 +64,38 @@ bool MatterEndPoint::hearthWriteAttr(uint32_t cluster_id, uint32_t attribute_id,
   if (!hearthEndPointAddressable()) {
     return false;
   }
-  long v;
+  int64_t v;
   if (attrVal == nullptr || !hearthAttrValToLong(*attrVal, &v)) {
     Hearth.hearthSetError(5);  // the wire's "type not carryable" code
     return false;
   }
-  char cmd[64];
-  snprintf(
-    cmd, sizeof(cmd), "AT+MTATTR=%u,%lu,%lu,%ld,%d", (unsigned)endpoint_id, (unsigned long)cluster_id, (unsigned long)attribute_id, v, mode
-  );
+  /*
+   * Worst case is 61 bytes: "AT+MTATTR=" (10) + 65535 (5) + two full u32
+   * ids (10 each) + INT64_MIN's 20 characters + mode + four commas + NUL.
+   * 80 leaves headroom rather than sitting three bytes from the edge.
+   *
+   * The value renders signed per the attribute's type, mirroring the
+   * firmware's 0.8.0 grammar exactly: an unsigned attribute takes %llu (a
+   * u64 carries up to 18446744073709551615, and the firmware REJECTS a
+   * leading minus on an unsigned attribute with +MTERR:1, so printing a
+   * wrapped negative is a refused write, not a cosmetic difference), a
+   * signed one takes %lld. Values that fit their old 32-bit rendering
+   * produce byte-identical lines, pinned by
+   * test_attr64.cpp::test_small_values_emit_byte_identically against a
+   * capture taken before this existed.
+   */
+  char cmd[80];
+  if (hearthAttrValTypeIsUnsigned(attrVal->type)) {
+    snprintf(
+      cmd, sizeof(cmd), "AT+MTATTR=%u,%lu,%lu,%llu,%d", (unsigned)endpoint_id, (unsigned long)cluster_id, (unsigned long)attribute_id,
+      (unsigned long long)(uint64_t)v, mode
+    );
+  } else {
+    snprintf(
+      cmd, sizeof(cmd), "AT+MTATTR=%u,%lu,%lu,%lld,%d", (unsigned)endpoint_id, (unsigned long)cluster_id, (unsigned long)attribute_id,
+      (long long)v, mode
+    );
+  }
   return Hearth.hearthCommand(cmd) == 0;
 }
 
@@ -92,7 +115,7 @@ bool MatterEndPoint::updateAttributeVal(uint32_t cluster_id, uint32_t attribute_
 namespace {
 struct HearthReadCtx {
   esp_matter_val_type_t type;
-  long value;
+  int64_t value;
   bool got;
 };
 }  // namespace
@@ -106,7 +129,9 @@ void MatterEndPoint::hearthOnAttrLine(const char *line, void *arg) {
   if (!lastComma) {
     return;
   }
-  ctx->value = atol(lastComma + 1);
+  /* Full-width bit-pattern parse (was atol, 32 bits on target): the typed
+   * rebuild in getAttributeVal routes it into the right union member. */
+  ctx->value = hearthParseWireValue(lastComma + 1, nullptr);
   ctx->got = true;
 }
 
@@ -127,7 +152,7 @@ bool MatterEndPoint::getAttributeVal(uint32_t cluster_id, uint32_t attribute_id,
    * switch; the value it flattens is discarded, only the type verdict
    * matters here.
    */
-  long discard;
+  int64_t discard;
   if (!hearthAttrValToLong(*attrVal, &discard)) {
     Hearth.hearthSetError(5);  // the wire's "type not carryable" code
     return false;

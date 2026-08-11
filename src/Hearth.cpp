@@ -386,7 +386,10 @@ void hearthDispatchAttr(const char *rest) {
   if (*end != ',') {
     return;
   }
-  long value = strtol(end + 1, &end, 10);
+  /* Full-width bit-pattern parse (was strtol, 32 bits on target): the type
+   * is not known until the endpoint below answers hearthAttrTypeFor(), and
+   * the bit pattern is the same either way. See hearthParseWireValue. */
+  int64_t value = hearthParseWireValue(end + 1, &end);
 
   MatterEndPoint *target = MatterEndPoint::hearthFindByEndPointId((uint16_t)ep);
   if (!target) {
