@@ -116,6 +116,15 @@
  * same transitive-coverage reasoning as MatterOven.h and its cavity above.
  * One-way includes only, no cycle: MatterCookSurface.h includes the
  * cabinet base header, never MatterCooktop.h.
+ *
+ * Task 7 (energy round A) adds the forty-fourth and forty-fifth device
+ * type classes: MatterElectricalSensor.h and MatterElectricalMeter.h, the
+ * two measurement-push types behind AT+MTMEAS. Hearth originals, same
+ * reasoning as every class above: a sketch's bare `#include <Matter.h>`
+ * plus a file-scope `MatterElectricalSensor sensor;` must work with no
+ * endpoint header of its own. The meter header includes the sensor's (its
+ * base class) itself; listing both below is belt-and-braces coverage, not
+ * a cycle.
  */
 #pragma once
 
@@ -167,6 +176,8 @@
 #include "MatterEndpoints/MatterMicrowaveOven.h"
 #include "MatterEndpoints/MatterRefrigerator.h"
 #include "MatterEndpoints/MatterOven.h"
+#include "MatterEndpoints/MatterElectricalSensor.h"
+#include "MatterEndpoints/MatterElectricalMeter.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART

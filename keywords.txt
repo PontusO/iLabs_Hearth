@@ -129,6 +129,16 @@ MatterOvenCavity	KEYWORD1
 # NUMBER/LEVELS values) maps to the 0x0077 variant byte here too.
 MatterCookSurface	KEYWORD1
 
+# Task 7 (energy round A): MatterElectricalSensor (0x0510) and its thin
+# subclass MatterElectricalMeter (0x0514), the two AT+MTMEAS
+# measurement-push types, no arduino-esp32 counterpart. See README.md,
+# "Hearth originals". Variant_t maps the shared variant byte (FULL builds
+# both measurement clusters, POWER_ONLY power only; on the METER,
+# POWER_ONLY is permissive-beyond-conformance, see the meter header).
+MatterElectricalSensor	KEYWORD1
+MatterElectricalMeter	KEYWORD1
+Variant_t	KEYWORD1
+
 # Event and callback types.
 hearthEvent_t	KEYWORD1
 hearthEventCB	KEYWORD1
@@ -565,6 +575,27 @@ addCavity	KEYWORD2
 addSurface	KEYWORD2
 onOffChange	KEYWORD2
 
+# Task 7 (energy round A): MatterElectricalSensor and
+# MatterElectricalMeter (the meter inherits the whole surface; begin is
+# already listed above). Setters push single AT+MTMEAS fields,
+# pushMeasurements batches the three power readings in one line, the
+# energy adders accumulate host-side and push the cumulative total, and
+# the getters read the local last-pushed cache (the attributes are
+# Instance-served: no wire read-back exists).
+setVoltage	KEYWORD2
+setActiveCurrent	KEYWORD2
+setActivePower	KEYWORD2
+setFrequency	KEYWORD2
+pushMeasurements	KEYWORD2
+addEnergyImported	KEYWORD2
+addEnergyExported	KEYWORD2
+getVoltage	KEYWORD2
+getActiveCurrent	KEYWORD2
+getActivePower	KEYWORD2
+getFrequency	KEYWORD2
+getEnergyImported	KEYWORD2
+getEnergyExported	KEYWORD2
+
 # HearthColorUtil.h conversions, called out from MatterEnhancedColorLight's
 # getColorRGB()/setColorRGB(), and from examples/MatterEnhancedColorLight's
 # own temperature simulation (espCTToRgbColor/espCTColorToRgbColor).
@@ -770,6 +801,12 @@ kStateDocked	LITERAL1
 # (NUMBER = TemperatureNumber, LEVELS = TemperatureLevel).
 NUMBER	LITERAL1
 LEVELS	LITERAL1
+
+# Variant_t (MatterElectricalSensor.h, Task 7, energy round A): the
+# 0x0510/0x0514 variant byte (FULL = power + energy clusters, POWER_ONLY =
+# power measurement only, the current-clamp case).
+FULL	LITERAL1
+POWER_ONLY	LITERAL1
 
 # AirQuality_t (MatterAirQualitySensor.h, ten-type swoop C2), transcribed from
 # AirQualityEnum in the pinned esp-matter checkout.

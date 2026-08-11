@@ -167,6 +167,17 @@ MatterRefrigerator umbrellaRefrigerator;
  */
 MatterOven umbrellaOven;
 
+/*
+ * Task 7 (energy round A): the forty-fourth and forty-fifth device type
+ * classes, the two AT+MTMEAS measurement-push types, no arduino-esp32
+ * counterpart. Declared here only, same compile/link guard: dropping
+ * either include from Hearth.h's list fails this build too (the meter's
+ * header pulls the sensor's in transitively, so the sensor global is what
+ * pins the sensor's own listing).
+ */
+MatterElectricalSensor umbrellaElectricalSensor;
+MatterElectricalMeter umbrellaElectricalMeter;
+
 static int g_pass = 0, g_fail = 0;
 static void check(const char *name, bool cond) {
   printf("  [%s] %s\n", cond ? "PASS" : "FAIL", name);
