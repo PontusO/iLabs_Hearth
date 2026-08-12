@@ -81,9 +81,32 @@
  * defect class this codebase's own AT+MTATTR/AT+MTMEAS pipelines were
  * widened against earlier (0.8.0). Every existing consumer narrows its own
  * read of `value[i]` down to a uint8_t/uint16_t/uint32_t/bool with an
- * explicit or implicit cast, so this widening is behaviour-preserving for
- * all of them (two's-complement truncation is identical either way); only
- * a genuinely 64-bit-wide payload field, DEM's `power` being the first,
+ * explicit or implicit cast, so this widening changes nothing for any
+ * LEGITIMATE existing payload: every shipped consumer's field is a mode
+ * id, a presence mask, a duration, a cook time or a percentage, none
+ * anywhere near 2^32.
+ *
+ * That claim is NOT "bit-for-bit identical" for a hypothetical value AT
+ * or ABOVE 2^32, and review round 1 (F2) is right to insist on the precise
+ * version rather than the sloppier one: `unsigned long` is 64-bit on the
+ * host this library's suite builds for (x86-64), so strtoul() never
+ * saturates below that width there and the host suite is STRUCTURALLY
+ * UNABLE to observe any difference at all, old parser or new. On the
+ * RP2350 target `unsigned long` is 32-bit, where strtoul() SATURATES to
+ * ULONG_MAX with errno ERANGE on overflow rather than truncating (the C
+ * standard's own contract for it, not a two's-complement wraparound), so
+ * the old and new parses of a value at or above 2^32 genuinely differed
+ * there: the wire text "5000000000" parsed to 0xFFFFFFFF (saturated)
+ * through the old strtoul()-based parser, and parses to 0x2A05F200 (the
+ * true value's own low 32 bits, through hearthParseWireValue()'s correct
+ * 64-bit parse followed by MatterEndPoint.cpp's legacy narrowing cast for
+ * any endpoint type still on the four-argument hearthOnForwardedCommand()
+ * virtual) after this widening. The new figure is never a worse one than
+ * the old, and per the paragraph above no shipped +MTCMD consumer can
+ * legitimately land in this case regardless -- but "no legitimate legacy
+ * payload can exceed 2^32, and where the two differ the new value is the
+ * correct one" is the honest claim, not "identical either way". Only a
+ * genuinely 64-bit-wide payload field, DEM's `power` being the first,
  * needs the extra range.
  */
 #define HEARTH_CMD_FIELDS_MAX 5

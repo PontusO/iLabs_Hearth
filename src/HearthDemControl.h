@@ -149,7 +149,13 @@ public:
   // the round trip, the POWER_ONLY precedent. Always writes on a legal n
   // (S3.26: "Set-only, full replacement per call", not a null-until-pushed
   // field); the cache this class keeps is for the reconcile re-push only,
-  // never for a no-op comparison.
+  // never for a no-op comparison. Host-side validation is DELIBERATELY
+  // PARTIAL (F5): only `n` above the 4-entry bound is refused locally;
+  // `cause` outside PowerAdjustReasonEnum, `minPowerMw > maxPowerMw`,
+  // `minDurationS > maxDurationS` and the enum ranges on the scalar
+  // setters above are all left to the round trip and its own +MTERR:1
+  // (S3.25/S3.26's own division), so Task 6 does not need to duplicate
+  // those checks host-side.
   bool setPowerAdjustmentCapability(uint8_t cause, const PowerAdjustEntry *entries, uint8_t n);
 
   // Registered callbacks: PLAIN function pointers per the design spec's
@@ -159,6 +165,18 @@ public:
   // departure this task follows exactly rather than silently
   // "regularising" to the existing convention. No callback registered
   // denies by default, the library-wide fail-closed shape.
+  //
+  // NEITHER CALLBACK MAY PUSH FROM INSIDE ITSELF (the MatterWaterHeater
+  // Boost precedent, MatterWaterHeater.h's own "VERDICT-THEN-PUSH SHAPE"
+  // comment, and MatterEndPoint.h's hearthOnDeferredWork()): both run
+  // inside the +MTCMD dispatch, where a wire write is refused
+  // HEARTH_CMD_REENTRANT. Unlike Boost, this class needs no deferred-work
+  // push at all on accept (this header's own "ACCEPT PUSHES NO STATE
+  // CHANGE" comment above), so there is nothing this class arms on the
+  // owner's behalf -- but a sketch's own callback body must still not call
+  // endAdjustment() or pushAdjustmentEnergyUse() (or any other setter)
+  // from within onPowerAdjust/onCancelPowerAdjust; do that from ordinary
+  // sketch context afterwards instead.
   void onPowerAdjust(bool (*cb)(int64_t powerMw, uint32_t durationS, uint8_t cause));
   void onCancelPowerAdjust(bool (*cb)());
 
@@ -172,7 +190,10 @@ public:
   bool hearthOnCancelPowerAdjustRequest();
 
   // setESAState(<Online>) shorthand, the normal-completion path (this
-  // header's own comment above).
+  // header's own comment above). A DIRECT push from ordinary sketch
+  // context, unlike Boost's endBoost(): call it after onPowerAdjust's/
+  // onCancelPowerAdjust's callback has returned (the comment on those two
+  // above), never from inside either.
   bool endAdjustment();
 
   // B229 + cabinet-labels split (this header's own comment above): clears

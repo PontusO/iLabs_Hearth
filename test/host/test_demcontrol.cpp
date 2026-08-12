@@ -26,10 +26,17 @@
  * PowerAdjustRequest power -- a value the previous uint32_t field could
  * not carry without silent truncation. Every existing +MTCMD consumer
  * narrows its own read of `value[i]` down to a smaller type already, so
- * this widening is behaviour-preserving for all of them (test_cmdfields.cpp
- * and every device-type suite pass unchanged); test_demcap_arity_four_at_
- * the_bound above and test_power_adjust_accept_carries_the_canonical_
- * above_2_32_vector below are this suite's own pins for the new range.
+ * this widening changes nothing for any LEGITIMATE existing payload
+ * (mode ids, presence masks, durations, cook times, percentages, all well
+ * under 2^32) -- test_cmdfields.cpp and every device-type suite pass
+ * unchanged. It is NOT bit-for-bit identical for a hypothetical value at
+ * or above 2^32 on the RP2350 target (32-bit `unsigned long`, where
+ * strtoul() saturates rather than truncates), a distinction this host
+ * suite (x86-64, 64-bit `unsigned long`) is structurally unable to
+ * observe either way; see MatterEndPoint.h's own widening comment for the
+ * precise claim (review round 1, F2). test_demcap_arity_four_at_the_bound
+ * above and test_power_adjust_accept_carries_the_canonical_above_2_32_
+ * vector below are this suite's own pins for the new range.
  */
 #include <stdio.h>
 #include <string.h>
@@ -204,7 +211,12 @@ static void test_demcap_arity_one(void) {
   check("script drained", s.scriptDrained());
 }
 
-/* AT_MT_SPEC.md S3.26's own worked example: two local-optimization entries. */
+/* AT_MT_SPEC.md S3.26's own worked example: two local-optimization entries.
+ * The spec's example is on endpoint 1; this probe is declared at endpoint 2
+ * (this file's own bringUp() convention throughout), so the wire line
+ * differs in its leading endpoint field only -- the cause/n/entries tail
+ * from "1,2,1000,5000,60,3600,500,2000,30,600" onward matches the spec's
+ * own text character for character. */
 static void test_demcap_arity_two_worked_example(void) {
   MockStream s;
   DemProbeEndpoint ep;
@@ -214,7 +226,8 @@ static void test_demcap_arity_two_worked_example(void) {
     {500, 2000, 30, 600},
   };
   s.expect("AT+MTDEMCAP=2,1,2,1000,5000,60,3600,500,2000,30,600", "OK\r\n");
-  check("n=2 matches the spec's worked example verbatim", ep.dem.setPowerAdjustmentCapability(1, entries, 2));
+  check("n=2 matches the spec's worked example's cause/n/entries tail (endpoint differs: spec ep 1, probe ep 2)",
+        ep.dem.setPowerAdjustmentCapability(1, entries, 2));
   check("script drained", s.scriptDrained());
 }
 
@@ -479,6 +492,32 @@ static void test_disabled_refuses_every_call_zero_traffic(void) {
   check("zero wire traffic for the whole batch", s.scriptDrained() && s.unexpected().empty());
 }
 
+/* Review round 1 (F1): onReconciled() must be gated on `enabled` too, the
+ * same as every other wire-touching method -- it was not, before this
+ * fix. `enabled` is public, so a sketch flipping it at runtime after
+ * configuration was pushed (a variant switch, or simply disabling the
+ * surface later) must not let a reconcile emit the traffic the flag
+ * otherwise promises is impossible. */
+static void test_disabled_reconcile_is_zero_traffic(void) {
+  MockStream s;
+  DemProbeEndpoint ep;
+  bringUp(s, ep);
+
+  s.expect("AT+MTMEAS=2,152,0,5", "OK\r\n");
+  check("baseline setESAType(5) while enabled", ep.dem.setESAType(5));
+  s.expect("AT+MTMEAS=2,152,4,5000000000", "OK\r\n");
+  check("baseline setAbsMaxPower(5000000000) while enabled", ep.dem.setAbsMaxPower(5000000000LL));
+  const HearthDemControl::PowerAdjustEntry entries[1] = {{1000, 5000, 60, 3600}};
+  s.expect("AT+MTDEMCAP=2,1,1,1000,5000,60,3600", "OK\r\n");
+  check("baseline setPowerAdjustmentCapability while enabled", ep.dem.setPowerAdjustmentCapability(1, entries, 1));
+  check("baseline traffic drained before the disable", s.scriptDrained());
+
+  ep.dem.enabled = false;
+  ep.hearthOnReconciled();
+  check("a reconcile while disabled sent NOTHING", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 /* Defence in depth: an injected +MTCMD reaching a disabled helper (should
  * not happen on the real wire -- the firmware never forwards for a
  * FeatureMap-0/absent cluster -- but pinned so the fail-closed shape is
@@ -631,6 +670,7 @@ int main(void) {
   test_cancel_deny_answers_verdict_zero();
   test_cancel_without_callback_denies();
   test_disabled_refuses_every_call_zero_traffic();
+  test_disabled_reconcile_is_zero_traffic();
   test_disabled_denies_forwarded_commands_without_callback();
   test_reconcile_repushes_config_and_capability_entry_by_entry();
   test_reconcile_never_repushes_energy_use();

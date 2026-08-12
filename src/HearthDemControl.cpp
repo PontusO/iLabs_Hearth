@@ -261,8 +261,21 @@ bool HearthDemControl::endAdjustment() {
  * and never appears here either way. Re-push results are deliberately
  * unchecked, the MatterWaterHeater::hearthOnReconciled() shape: a failed
  * resend surfaces on the next ordinary setter call, not here.
+ *
+ * Review round 1 fix (F1): gated on `enabled` like every other
+ * wire-touching method (the header's own "gates EVERY wire-touching
+ * method uniformly" claim did not hold here before this fix -- `enabled`
+ * is public, so a runtime variant switch after configuration was pushed
+ * could reach the wire from here even though the flag documents that as
+ * impossible). Disabled means no DEM surface at all, so a disabled
+ * reconcile is a complete no-op: no re-push, and the volatile has-flags
+ * are left untouched rather than cleared, since there is no wire surface
+ * for them to describe.
  */
 void HearthDemControl::onReconciled() {
+  if (!enabled) {
+    return;
+  }
   if (hasESAType) {
     hearthSendDemPair(kFieldESAType, esaType);
   }
