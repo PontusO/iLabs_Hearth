@@ -330,6 +330,20 @@ Two read paths, deliberately different costs:
   string (up to 16 bytes plus a NUL): the wire's own quoting rule (`"`
   escaped as `\"`, `\` as `\\`, the first free-form string field in the
   `AT+MT` family) is this library's problem, not the sketch's.
+
+  **`partitionId` is the one field where a true `has*` flag is not evidence
+  of an active mesh membership** (bench round, design spec 2026-08-12
+  S2.1 as corrected): a device with a Thread dataset installed but not
+  yet attached already reports a real `channel`, `panId`, `extPanId` and
+  `name`, and `partitionId` renders as `0x00000000` -- `hasPartitionId` is
+  `true` and the value is a genuine `0`, not an unset field. CHIP's null
+  gate is "no dataset installed", not "not attached" (S3.27). **`attached`
+  is therefore the only reliable "am I on a network" predicate**: a sketch
+  keying off `hasPanId`, `hasExtPanId` or a nonempty `name` gets a false
+  positive for the whole window between dataset install and mesh
+  attachment, because those fields describe the network the device has
+  been told to join, not one it has joined. Check `attached`, not the
+  presence of the id fields.
 - `Hearth.threadRole()` returns a **cached** `HearthThreadRole` with **no
   wire traffic at all** -- not even a URC drain. Seeded to
   `HEARTH_THREAD_UNSPECIFIED` on `begin()` and refreshed by `threadInfo()`

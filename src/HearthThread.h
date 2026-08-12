@@ -84,14 +84,31 @@ enum HearthThreadRole {
 };
 
 /*
- * One AT+MTTHREAD? answer, decoded (S3.27). channel/panId/extPanId/
- * partitionId are all Nullable on the wire (empty field, never 0): the
- * has* flag is the ONLY honest signal of "unknown" -- a real PAN ID of
- * 0xFFFF, an all-ones extended PAN ID, or a partition ID of 0xFFFFFFFF
- * renders identically to null on the wire (S3.27's own caveat), so a
- * caller must gate on the flag, never infer "unknown" from the value
- * looking implausible. role and attached carry no such gate; the wire
- * never sends either of them null.
+ * One AT+MTTHREAD? answer, decoded (S3.27). channel/panId/extPanId are
+ * Nullable on the wire (empty field, never 0): the has* flag is the ONLY
+ * honest signal of "unknown" -- a real PAN ID of 0xFFFF, an all-ones
+ * extended PAN ID, or a partition ID of 0xFFFFFFFF renders identically to
+ * null on the wire (S3.27's own caveat), so a caller must gate on the
+ * flag, never infer "unknown" from the value looking implausible. role
+ * and attached carry no such gate; the wire never sends either of them
+ * null.
+ *
+ * partitionId is the ONE exception to "has* true means a trustworthy
+ * value" (bench round, design spec 2026-08-12 S2.1 as corrected): a
+ * device with a dataset installed but not yet attached to a mesh reports
+ * the real channel, PAN ID, extended PAN ID and network name, and renders
+ * partitionId as 0x00000000 -- hasPartitionId is true and partitionId is
+ * a genuine 0, not a parse artifact or a null the wire failed to signal.
+ * CHIP's null gate is "no dataset installed", not "not attached"
+ * (S3.27), so the populated-but-detached state is a real, reachable
+ * rendering, not a bug.
+ *
+ * The practical consequence: attached is the ONLY reliable "am I on a
+ * network" predicate. A caller keying off hasPanId, hasExtPanId or a
+ * nonempty name gets a false positive during the window between dataset
+ * install and mesh attachment, because those fields describe the network
+ * the device has been told to join, not one it has joined. Check
+ * attached, not the presence of the id fields.
  *
  * name is fixed at 17 bytes (16 + NUL), Thread's own network-name limit
  * (S3.27); a detached device with no dataset reports it as the empty
