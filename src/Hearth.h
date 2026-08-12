@@ -132,6 +132,14 @@
  * HearthMeasurementPush helper (never a thin subclass: the water heater
  * carries three more surfaces on its one endpoint). Same umbrella
  * reasoning as every class above; one-way includes only, no cycle.
+ *
+ * Task 6 (energy round C1) adds the forty-eighth, forty-ninth and
+ * fiftieth: MatterSolarPower.h, MatterBatteryStorage.h and
+ * MatterDeviceEnergyManagement.h, three more Hearth originals. Solar
+ * embeds HearthMeasurementPush, the DEM endpoint embeds the round's
+ * HearthDemControl, and battery storage embeds BOTH on one endpoint
+ * alongside its ember PowerSource attributes. Same umbrella reasoning
+ * again; one-way includes only, no cycle.
  */
 #pragma once
 
@@ -187,6 +195,9 @@
 #include "MatterEndpoints/MatterElectricalMeter.h"
 #include "MatterEndpoints/MatterWaterHeater.h"
 #include "MatterEndpoints/MatterHeatPump.h"
+#include "MatterEndpoints/MatterSolarPower.h"
+#include "MatterEndpoints/MatterBatteryStorage.h"
+#include "MatterEndpoints/MatterDeviceEnergyManagement.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART
@@ -387,7 +398,17 @@ public:
    */
   bool transport(HearthTransport *active, HearthTransport *stored);
 
-  /* Last +MTERR code any layer above HearthLink reported; 0 if none. */
+  /* Last +MTERR code any layer above HearthLink reported; 0 if none.
+   *
+   * A HOST-SIDE 1 IS NOT A WIRE 1. Some classes refuse a call locally and
+   * set 1 with no traffic at all, so a 1 can mean "this library refused"
+   * rather than "the device answered +MTERR:1", and the device would often
+   * have answered something else: a capability setter on the DEM
+   * REPORT_ONLY variant sets 1 where the device would have said 4 (the
+   * attribute is not served there), and any DEM setter on a NO_DEM or
+   * POWER_ONLY endpoint sets 1 where the device would have said 3 (no such
+   * cluster on that endpoint). Read it as a diagnostic, not as a
+   * transcript of the wire. */
   int lastError() const {
     return _lastError;
   }

@@ -10,6 +10,27 @@ library speaks that firmware's `AT+MT` protocol over a UART link. Every call
 a sketch makes against `Matter.*` or a `Matter*Light`/`Matter*Sensor` object
 is translated into an AT command sent to the C6 and back.
 
+## Firmware pairing
+
+**Library 0.10.0 wants firmware 0.10.1 or newer**, not the 0.10.0 it shipped
+against. Firmware 0.10.1 corrects three ways an `AT+MTATTR` write used to
+fail ambiguously, and this library hits one of them on its own:
+`MatterBatteryStorage` re-pushes its configuration attributes on every
+reconcile, so it can legitimately write a value the device already holds. On
+firmware 0.10.0 that answers a bare `ERROR` and a successful no-op looks like
+a failure; on 0.10.1 it answers `OK`.
+
+The other two corrections make `Hearth.lastError()` informative where it was
+silent. An out-of-range value now answers `+MTERR:1` instead of a bare
+`ERROR`. An attribute that exists but is served by a cluster Instance, so it
+cannot be written over AT at all, answers the new `+MTERR:11`, which a host
+can tell apart from `+MTERR:4` for an attribute that does not exist. Several
+of this round's own classes serve attributes that way.
+
+Nothing here is required to compile or to run: every class works against
+firmware 0.10.0, and the pairing is about honest failure reporting rather
+than features. Newer firmware is also fine, since the AT surface is additive.
+
 ## Hearth and Matter
 
 The library's identity is **Hearth**, never Matter. `iLabs Hearth` is the
@@ -882,6 +903,85 @@ reconcile; HeatDemand, BoostState, TankPercentage, EstimatedHeatRequired
 and every electrical field follow the B229 volatile rule (wire-pushed
 memory cleared, values not re-sent).
 
+### The energy round C1
+
+Three more energy classes (library 0.10.0, firmware 0.10.0, though the
+firmware pairing note above asks for 0.10.1), none with an `arduino-esp32`
+counterpart, taking the total to fifty-two. The round adds
+one shared helper, `HearthDemControl`, the DeviceEnergyManagement (`0x0098`,
+152) surface: the state pushes on `AT+MTMEAS`'s `0x0098` field table, the
+`AT+MTDEMCAP` capability replacement, and the two adjudicated power-adjust
+command forwards. Two of the three classes embed it.
+
+- `MatterSolarPower` (`0x0017`): the shared measurement surface plus
+  identity, nothing else, the heat pump's shape with a variant byte.
+  `ActivePower` is signed and that is the point: an array that is
+  generating reports negative milliwatts and books its energy on the
+  exported counter. `NO_ENERGY` (variant 1) is the current-clamp shape,
+  disclosed sub-conformant: the composed sensor is built without its
+  energy cluster, so the two energy adders refuse host-side (error 1, zero
+  wire traffic) while every power-side setter keeps working.
+- `MatterBatteryStorage` (`0x0018`): three surfaces on one endpoint. The
+  measurement surface (on both variants: the firmware grafts the sensor
+  with energy measurement unconditionally here, unlike solar); seven
+  ember-served PowerSource battery attributes over the ordinary
+  `AT+MTATTR` path (`setBatVoltage`, `setBatPercentRemaining` in raw
+  half-percent steps, `setBatTimeRemaining`, `setBatChargeState`,
+  `setBatChargingCurrent`, `setBatCapacity`, `setBatTimeToFullCharge`;
+  the two fault lists are lists, which `AT+MTATTR` cannot carry, and ship
+  empty and host-untouched by design); and the whole DEM surface on the
+  `FULL` variant. `NO_DEM` (variant 1) omits the DEM triple and stays
+  conformant, refusing every DEM call host-side with error 1 and zero wire
+  traffic.
+- `MatterDeviceEnergyManagement` (`0x050D`): the DEM helper plus identity.
+  `CONTROLLABLE` (variant 0) is a ControllableESA with the PowerAdjustment
+  feature; `REPORT_ONLY` (variant 1) is an equally conformant ESA that
+  reports and cannot be told what to do. The two variants differ in exactly
+  one host-visible way, and it is a deliberate one: `REPORT_ONLY` refuses
+  `setPowerAdjustmentCapability()` host-side (error 1, zero wire traffic,
+  because that variant serves no such attribute) while every state and
+  identity push still reaches the wire. That is a narrower thing than
+  battery storage's `NO_DEM`, where the cluster is absent altogether and
+  the whole surface refuses; the two class headers carry the comparison.
+
+The power-adjust protocol's division of labour is worth stating once:
+`onPowerAdjust()`/`onCancelPowerAdjust()` return a verdict and nothing
+else. On an accept the FIRMWARE moves `ESAState` to PowerAdjustActive and
+emits `PowerAdjustStart` itself, so the callback pushes nothing (and must
+not: a wire write from inside the `+MTCMD` dispatch is refused
+`HEARTH_CMD_REENTRANT`). The sketch reports its energy figure with
+`pushAdjustmentEnergyUse()` and ends the adjustment with
+`endAdjustment()`, both from ordinary `loop()` context; the `ESAState`
+push back to Online is what makes the firmware emit `PowerAdjustEnd` with
+that figure. The FullAPI DEM sketch's load simulator is built exactly this
+way: the callback records the request, `loop()` acts on it.
+
+The reconcile split is test-pinned per surface, and the same
+configuration-versus-sampled question is answered three times. The DEM
+configuration (ESAType, ESACanGenerate, AbsMin/MaxPower and the capability
+list) is re-pushed on every reconcile; the DEM volatile fields (ESAState,
+OptOutState) and every electrical field follow the B229 rule (wire-pushed
+memory cleared, values not re-sent); and battery storage's ember
+attributes are split the same way, per attribute: `BatCapacity` (a
+nameplate written once at `setup()`) and `BatChargeState` (asserted on
+transitions, not sampled) are re-pushed, while the five sampled readings
+are cleared and not re-sent, so the next sample repairs the fabric even if
+it is byte-identical to the last one.
+
+There is no house-wide rule for ember attributes on reconcile, and this
+README used to imply there was: **this library has both behaviours on
+purpose.** `MatterThermostat` and `MatterPowerSource` never re-push, which
+is right for a value a sketch resamples;
+`MatterTemperatureControlledCabinet` re-pushes its four TemperatureControl
+attributes unconditionally, and its own comment records the bench run that
+forced it (the alternative left the device at esp-matter's defaults
+forever, because the setters' skip-if-equal suppressed every later write
+of a value the host believed it had already set). A value a sketch writes
+once cannot self-heal, so it has to be re-pushed; a value it resamples
+must not be, because a stale reading re-reported as fresh is a lie. The
+battery class header lists all seven attributes with the reason each lands
+where it does.
+
 ## Examples
 
 `examples/` holds three tiers of sketches, each proving a different thing:
@@ -894,7 +994,7 @@ memory cleared, values not re-sent).
 - **FullAPI references**, one per class under `examples/FullAPI/`
   (documented below, in its own subsection): a sketch that exercises the
   complete public surface of exactly one `Matter*` endpoint class,
-  forty-eight in total. Each opens with a banner comment listing every public member and
+  fifty-one in total. Each opens with a banner comment listing every public member and
   where the sketch exercises it; the banner is a coverage checklist against
   the class header, not narrative.
 - **Scenario showcases**: `MatterDoorLockAdjudicated` and
@@ -1026,7 +1126,7 @@ Full commands and output for the original three-blocker analysis are in
 ### FullAPI references (`examples/FullAPI/`)
 
 One sketch per concrete `Matter*` endpoint class this library implements,
-forty-eight in total, folder name equal to sketch name. The two typed owned
+fifty-one in total, folder name equal to sketch name. The two typed owned
 children have no folder of their own: `MatterOvenCavity` is exercised
 inside `MatterOven`'s sketch and `MatterCookSurface` inside
 `MatterCooktopComposed` (the zero-surface `MatterCooktop` folder is

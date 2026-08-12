@@ -56,6 +56,10 @@ build/
 /test/host/test_electrical
 /test/host/test_waterheater
 /test/host/test_heatpump
+/test/host/test_demcontrol
+/test/host/test_solarpower
+/test/host/test_batterystorage
+/test/host/test_dem
 
 *.bin
 *.uf2

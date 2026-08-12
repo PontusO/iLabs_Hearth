@@ -627,8 +627,16 @@ void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
       // empty position: present stays false, value stays 0, but it was
       // still reached, so it counts.
     } else {
+      /* Energy round C1 (Task 5): hearthParseWireValue() (HearthCompat.h),
+       * not strtoul(), so a tail field can carry a genuine int64 (DEM's
+       * PowerAdjustRequest `power` field, AT_MT_SPEC.md S3.17) rather than
+       * silently truncating past 2^32. Same zero-digits-consumed /
+       * trailing-junk malformed check as before: hearthParseWireValue()
+       * leaves its out-pointer sitting on `p` itself when nothing could be
+       * parsed (including a lone unfollowed '-'), the identical strtoul()
+       * contract this check already relied on. */
       char *fend;
-      unsigned long v = strtoul(p, &fend, 10);
+      int64_t v = hearthParseWireValue(p, &fend);
       if (fend == p || (*fend != ',' && *fend != '\0')) {
         // Zero digits consumed (a non-numeric position, e.g. "X"), or
         // digits followed by something that is not the next delimiter
@@ -638,7 +646,7 @@ void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
         return;
       }
       fields.present[i] = true;
-      fields.value[i] = (uint32_t)v;
+      fields.value[i] = v;
       p = fend;
     }
     fields.count = (uint8_t)(i + 1);

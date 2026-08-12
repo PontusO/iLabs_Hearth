@@ -69,12 +69,51 @@
  * mixed `present` array; a legacy line that never reaches a given position
  * at all leaves it both absent and, since the struct is zero-initialised by
  * hearthDispatchCmd() before parsing, value 0.
+ *
+ * Energy round C1 (Task 5, HearthDemControl's PowerAdjustRequest forward,
+ * AT_MT_SPEC.md S3.17) widened `value[]` from uint32_t to int64_t, and
+ * hearthDispatchCmd()'s tail parse from strtoul() to HearthCompat.h's
+ * hearthParseWireValue() (the same 64-bit-bit-pattern parser already used
+ * for +MTATTR's identical width problem, this file's own include below):
+ * a command payload field can now genuinely carry Matter's full int64
+ * range (PowerAdjustRequest's `power` field is int64 mW), where the
+ * previous uint32_t silently truncated anything past 2^32 -- the exact
+ * defect class this codebase's own AT+MTATTR/AT+MTMEAS pipelines were
+ * widened against earlier (0.8.0). Every existing consumer narrows its own
+ * read of `value[i]` down to a uint8_t/uint16_t/uint32_t/bool with an
+ * explicit or implicit cast, so this widening changes nothing for any
+ * LEGITIMATE existing payload: every shipped consumer's field is a mode
+ * id, a presence mask, a duration, a cook time or a percentage, none
+ * anywhere near 2^32.
+ *
+ * That claim is NOT "bit-for-bit identical" for a hypothetical value AT
+ * or ABOVE 2^32, and review round 1 (F2) is right to insist on the precise
+ * version rather than the sloppier one: `unsigned long` is 64-bit on the
+ * host this library's suite builds for (x86-64), so strtoul() never
+ * saturates below that width there and the host suite is STRUCTURALLY
+ * UNABLE to observe any difference at all, old parser or new. On the
+ * RP2350 target `unsigned long` is 32-bit, where strtoul() SATURATES to
+ * ULONG_MAX with errno ERANGE on overflow rather than truncating (the C
+ * standard's own contract for it, not a two's-complement wraparound), so
+ * the old and new parses of a value at or above 2^32 genuinely differed
+ * there: the wire text "5000000000" parsed to 0xFFFFFFFF (saturated)
+ * through the old strtoul()-based parser, and parses to 0x2A05F200 (the
+ * true value's own low 32 bits, through hearthParseWireValue()'s correct
+ * 64-bit parse followed by MatterEndPoint.cpp's legacy narrowing cast for
+ * any endpoint type still on the four-argument hearthOnForwardedCommand()
+ * virtual) after this widening. The new figure is never a worse one than
+ * the old, and per the paragraph above no shipped +MTCMD consumer can
+ * legitimately land in this case regardless -- but "no legitimate legacy
+ * payload can exceed 2^32, and where the two differ the new value is the
+ * correct one" is the honest claim, not "identical either way". Only a
+ * genuinely 64-bit-wide payload field, DEM's `power` being the first,
+ * needs the extra range.
  */
 #define HEARTH_CMD_FIELDS_MAX 5
 struct HearthCmdFields {
   uint8_t count;
   bool present[HEARTH_CMD_FIELDS_MAX];
-  uint32_t value[HEARTH_CMD_FIELDS_MAX];
+  int64_t value[HEARTH_CMD_FIELDS_MAX];
 };
 
 class MatterEndPoint {
