@@ -33,11 +33,15 @@
  *   setBatChargeState(state)       the cycle: 1 IsCharging, 2 IsAtFullCharge,
  *                                  3 IsNotCharging
  *   setBatChargingCurrent(ma)      the cycle while charging
- *   setBatCapacity(mwh)            setup(), once: a nameplate figure. The
+ *   setBatCapacity(mah)            setup(), once: a nameplate figure. The
  *                                  library re-pushes it on every reconcile,
  *                                  because a value written once cannot
  *                                  repair itself after a C6 reboot the way
- *                                  the sampled readings below do
+ *                                  the sampled readings below do. mAh, and
+ *                                  the firmware serves 0..0xFFFF: a bigger
+ *                                  figure is refused with a bare ERROR
+ *                                  (lastError() stays 0), which is why the
+ *                                  call below reads its bool
  *   setBatTimeToFullCharge(s)      the cycle while charging
  *   -- the DEM surface (FULL only) --
  *   setESAType(t)                  setup() (4 = BatteryStorage)
@@ -93,7 +97,7 @@
  *   chip-tool powersource read bat-capacity <node> <ep>
  *   chip-tool electricalpowermeasurement read active-power <node> <ep>
  *   chip-tool electricalenergymeasurement read cumulative-energy-imported <node> <ep>
- *   chip-tool deviceenergymanagement read esa-state <node> <ep>
+ *   chip-tool deviceenergymanagement read esastate <node> <ep>
  *   chip-tool deviceenergymanagement read power-adjustment-capability <node> <ep>
  *   chip-tool deviceenergymanagement power-adjust-request 5000000000 60 1 <node> <ep>
  *   chip-tool deviceenergymanagement cancel-power-adjust-request <node> <ep>
@@ -113,9 +117,12 @@
 
 MatterBatteryStorage Battery;
 
-// Simulated pack: 13.5 kWh nameplate, state of charge in half-percent
-// steps (the wire's own unit for BatPercentRemaining), and a signed load.
-const uint32_t kCapacityMwh = 13500000;
+// Simulated pack: a 48 V, 60 Ah nameplate (about 2.9 kWh), state of charge
+// in half-percent steps (the wire's own unit for BatPercentRemaining), and
+// a signed load. BatCapacity is mAh and the firmware serves 0..0xFFFF, so
+// 60000 is near the top of what can be published; a 13.5 kWh home pack
+// (~281000 mAh at 48 V) does NOT fit and its write is refused outright.
+const uint32_t kCapacityMah = 60000;
 uint8_t socHalfPercent = 100;  // 50%
 long packWatts = 0;            // positive charges, negative discharges
 
@@ -199,8 +206,12 @@ void setup() {
   /* One-off nameplate figure, an ember attribute like the rest, and the
    * reason the class re-pushes this one on reconcile: nothing in this
    * sketch ever writes it again, so after a C6 reboot only the library
-   * can restore it. */
-  Battery.setBatCapacity(kCapacityMwh);
+   * can restore it. The bool is read because ember's range refusal carries
+   * no +MTERR code: ignoring it leaves the attribute at 0 and the re-push
+   * unarmed, silently. */
+  if (!Battery.setBatCapacity(kCapacityMah)) {
+    Serial.println("setBatCapacity refused (outside the served 0..0xFFFF mAh range?)");
+  }
 
   // the DEM identity: what this ESA is and what it can physically do
   Battery.setESAType(4);            // BatteryStorage

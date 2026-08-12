@@ -60,9 +60,9 @@
  * all, so the callbacks below simply never fire.
  *
  * Observe controller-side:
- *   chip-tool deviceenergymanagement read esa-type <node> <ep>
- *   chip-tool deviceenergymanagement read esa-can-generate <node> <ep>
- *   chip-tool deviceenergymanagement read esa-state <node> <ep>
+ *   chip-tool deviceenergymanagement read esatype <node> <ep>
+ *   chip-tool deviceenergymanagement read esacan-generate <node> <ep>
+ *   chip-tool deviceenergymanagement read esastate <node> <ep>
  *   chip-tool deviceenergymanagement read abs-min-power <node> <ep>
  *   chip-tool deviceenergymanagement read abs-max-power <node> <ep>
  *   chip-tool deviceenergymanagement read opt-out-state <node> <ep>

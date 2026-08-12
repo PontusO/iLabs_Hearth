@@ -54,7 +54,7 @@
  *   has-flag and the FIRST push always writes, even of 0 (the
  *   MatterWaterHeater LocalTemperature precedent for a null-defaulted
  *   ember attribute);
- *   BatCapacity 0x18 (uint32 mWh) is created with 0 and BatChargeState
+ *   BatCapacity 0x18 (uint32 mAh) is created with 0 and BatChargeState
  *   0x1A (enum8) comes from feature::rechargeable::add()'s config default
  *   0 (kUnknown), both non-nullable, so their caches SEED from those
  *   device values and a write of the same value is a true no-op (the
@@ -214,19 +214,31 @@ public:
 
   // ---- the ember PowerSource battery attributes (both variants) ----
   // Ordinary AT+MTATTR mode-1 writes (reported to subscribers), no-op on
-  // an unchanged value, cache committed on success only. Range checks are
-  // the firmware's/ember's, answered +MTERR:1; the units are the Matter
-  // spec's own, NOT converted here (the one place this differs from
+  // an unchanged value, cache committed on success only. The units are the
+  // Matter spec's own, NOT converted here (the one place this differs from
   // MatterPowerSource::setBatPercentRemaining(), which takes a percent
   // double: this class takes the raw half-percent wire value the design
   // spec's class block names, so a sketch that already thinks in
   // half-percent steps never round-trips through a float).
+  //
+  // RANGE CHECKS ARE EMBER'S, AND THEY DO NOT CARRY A +MTERR CODE. Bench
+  // round C1 task 7 measured it: a value outside an attribute's created
+  // min/max is refused by esp-matter's own attribute::update(), which the
+  // firmware maps to a BARE `ERROR` (AT+MTATTR=1,47,24,65536,1 -> ERROR;
+  // 65535 -> OK; AT+MTATTR=1,47,12,201,1 -> ERROR). So these setters
+  // return false with Hearth.lastError() == 0, and a sketch must read the
+  // BOOL, not the error code. The served ranges the firmware creates today
+  // (mt_devtypes.cpp's mk_battery_storage(), mirroring esp-matter's own
+  // battery_storage::add()): BatCapacity and BatVoltage 0..0xFFFF,
+  // BatPercentRemaining 0..200. BatCapacity's 0xFFFF ceiling is NARROWER
+  // than the data model's plain int32u, so a pack above 65535 mAh cannot
+  // be published at all on this firmware.
   bool setBatVoltage(uint32_t mv);
   bool setBatPercentRemaining(uint8_t halfPercent);  // 0..200 = 0..100%
   bool setBatTimeRemaining(uint32_t seconds);
   bool setBatChargeState(uint8_t state);  // BatChargeStateEnum: 0 Unknown, 1 IsCharging, 2 IsAtFullCharge, 3 IsNotCharging
   bool setBatChargingCurrent(uint32_t ma);
-  bool setBatCapacity(uint32_t mwh);
+  bool setBatCapacity(uint32_t mah);  // mAh, served range 0..0xFFFF (above that: false, lastError 0)
   bool setBatTimeToFullCharge(uint32_t seconds);
 
   // ---- the DEM surface (FULL only), the shared helper ----
@@ -282,7 +294,7 @@ protected:
   static const uint32_t kBatVoltageAttrId       = 0x000B;  // uint32 mV, nullable
   static const uint32_t kBatPercentRemainingAttrId = 0x000C;  // uint8 half-percent, nullable
   static const uint32_t kBatTimeRemainingAttrId = 0x000D;  // uint32 s, nullable
-  static const uint32_t kBatCapacityAttrId      = 0x0018;  // uint32 mWh, non-nullable, device default 0
+  static const uint32_t kBatCapacityAttrId      = 0x0018;  // uint32 mAh, non-nullable, device default 0, served 0..0xFFFF
   static const uint32_t kBatChargeStateAttrId   = 0x001A;  // enum8, non-nullable, device default 0 (kUnknown)
   static const uint32_t kBatTimeToFullChargeAttrId = 0x001B;  // uint32 s, nullable
   static const uint32_t kBatChargingCurrentAttrId  = 0x001D;  // uint32 mA, nullable

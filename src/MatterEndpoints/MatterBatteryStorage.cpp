@@ -220,15 +220,21 @@ bool MatterBatteryStorage::setBatChargingCurrent(uint32_t ma) {
 }
 
 /* Non-nullable, created with 0 (mk_battery_storage()'s
- * create_bat_capacity(ps_cl, 0, ...)), so no has-flag either; the `wrote`
- * flag is the reconcile re-push's record, same reasoning as
+ * create_bat_capacity(ps_cl, 0, 0x00, 0xFFFF)), so no has-flag either; the
+ * `wrote` flag is the reconcile re-push's record, same reasoning as
  * setBatChargeState() above. This is the attribute the whole re-push
- * exists for: a nameplate written once at setup(). */
-bool MatterBatteryStorage::setBatCapacity(uint32_t mwh) {
+ * exists for: a nameplate written once at setup().
+ *
+ * mAh, and the created max is 0xFFFF: a larger figure is refused by ember
+ * with a bare `ERROR` (no +MTERR code, so lastError() stays 0) and this
+ * returns false WITHOUT arming the re-push, which is the correct outcome
+ * for a value the device never accepted. Measured on the bench, round C1
+ * task 7: 65535 -> OK, 65536 -> ERROR. */
+bool MatterBatteryStorage::setBatCapacity(uint32_t mah) {
   if (!started) {
     return false;
   }
-  if (!hearthWriteBatteryAttr(kBatCapacityAttrId, esp_matter_uint32(mwh), mwh, &batCapacity, nullptr)) {
+  if (!hearthWriteBatteryAttr(kBatCapacityAttrId, esp_matter_uint32(mah), mah, &batCapacity, nullptr)) {
     return false;
   }
   wroteBatCapacity = true;
