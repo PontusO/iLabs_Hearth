@@ -150,6 +150,19 @@ MatterWaterHeater	KEYWORD1
 MatterHeatPump	KEYWORD1
 BoostInfo	KEYWORD1
 
+# Task 6 (energy round C1): MatterSolarPower (0x0017),
+# MatterBatteryStorage (0x0018) and MatterDeviceEnergyManagement (0x050D),
+# three more classes with no arduino-esp32 counterpart. See README.md,
+# "Hearth originals". HearthDemControl is the shared DeviceEnergyManagement
+# surface the latter two embed; PowerAdjustEntry is its AT+MTDEMCAP entry
+# struct, re-exported by both owner classes. Each class's Variant_t is the
+# name already listed above.
+MatterSolarPower	KEYWORD1
+MatterBatteryStorage	KEYWORD1
+MatterDeviceEnergyManagement	KEYWORD1
+HearthDemControl	KEYWORD1
+PowerAdjustEntry	KEYWORD1
+
 # Event and callback types.
 hearthEvent_t	KEYWORD1
 hearthEventCB	KEYWORD1
@@ -627,6 +640,36 @@ endBoost	KEYWORD2
 onChangeWaterHeaterMode	KEYWORD2
 getCurrentWaterHeaterMode	KEYWORD2
 
+# Task 6 (energy round C1): MatterSolarPower, MatterBatteryStorage and
+# MatterDeviceEnergyManagement. Names already listed above (begin/end and
+# the whole measurement surface) are not repeated. The setESA*/setAbs*/
+# setOptOutState setters push the 0x0098 field table;
+# pushAdjustmentEnergyUse carries the energy figure the next PowerAdjustEnd
+# reports; setPowerAdjustmentCapability is the AT+MTDEMCAP replacement;
+# onPowerAdjust/onCancelPowerAdjust adjudicate the forwarded commands (an
+# accept pushes nothing: the firmware owns the state change) and
+# endAdjustment is the sketch's own completion path. The setBat* setters
+# are battery storage's ember PowerSource attributes (setBatPercentRemaining
+# is already listed above, from MatterPowerSource; battery storage's
+# overload takes the raw half-percent wire value instead of a percent).
+setESAType	KEYWORD2
+setESACanGenerate	KEYWORD2
+setESAState	KEYWORD2
+setAbsMinPower	KEYWORD2
+setAbsMaxPower	KEYWORD2
+setOptOutState	KEYWORD2
+pushAdjustmentEnergyUse	KEYWORD2
+setPowerAdjustmentCapability	KEYWORD2
+onPowerAdjust	KEYWORD2
+onCancelPowerAdjust	KEYWORD2
+endAdjustment	KEYWORD2
+setBatVoltage	KEYWORD2
+setBatTimeRemaining	KEYWORD2
+setBatChargeState	KEYWORD2
+setBatChargingCurrent	KEYWORD2
+setBatCapacity	KEYWORD2
+setBatTimeToFullCharge	KEYWORD2
+
 # HearthColorUtil.h conversions, called out from MatterEnhancedColorLight's
 # getColorRGB()/setColorRGB(), and from examples/MatterEnhancedColorLight's
 # own temperature simulation (espCTToRgbColor/espCTColorToRgbColor).
@@ -844,6 +887,19 @@ POWER_ONLY	LITERAL1
 # MINIMAL = the disclosed sub-conformant SDK-bare build). FULL is already
 # listed above.
 MINIMAL	LITERAL1
+
+# Variant_t (Task 6, energy round C1), three device types' variant bytes.
+# MatterSolarPower's 0x0017: FULL (listed above) grafts the sensor with
+# energy measurement, NO_ENERGY without it (the current-clamp shape).
+# MatterBatteryStorage's 0x0018: FULL carries the DEM triple, NO_DEM omits
+# it (still conformant). MatterDeviceEnergyManagement's 0x050D:
+# CONTROLLABLE builds the PowerAdjustment feature, REPORT_ONLY builds
+# FeatureMap 0 (no PowerAdjustment: the capability setter is refused
+# host-side, every state push still works).
+NO_ENERGY	LITERAL1
+NO_DEM	LITERAL1
+CONTROLLABLE	LITERAL1
+REPORT_ONLY	LITERAL1
 
 # AirQuality_t (MatterAirQualitySensor.h, ten-type swoop C2), transcribed from
 # AirQualityEnum in the pinned esp-matter checkout.

@@ -190,6 +190,16 @@ MatterElectricalMeter umbrellaElectricalMeter;
 MatterWaterHeater umbrellaWaterHeater;
 MatterHeatPump umbrellaHeatPump;
 
+/*
+ * Task 6 (energy round C1): the forty-eighth, forty-ninth and fiftieth
+ * device type classes, all three Hearth originals. None of the three
+ * headers includes another, so dropping ANY of their lines from Hearth.h's
+ * list fails this build.
+ */
+MatterSolarPower umbrellaSolarPower;
+MatterBatteryStorage umbrellaBatteryStorage;
+MatterDeviceEnergyManagement umbrellaDem;
+
 static int g_pass = 0, g_fail = 0;
 static void check(const char *name, bool cond) {
   printf("  [%s] %s\n", cond ? "PASS" : "FAIL", name);

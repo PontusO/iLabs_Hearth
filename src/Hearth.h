@@ -132,6 +132,14 @@
  * HearthMeasurementPush helper (never a thin subclass: the water heater
  * carries three more surfaces on its one endpoint). Same umbrella
  * reasoning as every class above; one-way includes only, no cycle.
+ *
+ * Task 6 (energy round C1) adds the forty-eighth, forty-ninth and
+ * fiftieth: MatterSolarPower.h, MatterBatteryStorage.h and
+ * MatterDeviceEnergyManagement.h, three more Hearth originals. Solar
+ * embeds HearthMeasurementPush, the DEM endpoint embeds the round's
+ * HearthDemControl, and battery storage embeds BOTH on one endpoint
+ * alongside its ember PowerSource attributes. Same umbrella reasoning
+ * again; one-way includes only, no cycle.
  */
 #pragma once
 
@@ -187,6 +195,9 @@
 #include "MatterEndpoints/MatterElectricalMeter.h"
 #include "MatterEndpoints/MatterWaterHeater.h"
 #include "MatterEndpoints/MatterHeatPump.h"
+#include "MatterEndpoints/MatterSolarPower.h"
+#include "MatterEndpoints/MatterBatteryStorage.h"
+#include "MatterEndpoints/MatterDeviceEnergyManagement.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART
