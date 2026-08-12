@@ -69,12 +69,28 @@
  * mixed `present` array; a legacy line that never reaches a given position
  * at all leaves it both absent and, since the struct is zero-initialised by
  * hearthDispatchCmd() before parsing, value 0.
+ *
+ * Energy round C1 (Task 5, HearthDemControl's PowerAdjustRequest forward,
+ * AT_MT_SPEC.md S3.17) widened `value[]` from uint32_t to int64_t, and
+ * hearthDispatchCmd()'s tail parse from strtoul() to HearthCompat.h's
+ * hearthParseWireValue() (the same 64-bit-bit-pattern parser already used
+ * for +MTATTR's identical width problem, this file's own include below):
+ * a command payload field can now genuinely carry Matter's full int64
+ * range (PowerAdjustRequest's `power` field is int64 mW), where the
+ * previous uint32_t silently truncated anything past 2^32 -- the exact
+ * defect class this codebase's own AT+MTATTR/AT+MTMEAS pipelines were
+ * widened against earlier (0.8.0). Every existing consumer narrows its own
+ * read of `value[i]` down to a uint8_t/uint16_t/uint32_t/bool with an
+ * explicit or implicit cast, so this widening is behaviour-preserving for
+ * all of them (two's-complement truncation is identical either way); only
+ * a genuinely 64-bit-wide payload field, DEM's `power` being the first,
+ * needs the extra range.
  */
 #define HEARTH_CMD_FIELDS_MAX 5
 struct HearthCmdFields {
   uint8_t count;
   bool present[HEARTH_CMD_FIELDS_MAX];
-  uint32_t value[HEARTH_CMD_FIELDS_MAX];
+  int64_t value[HEARTH_CMD_FIELDS_MAX];
 };
 
 class MatterEndPoint {
