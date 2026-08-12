@@ -447,6 +447,23 @@ public:
    * same "no existing endpoint class clears a callback registration on
    * begin()" precedent every other callback in this library follows).
    *
+   * REGISTERING IS WHAT SUBSCRIBES (bench review, 0.11.0): bit 28 is
+   * opt-in (AT_MT_SPEC.md S3.11's default mask is 0x0800003F, no Thread
+   * role bit), so the device never emits +MTEVT:28 to a host that never
+   * asked for it, no matter how correct this callback's own dispatch is.
+   * A non-null `cb` here arms a background read-modify-write of the
+   * event mask (AT+MTEVT? then AT+MTEVT=<mask|bit28>, HearthThread.cpp's
+   * hearthDrainEvtResubscribe()) on the next poll()/hearthCommand(), never
+   * blindly overwriting whatever else is already subscribed; nullptr arms
+   * the same exchange with bit 28 ANDed out instead, leaving every other
+   * bit alone. Because AT_MT_SPEC.md S3.11 also states the mask is
+   * RAM-only and resets to the firmware default on every co-processor
+   * reboot, this library re-arms the same background resubscribe on every
+   * +MTREADY (hearthOnURCLine()) while a callback is registered, and once
+   * more from begin() for a registration made before the link exists --
+   * a sketch that calls this once in setup() stays subscribed across a
+   * reboot the sketch itself never has to notice.
+   *
    * RUNS INSIDE URC DISPATCH, with the link's busy gate held by whatever
    * poll()/hearthCommand() call is delivering the +MTEVT:28 line: a wire
    * write from inside it -- including calling threadInfo() itself -- is
@@ -458,6 +475,7 @@ public:
    */
   void onThreadRoleChange(void (*cb)(HearthThreadRole)) {
     _onThreadRoleChangeCB = cb;
+    _evtResubscribeNeeded = true;
   }
 
   /* Last +MTERR code any layer above HearthLink reported; 0 if none.
@@ -635,6 +653,19 @@ private:
   static void hearthDispatchThreadRoleEvt(const char *rest, HearthClass *self);
 
   /*
+   * The event-mask read-modify-write behind onThreadRoleChange()'s
+   * subscription (bench review, 0.11.0): defined in HearthThread.cpp,
+   * alongside the rest of the Thread role surface. Runs from poll() and
+   * hearthCommand(), same two call sites and same "after the outer
+   * _link call has returned" ordering as hearthDrainCmdRespQueue() and
+   * hearthDrainDeferredWork() -- for the identical reason: it must reach
+   * the wire through _link.command() directly, never through
+   * hearthCommand() itself, or a nested poll()/drain call would recurse
+   * back into here.
+   */
+  void hearthDrainEvtResubscribe();
+
+  /*
    * Fix round 1 (C3 review, CRITICAL): a +MTCMD verdict must never be
    * written to the wire from inside dispatchURC() itself. That call runs
    * with HearthLink's busy gate already held by the outer command()/poll()
@@ -706,6 +737,22 @@ private:
    * above. */
   HearthThreadRole _threadRole;
   void (*_onThreadRoleChangeCB)(HearthThreadRole);
+
+  /*
+   * Bench review round: true whenever the device-side event mask may not
+   * match what onThreadRoleChange()'s current registration wants (bit 28
+   * subscribed if _onThreadRoleChangeCB is non-null, unsubscribed if it is
+   * null). Set by onThreadRoleChange() itself (every call, register or
+   * clear), by begin() (a fresh link's device-side mask is unknown, or
+   * about to be reset by hearthResetCoprocessor()), and by hearthOnURCLine()
+   * on every +MTREADY while a callback is registered (AT_MT_SPEC.md S3.11:
+   * the mask is RAM-only and reverts to the firmware default on every
+   * co-processor reboot, so a subscription made before a reboot is
+   * silently lost device-side unless re-armed here). Cleared by
+   * hearthDrainEvtResubscribe() before it runs, the same re-entrancy
+   * guard hearthDrainDeferredWork() uses for its own flag.
+   */
+  bool _evtResubscribeNeeded;
 };
 
 /*

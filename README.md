@@ -390,6 +390,29 @@ void loop() {
 }
 ```
 
+**Registering is what subscribes** (bench round: on real hardware the
+callback never fired at all, because nothing had ever asked the device to
+send `+MTEVT:28` in the first place -- bit 28 is opt-in, `AT_MT_SPEC.md`
+S3.11's default event mask has no Thread role bit, so the device was
+correctly silent). The one call above, `Hearth.onThreadRoleChange(cb)`,
+arms a background `AT+MTEVT?` / `AT+MTEVT=` read-modify-write that the
+next `Hearth.poll()`/any library call carries out: it reads the mask
+first, then OR's bit 28 in (or AND's it out for a `nullptr` registration)
+and writes the result back whole, never blindly overwriting whatever else
+a sketch or another part of this library already subscribed to. Passing
+`nullptr` unsubscribes the same way, in reverse.
+
+**The subscription survives a co-processor reboot with no sketch action.**
+`AT_MT_SPEC.md` S3.11 states the mask lives in RAM only and reverts to the
+firmware default on every reboot, expected (an `AT+MTEPAPPLY` composition
+apply) or spontaneous -- so a subscription made once in `setup()` would
+otherwise silently stop working the first time the C6 restarts, the same
+shape of staleness this library's endpoint-composition reconcile already
+guards against. This library re-arms the same read-modify-write on its
+own on every `+MTREADY` while a callback is registered; a registration
+made before the link even exists yet (before the first call that brings
+it up) is deferred and applied the same way once it does.
+
 `hearthThreadRoleName(HearthThreadRole)` returns a display string for any
 of the seven named roles (`"UNSPECIFIED"`, `"UNASSIGNED"`,
 `"SLEEPY_END_DEVICE"`, `"END_DEVICE"`, `"REED"`, `"ROUTER"`, `"LEADER"`)
@@ -1414,12 +1437,23 @@ and transport smoke tests (2026-08-03). See `HARDWARE-BRINGUP.md` for
 additional commissioning flows and coverage.
 
 **0.11.0** adds the Thread role and mesh identity surface (`threadInfo()`/
-`threadRole()`/`onThreadRoleChange()`/`hearthThreadRoleName()`), host-side
-coverage only at this point: the wire parse (every field, every `has*`
-flag, both escapes in the name grammar, the unrecognised-role degrade), the
-cached read path's zero wire traffic, the `+MTEVT:28` dispatch and its
-reentrancy guard, and a probe proving that dispatch touches no other path.
-A review round added `HEARTH_THREAD_UNKNOWN` as its own sentinel, distinct
-from `HEARTH_THREAD_UNSPECIFIED`: see "Thread role and mesh identity"
-above. Hardware verification is the firmware repo's own bench task, not
-this library's.
+`threadRole()`/`onThreadRoleChange()`/`hearthThreadRoleName()`). A review
+round added `HEARTH_THREAD_UNKNOWN` as its own sentinel, distinct from
+`HEARTH_THREAD_UNSPECIFIED`, and corrected `partitionId`'s nullability
+claim (`hasPartitionId` can be `true` with a genuine `0` while detached
+with a dataset installed; `attached` is the only reliable "on a network"
+predicate): see "Thread role and mesh identity" above for both.
+
+Bench E2E on real hardware confirmed `threadInfo()` (all seven fields
+against the live link), `threadRole()`'s zero-wire-traffic cached read,
+and the role decoding, but found the change callback never fired at all:
+`onThreadRoleChange()` stored the function pointer with no wire effect,
+so bit 28 (opt-in, off by the firmware's default event mask) was never
+actually subscribed to and the device, correctly, never sent it. Every
+host test had passed regardless, because they all inject `+MTEVT:28`
+straight into dispatch, which proves the handler and cannot prove
+anything ever asks the device to send it -- recorded here as a test
+design lesson, not only a bug. Fixed by making registration itself
+subscribe (a background `AT+MTEVT?`/`AT+MTEVT=` read-modify-write,
+re-armed on every co-processor reboot and for a registration made before
+the link exists): see "Thread role and mesh identity" above.

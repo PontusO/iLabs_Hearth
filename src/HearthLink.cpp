@@ -24,9 +24,20 @@ void HearthLink::begin(Stream &serial) {
  * needs to know "this is one of the command-forwarding URCs", not which
  * one -- Hearth.cpp's hearthOnURCLine() makes that distinction itself with
  * the full prefixes.
+ *
+ * "+MTEVT:" (7 chars, WITH the colon) is deliberately narrower than that:
+ * bench review round (Task 4's event-mask subscription) added
+ * AT+MTEVT?'s own reply, "+MTEVTMASK:<hex32>" (AT_MT_SPEC.md S3.11), which
+ * shares "+MTEVT"'s first six characters with the "+MTEVT:<bit>[,<detail>]"
+ * URC. A six-character match here swallowed that reply as an ordinary
+ * async URC (dispatchURC(), never reaching the query's own onLine
+ * callback), so hearthDrainEvtResubscribe() read nothing back and the
+ * mask read-modify-write it exists to perform never got past its own
+ * first read. Matching the colon is exact and sufficient: the URC always
+ * carries one immediately after "+MTEVT" and the mask reply never does.
  */
 bool HearthLink::isAsyncURC(const char *line) {
-  return strncmp(line, "+MTEVT", 6) == 0 || strncmp(line, "+MTATTR", 7) == 0
+  return strncmp(line, "+MTEVT:", 7) == 0 || strncmp(line, "+MTATTR", 7) == 0
       || strncmp(line, "+MTIDENT", 8) == 0 || strncmp(line, "+MTREADY", 8) == 0
       || strncmp(line, "+MTCMD", 6) == 0;
 }

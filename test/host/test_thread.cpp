@@ -8,7 +8,7 @@
  * threadInfo() is a full round trip that fills every field including the
  * has* flags for the wire's nullable ones; threadRole() is a cached read
  * with NO wire traffic at all, seeded to HEARTH_THREAD_UNSPECIFIED and
- * refreshed only by an incoming +MTEVT:28.
+ * refreshed by threadInfo() and by an incoming +MTEVT:28.
  *
  * HearthThreadEvtProbe proves bit 28 does not leak into any other dispatch
  * path: its attributeChangeCB/hearthOnForwardedCommandFields overrides
@@ -16,6 +16,25 @@
  * neither must Hearth.onLinkEvent() or Matter.onEvent() (the +MTEVT:27 /
  * matterEvent_t paths), the same probe shape test_cmdfields.cpp's
  * FieldsProbe uses for the same kind of proof.
+ *
+ * BENCH REVIEW ROUND (post-merge): on real hardware the callback never
+ * fired at all. Cause: onThreadRoleChange() used to just store the
+ * function pointer, with no wire effect -- bit 28 is opt-in
+ * (AT_MT_SPEC.md S3.11's default mask is 0x0800003F, no Thread role bit),
+ * so the device, correctly, never emitted +MTEVT:28 to a host that never
+ * subscribed. Every test in the ORIGINAL round passed anyway, because they
+ * all inject +MTEVT:28 straight into dispatch, which proves the HANDLER
+ * and cannot prove that anything ever asks the device to send it -- a test
+ * design lesson as much as a bug. Fixed by making registration itself
+ * subscribe (a background AT+MTEVT? / AT+MTEVT= read-modify-write,
+ * HearthThread.cpp's hearthDrainEvtResubscribe()), re-armed on every
+ * +MTREADY while a callback is registered (the mask is RAM-only and does
+ * not survive a co-processor reboot) and on begin() for a registration
+ * made before the link exists. The test_evtmask_* tests below pin the
+ * mechanism directly, at the wire; every pre-existing callback test in
+ * this file now drains that mechanism explicitly first
+ * (registerAndDrainSubscribe()), so the subscribe handshake does not leak
+ * into assertions that are about something else.
  */
 #include <stdio.h>
 #include <string.h>
@@ -44,6 +63,27 @@ public:
     return true;
   }
 };
+
+/*
+ * Registers cb and drains the subscribe handshake registration now
+ * triggers. `priorMask` is what the mock device is scripted to report on
+ * the AT+MTEVT? read; the resulting write is priorMask with bit 28 OR'd
+ * in. Assumes Hearth.begin(s) has already been called. Every test below
+ * that registers a real callback and cares about what happens AFTERWARD
+ * uses this, so the subscribe handshake itself does not leak into that
+ * test's own wire assertions -- the handshake has its own dedicated tests
+ * (test_evtmask_*, below).
+ */
+static void registerAndDrainSubscribe(MockStream &s, void (*cb)(HearthThreadRole), uint32_t priorMask) {
+  char maskLine[48];
+  snprintf(maskLine, sizeof(maskLine), "+MTEVTMASK:0x%08lX\r\nOK\r\n", (unsigned long)priorMask);
+  s.expect("AT+MTEVT?", maskLine);
+  char setCmd[24];
+  snprintf(setCmd, sizeof(setCmd), "AT+MTEVT=0x%08lX", (unsigned long)(priorMask | (1UL << 28)));
+  s.expect(setCmd, "OK\r\n");
+  Hearth.onThreadRoleChange(cb);
+  Hearth.poll();
+}
 
 /* hearthThreadRoleName(): the display helper, all seven named tokens, the
  * review-round HEARTH_THREAD_UNKNOWN sentinel, and a truly out-of-range
@@ -223,7 +263,9 @@ static void test_threadinfo_wifi_image_unsupported(void) {
 /* threadRole(): seeded on first use (a fresh begin() gives
  * HEARTH_THREAD_UNSPECIFIED with zero wire traffic, not garbage and not a
  * query), and it never touches the wire on its own -- the whole point of
- * the second, cheaper read path. */
+ * the second, cheaper read path. No callback is registered in this test,
+ * so begin() must not arm the subscribe handshake either: nothing here
+ * wants bit 28, and the device's post-boot default already agrees. */
 static void test_threadrole_seeded_no_wire(void) {
   MockStream s;
   Hearth.begin(s);
@@ -232,7 +274,11 @@ static void test_threadrole_seeded_no_wire(void) {
 }
 
 /* threadRole() is refreshed by every +MTEVT:28, with no wire traffic of its
- * own for the read. */
+ * own for the read. No callback is registered, so this pins the dispatch's
+ * cache update in isolation from the subscribe mechanism (which has its
+ * own dedicated tests below) -- and, per the bench finding, in real use
+ * this event only ever arrives if something else registered a callback;
+ * this test's injectURC() stands in for that. */
 static void test_threadrole_refreshed_by_evt28(void) {
   MockStream s;
   Hearth.begin(s);
@@ -243,8 +289,119 @@ static void test_threadrole_refreshed_by_evt28(void) {
   check("threadRole() read itself put nothing on the wire", s.unexpected().empty());
 }
 
+/*
+ * Bench review round: onThreadRoleChange() must actually subscribe, not
+ * just store the pointer. Pins the exact read-modify-write exchange: one
+ * AT+MTEVT? read, then exactly one AT+MTEVT= write with bit 28 OR'd into
+ * whatever was read -- never a blind write of an assumed mask, which
+ * would silently clobber whatever else a sketch (or a future round of
+ * this library) already subscribed to.
+ */
+static void test_evtmask_subscribes_on_register(void) {
+  MockStream s;
+  Hearth.begin(s);
+  s.expect("AT+MTEVT?", "+MTEVTMASK:0x0800003F\r\nOK\r\n");
+  s.expect("AT+MTEVT=0x1800003F", "OK\r\n");
+  Hearth.onThreadRoleChange([](HearthThreadRole) {});
+  Hearth.poll();
+  check("the mask is read before it is written (never a blind write)", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  Hearth.onThreadRoleChange(nullptr);
+}
+
+/* The same exchange, but the device already carries bits outside the
+ * default group (here: bits 6-7, the fabric-events pair, standing in for
+ * whatever else a sketch already subscribed to). Those bits must survive
+ * the write untouched -- proves the write is a modification of what was
+ * read, not a hardcoded "default plus bit 28". */
+static void test_evtmask_preserves_unrelated_bits_on_subscribe(void) {
+  MockStream s;
+  Hearth.begin(s);
+  s.expect("AT+MTEVT?", "+MTEVTMASK:0x080000FF\r\nOK\r\n");
+  s.expect("AT+MTEVT=0x180000FF", "OK\r\n");
+  Hearth.onThreadRoleChange([](HearthThreadRole) {});
+  Hearth.poll();
+  check("unrelated bits (6, 7, 27) survive the write untouched", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  Hearth.onThreadRoleChange(nullptr);
+}
+
+/* Passing nullptr must clear bit 28 and ONLY bit 28: the read-modify-write
+ * discipline in the other direction. Starts from a mask that already
+ * carries bit 28 plus unrelated bits (what registerAndDrainSubscribe()
+ * itself would have established), so a wrong implementation that clears
+ * everything (or clears nothing) both have somewhere to go wrong. */
+static void test_evtmask_clear_removes_only_bit28(void) {
+  MockStream s;
+  Hearth.begin(s);
+  registerAndDrainSubscribe(s, [](HearthThreadRole) {}, 0x080000FF);
+  check("registered first", s.scriptDrained() && s.unexpected().empty());
+
+  s.expect("AT+MTEVT?", "+MTEVTMASK:0x180000FF\r\nOK\r\n");  // the mask just written above
+  s.expect("AT+MTEVT=0x080000FF", "OK\r\n");                 // bit 28 gone; bits 6/7/27 intact
+  Hearth.onThreadRoleChange(nullptr);
+  Hearth.poll();
+  check("clearing removed only bit 28", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/* AT_MT_SPEC.md S3.11: the mask is RAM-only and resets to the firmware
+ * default on every co-processor reboot, expected (AT+MTEPAPPLY) or
+ * spontaneous -- both arrive through the identical +MTREADY hook. A
+ * subscription established once must survive that with no sketch action,
+ * the same shape of staleness this project has already hit twice with
+ * endpoint composition (the reconcile path); this is the Thread-role
+ * event mask's own version of the fix. */
+static void test_evtmask_resubscribes_after_reboot(void) {
+  MockStream s;
+  Hearth.begin(s);
+  registerAndDrainSubscribe(s, [](HearthThreadRole) {}, 0x0800003F);
+  check("registered once", s.scriptDrained() && s.unexpected().empty());
+
+  static int gotReboot;
+  gotReboot = 0;
+  Hearth.onLinkEvent([](hearthEvent_t e) {
+    if (e == HEARTH_COPROCESSOR_REBOOTED) {
+      gotReboot++;
+    }
+  });
+
+  s.injectURC("+MTREADY");  // spontaneous: the co-processor rebooted, its mask is back to default
+  s.expect("AT+MTEVT?", "+MTEVTMASK:0x0800003F\r\nOK\r\n");
+  s.expect("AT+MTEVT=0x1800003F", "OK\r\n");
+  Hearth.poll();
+
+  check("the reboot is still reported to the sketch as usual", gotReboot == 1);
+  check("the subscription was re-established with no sketch action", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+
+  Hearth.onLinkEvent(nullptr);
+  Hearth.onThreadRoleChange(nullptr);
+}
+
+/* Registration before the link exists at all (a sketch's setup() calling
+ * this before its first Hearth.* call, which is what actually brings the
+ * link up on real hardware): must not crash, and must defer the subscribe
+ * handshake until begin() has a link to run it on, applying it on the
+ * very next poll()/hearthCommand(). */
+static void test_evtmask_registration_before_begin_defers_to_begin(void) {
+  MockStream s;
+  Hearth.onThreadRoleChange([](HearthThreadRole) {});  // before Hearth.begin(s) below
+  Hearth.begin(s);
+  s.expect("AT+MTEVT?", "+MTEVTMASK:0x0800003F\r\nOK\r\n");
+  s.expect("AT+MTEVT=0x1800003F", "OK\r\n");
+  Hearth.poll();
+  check("registering before begin() still subscribes once the link exists", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  Hearth.onThreadRoleChange(nullptr);
+}
+
 /* onThreadRoleChange(): the plain-function-pointer callback fires once per
- * +MTEVT:28 with the decoded token, and the cache is updated alongside it. */
+ * +MTEVT:28 with the decoded token, and the cache is updated alongside it.
+ * Registers via the shared helper so the subscribe handshake the
+ * registration now triggers is drained BEFORE the event is injected --
+ * this test is about the callback firing, not about the subscribe wire
+ * traffic, which has its own dedicated tests above. */
 static void test_onthreadrolechange_fires(void) {
   MockStream s;
   Hearth.begin(s);
@@ -252,15 +409,22 @@ static void test_onthreadrolechange_fires(void) {
   static int calls;
   got = HEARTH_THREAD_UNSPECIFIED;
   calls = 0;
-  Hearth.onThreadRoleChange([](HearthThreadRole r) {
-    got = r;
-    calls++;
-  });
+  registerAndDrainSubscribe(
+    s,
+    [](HearthThreadRole r) {
+      got = r;
+      calls++;
+    },
+    0x0800003F
+  );
+  check("subscribe handshake completed first", s.scriptDrained() && s.unexpected().empty());
+
   s.injectURC("+MTEVT:28,LEADER");
   Hearth.poll();
   check("callback fired exactly once", calls == 1);
   check("callback received the decoded role", got == HEARTH_THREAD_LEADER);
   check("cache also updated", Hearth.threadRole() == HEARTH_THREAD_LEADER);
+  check("no further wire traffic from the event dispatch itself", s.unexpected().empty());
   Hearth.onThreadRoleChange(nullptr);
 }
 
@@ -273,9 +437,11 @@ static void test_callback_wire_write_refused_reentrant(void) {
   Hearth.begin(s);
   static int rc;
   rc = 0;
-  Hearth.onThreadRoleChange([](HearthThreadRole) {
-    rc = Hearth.hearthCommand("AT");
-  });
+  registerAndDrainSubscribe(
+    s, [](HearthThreadRole) { rc = Hearth.hearthCommand("AT"); }, 0x0800003F
+  );
+  check("subscribe handshake completed first", s.scriptDrained() && s.unexpected().empty());
+
   s.injectURC("+MTEVT:28,ROUTER");
   Hearth.poll();
   check("a wire write from inside the callback is refused", rc == HEARTH_CMD_REENTRANT);
@@ -291,12 +457,15 @@ static void test_evt28_malformed_no_payload_dropped(void) {
   Hearth.begin(s);
   static int calls;
   calls = 0;
-  Hearth.onThreadRoleChange([](HearthThreadRole) { calls++; });
+  registerAndDrainSubscribe(s, [](HearthThreadRole) { calls++; }, 0x0800003F);
+  check("subscribe handshake completed first", s.scriptDrained() && s.unexpected().empty());
+
   HearthThreadRole before = Hearth.threadRole();
   s.injectURC("+MTEVT:28");
   Hearth.poll();
   check("no callback for a payload-less bit 28", calls == 0);
   check("cache unchanged", Hearth.threadRole() == before);
+  check("no wire traffic from the malformed dispatch itself", s.unexpected().empty());
   Hearth.onThreadRoleChange(nullptr);
 }
 
@@ -321,7 +490,8 @@ static void test_evt28_does_not_touch_other_dispatch_paths(void) {
 
   static HearthThreadRole got;
   got = HEARTH_THREAD_UNSPECIFIED;
-  Hearth.onThreadRoleChange([](HearthThreadRole r) { got = r; });
+  registerAndDrainSubscribe(s, [](HearthThreadRole r) { got = r; }, 0x0800003F);
+  check("subscribe handshake completed first", s.scriptDrained() && s.unexpected().empty());
 
   s.injectURC("+MTEVT:28,ROUTER");
   Hearth.poll();
@@ -331,7 +501,7 @@ static void test_evt28_does_not_touch_other_dispatch_paths(void) {
   check("hearthOnForwardedCommandFields never called", ep.cmdCalls == 0);
   check("onLinkEvent never called", gotHearthEvt == 0);
   check("Matter.onEvent never called", gotMatterEvt == 0);
-  check("no wire traffic", s.unexpected().empty());
+  check("no wire traffic beyond the subscribe handshake already drained above", s.unexpected().empty());
 
   Hearth.onLinkEvent(nullptr);
   Matter.onEvent(nullptr);
@@ -340,6 +510,17 @@ static void test_evt28_does_not_touch_other_dispatch_paths(void) {
 }
 
 int main(void) {
+  /* This whole file scripts multi-command wire exchanges (the mask
+   * read-modify-write chief among them); a regression that sends the wrong
+   * command mismatches MockStream's next expectation and gets no reply,
+   * so the read loop blocks on its real timeout. Host time never advances
+   * on its own (ArduinoShim.h's millis() is a static counter), and this
+   * file's own tests never need it to stand still, so keep it moving
+   * globally: the same fix test_hearthlink.cpp applies locally around its
+   * own reentrancy test, "keep the simulated clock moving so that is a
+   * failure rather than a hang." */
+  g_yieldAdvanceMs = 1;
+
   printf("\n===== Hearth Thread role tests =====\n");
   test_role_name_strings();
   test_threadinfo_sends_bare_query();
@@ -354,6 +535,11 @@ int main(void) {
   test_threadinfo_wifi_image_unsupported();
   test_threadrole_seeded_no_wire();
   test_threadrole_refreshed_by_evt28();
+  test_evtmask_subscribes_on_register();
+  test_evtmask_preserves_unrelated_bits_on_subscribe();
+  test_evtmask_clear_removes_only_bit28();
+  test_evtmask_resubscribes_after_reboot();
+  test_evtmask_registration_before_begin_defers_to_begin();
   test_onthreadrolechange_fires();
   test_callback_wire_write_refused_reentrant();
   test_evt28_malformed_no_payload_dropped();

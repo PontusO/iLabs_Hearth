@@ -10,6 +10,7 @@
 #include "HearthThread.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 namespace {
 
@@ -218,6 +219,31 @@ void hearthOnThreadLine(const char *line, void *arg) {
   }
 }
 
+/* AT_MT_SPEC.md S3.11's event table, bit 28 (MT_EVT_THREAD_ROLE_CHANGED).
+ * The one bit this whole file's event-mask subscription logic ever touches;
+ * every other bit in the mask is the sketch's (or a prior round's) own
+ * business and must survive a read-modify-write here untouched. */
+const uint32_t kThreadRoleEvtBit = 1UL << 28;
+
+/* "+MTEVTMASK:<hex32>" (the text after "+MTEVT?"'s reply prefix,
+ * AT_MT_SPEC.md S3.11). No "0x" stripping needed: strtoul's base-16 mode
+ * accepts the prefix directly, the same convention every other hex field
+ * in this library already relies on (hearthOnEpLine()'s device-type field,
+ * Hearth.cpp). */
+struct HearthEvtMaskCtx {
+  uint32_t mask;
+  bool got;
+};
+
+void hearthOnEvtMaskLine(const char *line, void *arg) {
+  HearthEvtMaskCtx *ctx = (HearthEvtMaskCtx *)arg;
+  if (strncmp(line, "+MTEVTMASK:", 11) != 0) {
+    return;
+  }
+  ctx->mask = (uint32_t)strtoul(line + 11, nullptr, 16);
+  ctx->got = true;
+}
+
 }  // namespace
 
 const char *hearthThreadRoleName(HearthThreadRole role) {
@@ -275,4 +301,69 @@ void HearthClass::hearthDispatchThreadRoleEvt(const char *rest, HearthClass *sel
   if (self->_onThreadRoleChangeCB) {
     self->_onThreadRoleChangeCB(role);
   }
+}
+
+/*
+ * The event-mask read-modify-write behind onThreadRoleChange()'s
+ * subscription (bench review round: the callback never fired on real
+ * hardware, because nothing ever asked the device to emit +MTEVT:28 in
+ * the first place -- bit 28 is opt-in, AT_MT_SPEC.md S3.11's default mask
+ * is 0x0800003F, and registering a callback used to just store a function
+ * pointer with no wire effect at all).
+ *
+ * Called from Hearth.cpp's poll() and hearthCommand(), the same two call
+ * sites and ordering as hearthDrainCmdRespQueue()/hearthDrainDeferredWork():
+ * after the outer _link call has already returned, so _link.busy() reads
+ * false and a nested call from inside a dispatched callback bails out
+ * cleanly instead of corrupting the link's single reader. Reaches the wire
+ * through _link.command() directly, never through Hearth's own
+ * hearthCommand(), for the identical reason those two siblings do: this
+ * runs *from inside* hearthCommand()'s own tail, and routing back through
+ * it would recurse into this same drain and, worse, let this background
+ * exchange's own outcome (or lack of one) clobber the caller's lastError().
+ *
+ * ALWAYS READ BEFORE WRITE, NEVER A BLIND WRITE: AT+MTEVT? first, so
+ * whatever bits a sketch (or a prior round of this library) already
+ * subscribed to are known before this touches anything, then exactly one
+ * bit is OR'd in (a callback is registered) or AND'd out (it is not) and
+ * the result is written back whole. A blind write of "default mask plus
+ * bit 28" would silently clobber any other subscription the sketch or a
+ * future round ever makes -- precisely the class of bug this whole review
+ * round has been finding elsewhere in this file.
+ *
+ * The flag is cleared BEFORE the exchange runs (the same re-entrancy guard
+ * hearthDrainDeferredWork() uses for its own flag): if either the read or
+ * the write fails -- the link is down, a timeout, a coded error -- it is
+ * set again so the next poll()/hearthCommand() retries, rather than the
+ * subscription silently never being established or corrected. _lastError
+ * is saved and restored around the whole exchange, so this background sync
+ * can never clobber what the CALLER's own command just recorded, the same
+ * discipline hearthDrainDeferredWork() applies for its own background
+ * pushes.
+ */
+void HearthClass::hearthDrainEvtResubscribe() {
+  if (!_evtResubscribeNeeded || _link.busy()) {
+    return;
+  }
+  _evtResubscribeNeeded = false;
+  int savedError = _lastError;
+
+  HearthEvtMaskCtx ctx;
+  ctx.mask = 0;
+  ctx.got = false;
+  int rc = _link.command("AT+MTEVT?", hearthOnEvtMaskLine, &ctx);
+  if (rc != 0 || !ctx.got) {
+    _evtResubscribeNeeded = true;  // retry: the read itself did not succeed
+    _lastError = savedError;
+    return;
+  }
+
+  uint32_t newMask = _onThreadRoleChangeCB ? (ctx.mask | kThreadRoleEvtBit) : (ctx.mask & ~kThreadRoleEvtBit);
+  char cmd[24];  // "AT+MTEVT=0x" + 8 hex digits + NUL, with headroom
+  snprintf(cmd, sizeof(cmd), "AT+MTEVT=0x%08lX", (unsigned long)newMask);
+  rc = _link.command(cmd);
+  if (rc != 0) {
+    _evtResubscribeNeeded = true;  // retry: the write did not succeed
+  }
+  _lastError = savedError;
 }

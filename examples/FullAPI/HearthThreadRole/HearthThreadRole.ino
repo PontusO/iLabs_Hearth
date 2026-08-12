@@ -51,6 +51,17 @@
  * one this sketch follows: set a flag in the callback, act on it from
  * loop().
  *
+ * REGISTRATION IS WHAT SUBSCRIBES. Bit 28 is opt-in (AT_MT_SPEC.md S3.11's
+ * default event mask has no Thread role bit), so the ONE call below --
+ * Hearth.onThreadRoleChange(onRoleChange) in setup() -- is also what tells
+ * the device to start sending +MTEVT:28 in the first place: it arms a
+ * background AT+MTEVT?/AT+MTEVT= read-modify-write (never a blind write;
+ * it never touches any other bit already subscribed) that the next
+ * Hearth.poll() carries out. This sketch never has to repeat it: the
+ * library re-arms the same exchange on its own after a co-processor
+ * reboot, since AT_MT_SPEC.md S3.11 states the mask lives in RAM only and
+ * reverts to the firmware default every time the C6 restarts.
+ *
  * Observe controller-side (needs a commissioned Thread device; the static
  * reads work at any time, a live role CHANGE needs an actual mesh
  * transition, e.g. during commissioning):
