@@ -17,16 +17,26 @@
  *     host-side with error 1 and zero wire traffic (the firmware answers
  *     +MTERR:3, cluster-missing, for that variant: AT_MT_SPEC.md S3.26).
  *
- * The ember reconcile rule is the one this suite pins hardest, because it
- * is a READ-AND-PIN rather than a new invention (design spec 4.2's
- * explicit step): every existing ember-attribute class in this library
- * (MatterPowerSource and MatterThermostat override hearthOnReconciled()
- * not at all; MatterWaterHeater overrides it and deliberately leaves its
- * thermostat half alone) neither re-pushes an ember attribute on
- * reconcile nor invalidates its cache. This class does exactly the same,
- * and the pin is behavioural: after a reconcile, a repeat write of the
- * cached value is still a no-op, and no attribute line is emitted by the
- * reconcile itself.
+ * The ember reconcile rule is the one this suite pins hardest, and it is a
+ * READ-AND-PIN rather than a new invention (design spec 4.2's explicit
+ * step). What the read found is that this library has BOTH behaviours,
+ * for good reasons: MatterPowerSource and MatterThermostat override
+ * hearthOnReconciled() not at all and MatterWaterHeater deliberately skips
+ * its thermostat half (right for a resampled value, which self-heals),
+ * while MatterTemperatureControlledCabinet::hearthOnReconciled()
+ * (.cpp:214-243, inherited by MatterOvenCavity) re-pushes its four
+ * TemperatureControl attributes unconditionally because the alternative
+ * was BENCH-OBSERVED to leave the device stale forever (.cpp:190-213).
+ * This class therefore applies the round's own configuration-versus-
+ * sampled split per attribute (the class header lists all seven with the
+ * reason each lands where it does), and both halves are pinned here:
+ *
+ *   - BatCapacity and BatChargeState are CONFIG: re-pushed on reconcile
+ *     with exact wire lines, because a nameplate written once at setup()
+ *     and a state asserted on rare transitions cannot self-heal;
+ *   - the five sampled readings follow B229: nothing re-sent, but the
+ *     wire-pushed memory is cleared, so the next identical sample reaches
+ *     the wire instead of being suppressed.
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -450,19 +460,38 @@ static void test_reconcile_splits(void) {
   check("baseline setAbsMaxPower(5000000000)", dev.setAbsMaxPower(5000000000LL));
   s.expect("AT+MTMEAS=1,152,5,1", "OK\r\n");
   check("baseline setOptOutState(1)", dev.setOptOutState(1));
-  /* ember battery attributes (untouched: neither re-pushed nor cleared) */
+  /* ember CONFIG (re-pushed) */
+  s.expect("AT+MTATTR=1,47,24,13500000,1", "+MTATTR:1,47,24,13500000\r\nOK\r\n");
+  check("baseline setBatCapacity(13500000)", dev.setBatCapacity(13500000));
+  s.expect("AT+MTATTR=1,47,26,1,1", "+MTATTR:1,47,26,1\r\nOK\r\n");
+  check("baseline setBatChargeState(1)", dev.setBatChargeState(1));
+  /* ember SAMPLED (cleared, not resent) */
   s.expect("AT+MTATTR=1,47,11,48000,1", "+MTATTR:1,47,11,48000\r\nOK\r\n");
   check("baseline setBatVoltage(48000)", dev.setBatVoltage(48000));
 
+  /* the reconcile itself: DEM configuration and the two ember CONFIG
+   * attributes, in that order, and nothing else. The ember lines are
+   * pushed through updateAttributeVal() directly, so they are ordinary
+   * AT+MTATTR mode-1 writes, byte-identical to the setters' own. */
+  s.expect("AT+MTATTR=1,47,24,13500000,1", "+MTATTR:1,47,24,13500000\r\nOK\r\n");
+  s.expect("AT+MTATTR=1,47,26,1,1", "+MTATTR:1,47,26,1\r\nOK\r\n");
   s.expect("AT+MTMEAS=1,152,0,5", "OK\r\n");
   s.expect("AT+MTMEAS=1,152,4,5000000000", "OK\r\n");
   reconcile(dev);
-  check("reconcile re-pushed the DEM configuration fields ONLY", s.scriptDrained());
+  check("reconcile re-pushed the two ember CONFIG attributes and the DEM configuration, nothing else", s.scriptDrained());
   check("no unexpected commands", s.unexpected().empty());
 
-  /* ember half: the read-and-pin rule (this file's header comment) */
-  check("the ember battery cache survived: a repeat write is still a no-op", dev.setBatVoltage(48000));
-  check("and the reconcile emitted no AT+MTATTR of its own", s.scriptDrained() && s.unexpected().empty());
+  /* ember CONFIG half: the cache is untouched by its own re-push, so an
+   * ordinary repeat write is still the no-op it always was */
+  check("repeat setBatCapacity(13500000) after reconcile is still a no-op", dev.setBatCapacity(13500000));
+  check("repeat setBatChargeState(1) after reconcile is still a no-op", dev.setBatChargeState(1));
+  check("neither reached the wire", s.scriptDrained() && s.unexpected().empty());
+
+  /* ember SAMPLED half: B229. The value was NOT re-sent by the reconcile
+   * above, and the wire-pushed memory was cleared, so the next identical
+   * sample reaches the wire again instead of being suppressed. */
+  s.expect("AT+MTATTR=1,47,11,48000,1", "+MTATTR:1,47,11,48000\r\nOK\r\n");
+  check("setBatVoltage(48000) after reconcile reaches the wire again", dev.setBatVoltage(48000));
 
   /* measurement half: B229 */
   s.expect("AT+MTMEAS=1,144,0,48000", "OK\r\n");
@@ -474,6 +503,105 @@ static void test_reconcile_splits(void) {
   check("repeat setESAType(5) after reconcile is still a no-op", dev.setESAType(5));
   check("script drained", s.scriptDrained());
   check("no unexpected commands", s.unexpected().empty());
+}
+
+/* The five sampled attributes, one at a time: none is re-sent by the
+ * reconcile, and every one of them reaches the wire again on the next
+ * identical push. */
+static void test_reconcile_sampled_attributes_clear_without_resend(void) {
+  MockStream s;
+  MatterBatteryStorage dev;
+  bringUp(s, dev);
+  s.expect("AT+MTATTR=1,47,11,48000,1", "+MTATTR:1,47,11,48000\r\nOK\r\n");
+  check("baseline setBatVoltage(48000)", dev.setBatVoltage(48000));
+  s.expect("AT+MTATTR=1,47,12,150,1", "+MTATTR:1,47,12,150\r\nOK\r\n");
+  check("baseline setBatPercentRemaining(150)", dev.setBatPercentRemaining(150));
+  s.expect("AT+MTATTR=1,47,13,5400,1", "+MTATTR:1,47,13,5400\r\nOK\r\n");
+  check("baseline setBatTimeRemaining(5400)", dev.setBatTimeRemaining(5400));
+  s.expect("AT+MTATTR=1,47,27,7200,1", "+MTATTR:1,47,27,7200\r\nOK\r\n");
+  check("baseline setBatTimeToFullCharge(7200)", dev.setBatTimeToFullCharge(7200));
+  s.expect("AT+MTATTR=1,47,29,16000,1", "+MTATTR:1,47,29,16000\r\nOK\r\n");
+  check("baseline setBatChargingCurrent(16000)", dev.setBatChargingCurrent(16000));
+
+  reconcile(dev);
+  check("the reconcile re-sent NONE of the five sampled readings", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+
+  s.expect("AT+MTATTR=1,47,11,48000,1", "+MTATTR:1,47,11,48000\r\nOK\r\n");
+  check("setBatVoltage(48000) reaches the wire again", dev.setBatVoltage(48000));
+  s.expect("AT+MTATTR=1,47,12,150,1", "+MTATTR:1,47,12,150\r\nOK\r\n");
+  check("setBatPercentRemaining(150) reaches the wire again", dev.setBatPercentRemaining(150));
+  s.expect("AT+MTATTR=1,47,13,5400,1", "+MTATTR:1,47,13,5400\r\nOK\r\n");
+  check("setBatTimeRemaining(5400) reaches the wire again", dev.setBatTimeRemaining(5400));
+  s.expect("AT+MTATTR=1,47,27,7200,1", "+MTATTR:1,47,27,7200\r\nOK\r\n");
+  check("setBatTimeToFullCharge(7200) reaches the wire again", dev.setBatTimeToFullCharge(7200));
+  s.expect("AT+MTATTR=1,47,29,16000,1", "+MTATTR:1,47,29,16000\r\nOK\r\n");
+  check("setBatChargingCurrent(16000) reaches the wire again", dev.setBatChargingCurrent(16000));
+  check("script drained", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/* The FullAPI example's exact shape, and the concrete defect this split
+ * exists to prevent: a nameplate pushed once in setup() and never again.
+ * Without the re-push the C6's own reboot leaves BatCapacity at its
+ * creation default 0 forever, because the sketch's next call (if it ever
+ * makes one) no-ops against a cache that still says 13500000. */
+static void test_reconcile_repushes_a_write_once_nameplate(void) {
+  MockStream s;
+  MatterBatteryStorage dev;
+  bringUp(s, dev);
+  s.expect("AT+MTATTR=1,47,24,13500000,1", "+MTATTR:1,47,24,13500000\r\nOK\r\n");
+  check("setup()-time setBatCapacity(13500000)", dev.setBatCapacity(13500000));
+  s.expect("AT+MTATTR=1,47,24,13500000,1", "+MTATTR:1,47,24,13500000\r\nOK\r\n");
+  reconcile(dev);
+  check("the reconcile re-pushed the nameplate unprompted", s.scriptDrained());
+  /* and again on a later reconcile: this is not a first-boot special case */
+  s.expect("AT+MTATTR=1,47,24,13500000,1", "+MTATTR:1,47,24,13500000\r\nOK\r\n");
+  reconcile(dev);
+  check("and on every later reconcile too", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/* A reconcile before the sketch has written either config attribute emits
+ * NOTHING on cluster 47: the re-push restates what this host asserted, and
+ * it has asserted nothing yet. */
+static void test_reconcile_before_any_ember_write_is_silent(void) {
+  MockStream s;
+  MatterBatteryStorage dev;
+  bringUp(s, dev);
+  reconcile(dev);
+  check("no AT+MTATTR line at all", s.scriptDrained() && s.unexpected().empty());
+}
+
+/* An incoming +MTATTR URC moves the cache but is NOT an assertion by this
+ * host, so it does not arm the re-push: the device told us this value, and
+ * restating it back at the device on the next reconcile would be this
+ * library inventing configuration it was never given. */
+static void test_urc_moved_config_is_not_repushed(void) {
+  MockStream s;
+  MatterBatteryStorage dev;
+  bringUp(s, dev);
+  s.injectURC("+MTATTR:1,47,24,9000000");
+  s.injectURC("+MTATTR:1,47,26,2");
+  Hearth.poll();
+  check("the URCs moved the caches (a same-value write no-ops)", dev.setBatCapacity(9000000) && dev.setBatChargeState(2));
+  check("and neither reached the wire", s.scriptDrained() && s.unexpected().empty());
+  /* the no-op setter calls above DID assert those values host-side, so the
+   * reconcile now re-pushes them; what is pinned here is that the URC on
+   * its own would not have. */
+  s.expect("AT+MTATTR=1,47,24,9000000,1", "+MTATTR:1,47,24,9000000\r\nOK\r\n");
+  s.expect("AT+MTATTR=1,47,26,2,1", "+MTATTR:1,47,26,2\r\nOK\r\n");
+  reconcile(dev);
+  check("after a host-side assertion of the same values, the reconcile re-pushes them", s.scriptDrained());
+
+  MockStream s2;
+  MatterBatteryStorage dev2;
+  bringUp(s2, dev2);
+  s2.injectURC("+MTATTR:1,47,24,9000000");
+  s2.injectURC("+MTATTR:1,47,26,2");
+  Hearth.poll();
+  reconcile(dev2);
+  check("a URC alone never arms the re-push", s2.scriptDrained() && s2.unexpected().empty());
 }
 
 static void test_reconcile_on_no_dem_is_dem_silent(void) {
@@ -579,6 +707,10 @@ int main(void) {
   test_no_dem_denies_forwarded_commands();
   test_no_dem_keeps_the_battery_attributes();
   test_reconcile_splits();
+  test_reconcile_sampled_attributes_clear_without_resend();
+  test_reconcile_repushes_a_write_once_nameplate();
+  test_reconcile_before_any_ember_write_is_silent();
+  test_urc_moved_config_is_not_repushed();
   test_reconcile_on_no_dem_is_dem_silent();
   test_injected_mtattr_on_152_moves_no_dem_cache();
   test_injected_mtattr_on_measurement_clusters_ignored();

@@ -85,22 +85,70 @@
  * there is no public accessor. The measurement surface keeps its own
  * getters, which read the push helper's cache.
  *
- * THE RECONCILE SPLIT, three halves on one endpoint, all test-pinned:
- * the DEM configuration (ESAType, ESACanGenerate, AbsMin/MaxPower, the
- * capability list) is re-pushed and the DEM volatile fields' wire memory
- * cleared without a resend (the helper's own split); the measurement
- * fields follow B229 through meas.onReconciled(); and the EMBER
- * attributes are left ALONE -- neither re-pushed nor invalidated -- which
- * is not a new rule but the one every ember-attribute class in this
- * library already follows (MatterThermostat and MatterPowerSource override
- * hearthOnReconciled() not at all; MatterWaterHeater overrides it and
- * deliberately leaves its thermostat half untouched, its header saying so
- * in as many words). Consequence, stated rather than discovered later: a
- * co-processor reboot returns these attributes to their creation defaults
- * while the host cache still holds the last value it wrote, so the next
- * sketch push of that same value is suppressed as a no-op. A sketch that
- * wants the fabric re-seeded after a reboot pushes a changed value (the
- * ordinary sampling loop of a real battery does this within one cycle).
+ * THE RECONCILE SPLIT, three surfaces on one endpoint, every half
+ * test-pinned. The DEM configuration (ESAType, ESACanGenerate,
+ * AbsMin/MaxPower, the capability list) is re-pushed and the DEM volatile
+ * fields' wire memory cleared without a resend (the helper's own split);
+ * the measurement fields follow B229 through meas.onReconciled(); and the
+ * EMBER attributes get that SAME configuration-versus-sampled split
+ * applied to their own surface, per attribute, listed below.
+ *
+ * THIS LIBRARY HAS BOTH EMBER BEHAVIOURS, and choosing between them is a
+ * per-attribute judgement, not a house default. Several classes leave
+ * ember attributes alone on reconcile (MatterThermostat and
+ * MatterPowerSource override hearthOnReconciled() not at all;
+ * MatterWaterHeater overrides it and deliberately skips its thermostat
+ * half), and that is right for a value a sketch resamples: the next sample
+ * repairs the fabric on its own. But
+ * MatterTemperatureControlledCabinet::hearthOnReconciled()
+ * (MatterTemperatureControlledCabinet.cpp:214-243, inherited by
+ * MatterOvenCavity) re-pushes its four TemperatureControl attributes
+ * unconditionally, and the comment above it at :190-213 records WHY: the
+ * opposite behaviour was BENCH-OBSERVED to leave the device stale forever,
+ * because the setters' skip-if-equal suppressed every later write of a
+ * value the host believed it had already set. A value a sketch writes once
+ * and never revisits cannot self-heal, so it has to be re-pushed.
+ *
+ * Per attribute, with the reason each lands where it does:
+ *
+ *   BatCapacity          CONFIG, re-pushed. A nameplate figure, written
+ *                        once at setup() and never again (the FullAPI
+ *                        example does exactly that), so after a C6 reboot
+ *                        it reverts to its creation default 0 device-side
+ *                        and nothing would ever push it back: the
+ *                        cabinet's bench bug, one surface over.
+ *   BatChargeState       CONFIG, re-pushed. A discrete state the host
+ *                        asserts on TRANSITIONS rather than a sample: an
+ *                        idle pack can hold IsNotCharging for hours, so
+ *                        the next write may be far away. Safe to re-push
+ *                        because the firmware derives no event from this
+ *                        attribute -- contrast the DEM helper's ESAState,
+ *                        which stays volatile precisely because a
+ *                        transition out of PowerAdjustActive emits
+ *                        PowerAdjustEnd, so a re-push there could
+ *                        fabricate an event, while here it can only
+ *                        restate a belief the host already holds.
+ *   BatVoltage           SAMPLED, B229. Read off the pack every cycle.
+ *   BatPercentRemaining  SAMPLED, B229. Ditto, and the headline reading.
+ *   BatTimeRemaining     SAMPLED, B229. A derived estimate, recomputed per
+ *                        sample while discharging.
+ *   BatTimeToFullCharge  SAMPLED, B229. Ditto, while charging.
+ *   BatChargingCurrent   SAMPLED, B229. Measured per cycle while charging.
+ *
+ * B229 here means what it means everywhere else in this round: the
+ * wire-pushed memory (the has-flags) is cleared so the very NEXT sample
+ * reaches the wire even when it is byte-identical to the last one, while
+ * the values themselves are not re-sent, since a stale reading re-reported
+ * as fresh would be a lie and the sketch's own loop is one cycle from the
+ * truth. Without that clearing a resampling sketch's unchanged value would
+ * ALSO be suppressed after a reboot, so the sampled half needs this much
+ * even though it needs no re-push.
+ *
+ * The re-push covers what the HOST has written: each config attribute
+ * carries its own "the sketch set this" flag, set by a successful setter
+ * call and never by an incoming +MTATTR URC (a URC is the device telling
+ * this host something, not this host asserting it), so a reconcile before
+ * the sketch has touched either attribute emits nothing on cluster 47.
  *
  * THE REENTRANCY TRAP (HearthDemControl.h carries the full version):
  * neither adjust callback may push from inside itself -- both run inside
@@ -245,7 +293,8 @@ protected:
 
   // Hearth's own hook (MatterEndPoint.h), on every reconcile: the DEM
   // helper's split, the measurement helper's B229, and the ember
-  // attributes deliberately untouched. See the header comment.
+  // attributes' own config/sampled split (the header comment lists all
+  // seven with the reason each lands where it does).
   void hearthOnReconciled() override;
 
   // the shared ember write shape (updateAttributeVal = AT+MTATTR mode 1),
@@ -272,6 +321,16 @@ protected:
   bool hasBatTimeRemaining = false;
   bool hasBatTimeToFullCharge = false;
   bool hasBatChargingCurrent = false;
+
+  // "the sketch set this", for the two CONFIG attributes' reconcile
+  // re-push only (the header comment's split). Deliberately separate from
+  // the has-flags above, which model the fabric's null-until-pushed state
+  // and decide the no-op: these two seed from real device defaults, so
+  // their no-op check stays a plain cache comparison and a first
+  // setBatCapacity(0) at boot is still a true no-op. Set by a successful
+  // setter call, never by an incoming +MTATTR URC.
+  bool wroteBatCapacity = false;
+  bool wroteBatChargeState = false;
 
   // the two shared surfaces; begin() resets both and sets each `enabled`
   // explicitly from the validated variant

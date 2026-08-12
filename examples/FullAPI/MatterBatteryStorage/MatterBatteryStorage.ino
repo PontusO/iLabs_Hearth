@@ -33,7 +33,11 @@
  *   setBatChargeState(state)       the cycle: 1 IsCharging, 2 IsAtFullCharge,
  *                                  3 IsNotCharging
  *   setBatChargingCurrent(ma)      the cycle while charging
- *   setBatCapacity(mwh)            setup(), once: a nameplate figure
+ *   setBatCapacity(mwh)            setup(), once: a nameplate figure. The
+ *                                  library re-pushes it on every reconcile,
+ *                                  because a value written once cannot
+ *                                  repair itself after a C6 reboot the way
+ *                                  the sampled readings below do
  *   setBatTimeToFullCharge(s)      the cycle while charging
  *   -- the DEM surface (FULL only) --
  *   setESAType(t)                  setup() (4 = BatteryStorage)
@@ -192,7 +196,10 @@ void setup() {
   Battery.begin(BATTERY_VARIANT);
   Matter.begin();
 
-  // one-off nameplate figure, an ember attribute like the rest
+  /* One-off nameplate figure, an ember attribute like the rest, and the
+   * reason the class re-pushes this one on reconcile: nothing in this
+   * sketch ever writes it again, so after a C6 reboot only the library
+   * can restore it. */
   Battery.setBatCapacity(kCapacityMwh);
 
   // the DEM identity: what this ESA is and what it can physically do

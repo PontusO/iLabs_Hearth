@@ -48,9 +48,15 @@
  * answers the cluster-missing code (`+MTERR:3`) for the whole surface.
  * REPORT_ONLY is "the cluster is present, the PowerAdjustment feature is
  * not": the firmware answers the attribute-missing code (`+MTERR:4`) for
- * AT+MTDEMCAP ALONE, because PowerAdjustmentCapability is mandatory under
- * the PA feature only, while every `AT+MTMEAS` field 0-6 push on cluster
- * 152 still works (S3.26's own error table). So this variant leaves the
+ * AT+MTDEMCAP, because PowerAdjustmentCapability is mandatory under the PA
+ * feature only. That much is S3.26's own error table, which covers
+ * AT+MTDEMCAP and nothing else. That every `AT+MTMEAS` field 0-6 push on
+ * cluster 152 still works on this variant is NOT in that table: the spec
+ * simply carries no feature-gate column for the 0x0098 field table, and
+ * the claim is FIRMWARE-VERIFIED rather than spec-cited -- mt_meas_dem_apply()
+ * applies all seven fields with no FeatureMap check of any kind, so the
+ * only DEM surface REPORT_ONLY takes away is the capability attribute. So
+ * this variant leaves the
  * helper's `enabled` TRUE and refuses exactly ONE method,
  * setPowerAdjustmentCapability(), host-side with Hearth error 1 and zero
  * wire traffic -- the MatterWaterHeater::hearthRefusedOnMinimal() pattern,

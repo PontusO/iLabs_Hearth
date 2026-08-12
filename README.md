@@ -934,13 +934,31 @@ push back to Online is what makes the firmware emit `PowerAdjustEnd` with
 that figure. The FullAPI DEM sketch's load simulator is built exactly this
 way: the callback records the request, `loop()` acts on it.
 
-The reconcile split is test-pinned per surface: the DEM configuration
-(ESAType, ESACanGenerate, AbsMin/MaxPower and the capability list) is
-re-pushed on every reconcile, the DEM volatile fields (ESAState,
+The reconcile split is test-pinned per surface, and the same
+configuration-versus-sampled question is answered three times. The DEM
+configuration (ESAType, ESACanGenerate, AbsMin/MaxPower and the capability
+list) is re-pushed on every reconcile; the DEM volatile fields (ESAState,
 OptOutState) and every electrical field follow the B229 rule (wire-pushed
-memory cleared, values not re-sent), and the ember battery attributes are
-left alone entirely, which is what every ember-attribute class in this
-library already does.
+memory cleared, values not re-sent); and battery storage's ember
+attributes are split the same way, per attribute: `BatCapacity` (a
+nameplate written once at `setup()`) and `BatChargeState` (asserted on
+transitions, not sampled) are re-pushed, while the five sampled readings
+are cleared and not re-sent, so the next sample repairs the fabric even if
+it is byte-identical to the last one.
+
+There is no house-wide rule for ember attributes on reconcile, and this
+README used to imply there was: **this library has both behaviours on
+purpose.** `MatterThermostat` and `MatterPowerSource` never re-push, which
+is right for a value a sketch resamples;
+`MatterTemperatureControlledCabinet` re-pushes its four TemperatureControl
+attributes unconditionally, and its own comment records the bench run that
+forced it (the alternative left the device at esp-matter's defaults
+forever, because the setters' skip-if-equal suppressed every later write
+of a value the host believed it had already set). A value a sketch writes
+once cannot self-heal, so it has to be re-pushed; a value it resamples
+must not be, because a stale reading re-reported as fresh is a lie. The
+battery class header lists all seven attributes with the reason each lands
+where it does.
 
 ## Examples
 

@@ -53,6 +53,7 @@ bool MatterBatteryStorage::begin(Variant_t variant) {
   batChargeState = 0;
   hasBatVoltage = hasBatPercentRemaining = hasBatTimeRemaining = false;
   hasBatTimeToFullCharge = hasBatChargingCurrent = false;
+  wroteBatCapacity = wroteBatChargeState = false;
   meas.reset();
   dem.reset();
   /* The measurement graft carries EEM on BOTH variants
@@ -195,12 +196,20 @@ bool MatterBatteryStorage::setBatTimeRemaining(uint32_t seconds) {
 }
 
 /* Non-nullable, seeded from feature::rechargeable::add()'s config default
- * 0 (kUnknown), so no has-flag: a write of 0 at boot is a true no-op. */
+ * 0 (kUnknown), so no has-flag: a write of 0 at boot is a true no-op. The
+ * separate `wrote` flag is the reconcile re-push's own record (header
+ * comment: this is a CONFIG attribute, asserted on transitions rather than
+ * sampled), and it is set even when the call no-opped: the sketch still
+ * asserted that value, and the device may not hold it after a reboot. */
 bool MatterBatteryStorage::setBatChargeState(uint8_t state) {
   if (!started) {
     return false;
   }
-  return hearthWriteBatteryAttr(kBatChargeStateAttrId, esp_matter_enum8(state), state, &batChargeState, nullptr);
+  if (!hearthWriteBatteryAttr(kBatChargeStateAttrId, esp_matter_enum8(state), state, &batChargeState, nullptr)) {
+    return false;
+  }
+  wroteBatChargeState = true;
+  return true;
 }
 
 bool MatterBatteryStorage::setBatChargingCurrent(uint32_t ma) {
@@ -211,12 +220,19 @@ bool MatterBatteryStorage::setBatChargingCurrent(uint32_t ma) {
 }
 
 /* Non-nullable, created with 0 (mk_battery_storage()'s
- * create_bat_capacity(ps_cl, 0, ...)), so no has-flag either. */
+ * create_bat_capacity(ps_cl, 0, ...)), so no has-flag either; the `wrote`
+ * flag is the reconcile re-push's record, same reasoning as
+ * setBatChargeState() above. This is the attribute the whole re-push
+ * exists for: a nameplate written once at setup(). */
 bool MatterBatteryStorage::setBatCapacity(uint32_t mwh) {
   if (!started) {
     return false;
   }
-  return hearthWriteBatteryAttr(kBatCapacityAttrId, esp_matter_uint32(mwh), mwh, &batCapacity, nullptr);
+  if (!hearthWriteBatteryAttr(kBatCapacityAttrId, esp_matter_uint32(mwh), mwh, &batCapacity, nullptr)) {
+    return false;
+  }
+  wroteBatCapacity = true;
+  return true;
 }
 
 bool MatterBatteryStorage::setBatTimeToFullCharge(uint32_t seconds) {
@@ -301,19 +317,41 @@ bool MatterBatteryStorage::endAdjustment() {
 }
 
 /*
- * The three-way reconcile split (the header comment carries the full
- * reasoning): the DEM helper re-pushes its configuration and clears its
- * volatile wire memory, the measurement helper clears its own (B229), and
- * the EMBER attributes are left alone entirely -- the rule every existing
- * ember-attribute class in this library already follows, not a new one.
- * The helpers' results are deliberately unchecked, the
- * MatterWaterHeater::hearthOnReconciled() shape: a failed resend surfaces
- * on the next ordinary setter call, not here.
+ * The three-surface reconcile split (the header comment carries the full
+ * reasoning and the per-attribute classification): the DEM helper
+ * re-pushes its configuration and clears its volatile wire memory, the
+ * measurement helper clears its own (B229), and the ember attributes get
+ * the same split applied per attribute -- BatCapacity and BatChargeState
+ * re-pushed because a sketch writes them once or on rare transitions and
+ * they cannot self-heal (the
+ * MatterTemperatureControlledCabinet::hearthOnReconciled() precedent,
+ * whose comment records the bench run that proved the alternative leaves
+ * the device stale forever), the five sampled readings cleared-not-resent
+ * so the next sample reaches the wire even unchanged.
+ *
+ * The two re-pushes go through updateAttributeVal() DIRECTLY rather than
+ * through their setters, the cabinet's own reasoning: the setters'
+ * skip-if-equal is exactly what suppresses the write here, since the cache
+ * already holds the value being restored. Best-effort and unchecked, the
+ * MatterWaterHeater::hearthOnReconciled() shape (this runs deep inside
+ * ArduinoMatter::begin(), which has already committed to its composition
+ * verdict), and no cache mutation either way: the cache already holds what
+ * the sketch intends, so this only ever makes the device match it.
  */
 void MatterBatteryStorage::hearthOnReconciled() {
   if (!started) {
     return;
   }
+  if (wroteBatCapacity) {
+    esp_matter_attr_val_t capacityVal = esp_matter_uint32(batCapacity);
+    updateAttributeVal(kPowerSourceClusterId, kBatCapacityAttrId, &capacityVal);
+  }
+  if (wroteBatChargeState) {
+    esp_matter_attr_val_t chargeStateVal = esp_matter_enum8((uint8_t)batChargeState);
+    updateAttributeVal(kPowerSourceClusterId, kBatChargeStateAttrId, &chargeStateVal);
+  }
+  hasBatVoltage = hasBatPercentRemaining = hasBatTimeRemaining = false;
+  hasBatTimeToFullCharge = hasBatChargingCurrent = false;
   meas.onReconciled();
   dem.onReconciled();
 }
