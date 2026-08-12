@@ -126,8 +126,17 @@ uint64_t MatterSolarPower::getEnergyExported() {
 }
 
 /* B229 semantics via the shared helper: resend NOTHING, clear only the
- * wire-pushed memory. See HearthMeasurementPush.cpp for the rationale. */
+ * wire-pushed memory. See HearthMeasurementPush.cpp for the rationale.
+ *
+ * The `started` guard both siblings carry (MatterBatteryStorage.cpp,
+ * MatterDeviceEnergyManagement.cpp) is here for consistency, not because
+ * this class needs it differently: on an un-begun endpoint the helper has
+ * nothing pushed and clearing is already a no-op, so the guard changes no
+ * observable behaviour. It is the shape to copy into any new sibling. */
 void MatterSolarPower::hearthOnReconciled() {
+  if (!started) {
+    return;
+  }
   meas.onReconciled();
 }
 

@@ -220,16 +220,22 @@ bool MatterBatteryStorage::setBatChargingCurrent(uint32_t ma) {
 }
 
 /* Non-nullable, created with 0 (mk_battery_storage()'s
- * create_bat_capacity(ps_cl, 0, 0x00, 0xFFFF)), so no has-flag either; the
- * `wrote` flag is the reconcile re-push's record, same reasoning as
+ * create_bat_capacity(ps_cl, 0, 0x00, 0xFFFFFFFF)), so no has-flag either;
+ * the `wrote` flag is the reconcile re-push's record, same reasoning as
  * setBatChargeState() above. This is the attribute the whole re-push
  * exists for: a nameplate written once at setup().
  *
- * mAh, and the created max is 0xFFFF: a larger figure is refused by ember
- * with a bare `ERROR` (no +MTERR code, so lastError() stays 0) and this
- * returns false WITHOUT arming the re-push, which is the correct outcome
- * for a value the device never accepted. Measured on the bench, round C1
- * task 7: 65535 -> OK, 65536 -> ERROR. */
+ * mAh, and the created max is the top of the uint32 domain, so NO uint32_t
+ * argument is out of range here: a 13.5 kWh home pack (~281000 mAh at 48 V)
+ * publishes fine. That bound is the firmware's B263 fix, which departs from
+ * esp-matter's own battery_storage::add() 0xFFFF cap on the authority of
+ * PowerSourceCluster.xml, which types the attribute uint32 with no
+ * constraint element. Hardware-verified round C1 task 8: 13500000 -> OK
+ * and read back, 4294967295 -> OK and read back, 4294967296 -> +MTERR:1
+ * from the parse-width path (so the bound is the real uint32 domain, not
+ * "unbounded"). The bool is still worth reading: a wire or link failure
+ * returns false, and this returns false WITHOUT arming the re-push, which
+ * is the correct outcome for a value the device never accepted. */
 bool MatterBatteryStorage::setBatCapacity(uint32_t mah) {
   if (!started) {
     return false;

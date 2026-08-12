@@ -221,24 +221,38 @@ public:
   // spec's class block names, so a sketch that already thinks in
   // half-percent steps never round-trips through a float).
   //
-  // RANGE CHECKS ARE EMBER'S, AND THEY DO NOT CARRY A +MTERR CODE. Bench
-  // round C1 task 7 measured it: a value outside an attribute's created
-  // min/max is refused by esp-matter's own attribute::update(), which the
-  // firmware maps to a BARE `ERROR` (AT+MTATTR=1,47,24,65536,1 -> ERROR;
-  // 65535 -> OK; AT+MTATTR=1,47,12,201,1 -> ERROR). So these setters
-  // return false with Hearth.lastError() == 0, and a sketch must read the
-  // BOOL, not the error code. The served ranges the firmware creates today
-  // (mt_devtypes.cpp's mk_battery_storage(), mirroring esp-matter's own
-  // battery_storage::add()): BatCapacity and BatVoltage 0..0xFFFF,
-  // BatPercentRemaining 0..200. BatCapacity's 0xFFFF ceiling is NARROWER
-  // than the data model's plain int32u, so a pack above 65535 mAh cannot
-  // be published at all on this firmware.
+  // THE SERVED RANGES, and the one setter that can be refused for range.
+  // The firmware creates five of these over the FULL uint32 domain
+  // (mt_devtypes.cpp's mk_battery_storage()): BatVoltage, BatTimeRemaining,
+  // BatCapacity, BatTimeToFullCharge and BatChargingCurrent, all
+  // 0..0xFFFFFFFF. That is deliberately NOT esp-matter's own
+  // battery_storage::add(), which caps all five at 0xFFFF; the firmware
+  // follows PowerSourceCluster.xml, which types them uint32 with no
+  // constraint element, so the type is the bound (firmware fix B263,
+  // hardware-verified in round C1 task 8: 13500000 and 4294967295 both
+  // write and read back un-truncated). So NO uint32_t a sketch can pass to
+  // those five is out of range, and a 13.5 kWh home pack fits comfortably.
+  // BatChargeState is created with no min/max at all, so only its enum8
+  // width applies. BatPercentRemaining's 0..200 is the sole real range
+  // check on this surface, and it is the XML's own.
+  //
+  // A RANGE REFUSAL CARRIES NO +MTERR CODE (firmware defect B264, open).
+  // When a value does land outside an attribute's created min/max,
+  // esp-matter's attribute::update() refuses it and the firmware answers a
+  // BARE `ERROR` with no +MTERR line, so the setter returns false with
+  // Hearth.lastError() == 0 and a sketch must read the BOOL, not the error
+  // code. The measured vector, round C1 tasks 7 and 8:
+  // AT+MTATTR=1,47,12,201,1 -> ERROR (in width, past BatPercentRemaining's
+  // 0..200). Contrast a value too wide for the attribute's TYPE, which is
+  // caught earlier and DOES carry a code: AT+MTATTR=1,47,12,1000000 ->
+  // +MTERR:1. So lastError() == 1 after one of these means "not even the
+  // right width", never "out of range".
   bool setBatVoltage(uint32_t mv);
-  bool setBatPercentRemaining(uint8_t halfPercent);  // 0..200 = 0..100%
+  bool setBatPercentRemaining(uint8_t halfPercent);  // 0..200 = 0..100%; 201..255 is refused with lastError 0
   bool setBatTimeRemaining(uint32_t seconds);
   bool setBatChargeState(uint8_t state);  // BatChargeStateEnum: 0 Unknown, 1 IsCharging, 2 IsAtFullCharge, 3 IsNotCharging
   bool setBatChargingCurrent(uint32_t ma);
-  bool setBatCapacity(uint32_t mah);  // mAh, served range 0..0xFFFF (above that: false, lastError 0)
+  bool setBatCapacity(uint32_t mah);  // mAh, served over the whole uint32 range (B263)
   bool setBatTimeToFullCharge(uint32_t seconds);
 
   // ---- the DEM surface (FULL only), the shared helper ----
@@ -294,7 +308,7 @@ protected:
   static const uint32_t kBatVoltageAttrId       = 0x000B;  // uint32 mV, nullable
   static const uint32_t kBatPercentRemainingAttrId = 0x000C;  // uint8 half-percent, nullable
   static const uint32_t kBatTimeRemainingAttrId = 0x000D;  // uint32 s, nullable
-  static const uint32_t kBatCapacityAttrId      = 0x0018;  // uint32 mAh, non-nullable, device default 0, served 0..0xFFFF
+  static const uint32_t kBatCapacityAttrId      = 0x0018;  // uint32 mAh, non-nullable, device default 0, served over the whole uint32 range (B263)
   static const uint32_t kBatChargeStateAttrId   = 0x001A;  // enum8, non-nullable, device default 0 (kUnknown)
   static const uint32_t kBatTimeToFullChargeAttrId = 0x001B;  // uint32 s, nullable
   static const uint32_t kBatChargingCurrentAttrId  = 0x001D;  // uint32 mA, nullable

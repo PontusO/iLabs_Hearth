@@ -13,7 +13,10 @@
  *   MatterDeviceEnergyManagement() global object below
  *   begin(variant)                 setup(); declares only. CONTROLLABLE
  *                                  here; flip the #define for REPORT_ONLY
- *   setESAType(t)                  setup() (5 = SmartAppliance)
+ *   setESAType(t)                  setup() (255 = kOther; ESATypeEnum names
+ *                                  specific appliances 0x00..0x0D and has
+ *                                  no generic value but kOther. NOT 5,
+ *                                  which is kBatteryStorage)
  *   setESACanGenerate(g)           setup() (false: this load only consumes)
  *   setESAState(s)                 menu 'o' (Offline) / 'O' (Online)
  *   setAbsMinPower(mw)             setup() (0: it cannot export)
@@ -147,7 +150,11 @@ void setup() {
   Matter.begin();
 
   // identity: what this ESA is and what it can physically do
-  Dem.setESAType(5);             // SmartAppliance
+  /* ESATypeEnum has no "generic controllable load" value: 0x00..0x0D name
+   * specific appliance classes (kEvse, kSpaceHeating, ... kPoolPump) and
+   * kOther 0xFF is the catch-all. This simulator is deliberately generic,
+   * so kOther is the honest answer; a real product picks its own class. */
+  Dem.setESAType(255);           // ESATypeEnum kOther = 0xFF
   Dem.setESACanGenerate(false);  // a load, never a source
   Dem.setAbsMinPower(0);
   Dem.setAbsMaxPower(kNominalPowerMw);
