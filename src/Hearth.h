@@ -140,6 +140,15 @@
  * HearthDemControl, and battery storage embeds BOTH on one endpoint
  * alongside its ember PowerSource attributes. Same umbrella reasoning
  * again; one-way includes only, no cycle.
+ *
+ * Task 4 (Thread role API, 0.11.0) adds HearthThread.h, not an endpoint
+ * header at all: HearthThreadRole/HearthThreadInfo, the types
+ * HearthClass::threadInfo()/threadRole() below use, and
+ * hearthThreadRoleName(). No device type carries a Thread role API on any
+ * SDK this library tracks, so this is a Hearth global surface (the
+ * README's split rule) rather than a fifty-third MatterEndpoints/ entry;
+ * included here, ahead of MatterEndPoint.h, because HearthClass's own
+ * member declarations further down need the types before they are used.
  */
 #pragma once
 
@@ -147,6 +156,7 @@
 #include <Arduino.h>
 #include "HearthLink.h"
 #include "HearthCompat.h"
+#include "HearthThread.h"
 #include "MatterEndPoint.h"
 #include "MatterEndpoints/MatterOnOffLight.h"
 #include "MatterEndpoints/MatterDimmableLight.h"
@@ -398,6 +408,58 @@ public:
    */
   bool transport(HearthTransport *active, HearthTransport *stored);
 
+  /*
+   * AT+MTTHREAD? (AT_MT_SPEC.md S3.27, 0.11.0): the device's Thread routing
+   * role and, when it has one, which mesh it is on. Always a fresh round
+   * trip that fills every field, including the has* flags for the wire's
+   * four nullable ones (channel/panId/extPanId/partitionId) -- a caller
+   * must gate on those flags, never infer "unknown" from a value looking
+   * implausible (a real PanId of 0xFFFF or an all-ones ExtPanId renders
+   * identically to null, S3.27's own caveat). On success also syncs the
+   * cache threadRole() below reads. Returns false on a WiFi image (or the
+   * combined image booted in WiFi mode), with lastError() == 8
+   * (HEARTH_ERR_NOT_SUPPORTED): that image has no ThreadNetworkDiagnostics
+   * cluster to read.
+   */
+  bool threadInfo(HearthThreadInfo &out);
+
+  /*
+   * The Thread routing role, cached: NO wire traffic, ever. Seeded to
+   * HEARTH_THREAD_UNSPECIFIED (begin()'s own reset, and the enum's zero
+   * value, agree: "nothing known yet" and "the wire's own honest answer
+   * when the interface is down" are the same value on purpose), and
+   * refreshed by threadInfo() and by every +MTEVT:28 (HearthThread.cpp's
+   * hearthDispatchThreadRoleEvt(), called from Hearth.cpp's
+   * hearthDispatchEvt()). This is the read path a sketch polling its role
+   * every loop() iteration should use: threadInfo() pays a UART round
+   * trip every call, this one never does.
+   */
+  HearthThreadRole threadRole() const {
+    return _threadRole;
+  }
+
+  /*
+   * Register the role-change callback (AT_MT_SPEC.md S3.27/+MTEVT:28,
+   * 0.11.0). A PLAIN function pointer, the HearthDemControl::onPowerAdjust
+   * convention, not std::function: there is no verdict to return here,
+   * only a notification. At most one; a later call replaces the previous
+   * one, nullptr removes it (never cleared automatically by begin(), the
+   * same "no existing endpoint class clears a callback registration on
+   * begin()" precedent every other callback in this library follows).
+   *
+   * RUNS INSIDE URC DISPATCH, with the link's busy gate held by whatever
+   * poll()/hearthCommand() call is delivering the +MTEVT:28 line: a wire
+   * write from inside it -- including calling threadInfo() itself -- is
+   * refused HEARTH_CMD_REENTRANT and reaches nothing (the README's "Your
+   * onChange fires from inside your own setter" rule, and
+   * HearthDemControl's identical warning on its own two callbacks). Set a
+   * flag in the callback and act on it from loop(); never call back into
+   * this library from inside it.
+   */
+  void onThreadRoleChange(void (*cb)(HearthThreadRole)) {
+    _onThreadRoleChangeCB = cb;
+  }
+
   /* Last +MTERR code any layer above HearthLink reported; 0 if none.
    *
    * A HOST-SIDE 1 IS NOT A WIRE 1. Some classes refuse a call locally and
@@ -566,6 +628,11 @@ private:
   static void hearthDispatchEvt(const char *rest, HearthClass *self);
   static void hearthDispatchCmd(const char *rest, HearthClass *self);
   static void hearthDispatchCmdTimeout(const char *rest, HearthClass *self);
+  /* +MTEVT:28's payload (Task 4, 0.11.0): defined in HearthThread.cpp, not
+   * Hearth.cpp, alongside the rest of the Thread role surface; declared
+   * here because hearthDispatchEvt() (Hearth.cpp) calls it directly, ahead
+   * of the generic numeric <detail> parse every other bit uses. */
+  static void hearthDispatchThreadRoleEvt(const char *rest, HearthClass *self);
 
   /*
    * Fix round 1 (C3 review, CRITICAL): a +MTCMD verdict must never be
@@ -633,6 +700,12 @@ private:
   HearthPendingCmdResp _cmdRespQueue[kHearthCmdRespQueueDepth];
   uint8_t _cmdRespQueueCount;
   bool _deferredWorkPending;
+
+  /* Task 4 (Thread role API, 0.11.0): threadRole()'s cache and
+   * onThreadRoleChange()'s registration. See both methods' own comments
+   * above. */
+  HearthThreadRole _threadRole;
+  void (*_onThreadRoleChangeCB)(HearthThreadRole);
 };
 
 /*

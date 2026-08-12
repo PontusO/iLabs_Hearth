@@ -163,6 +163,13 @@ MatterDeviceEnergyManagement	KEYWORD1
 HearthDemControl	KEYWORD1
 PowerAdjustEntry	KEYWORD1
 
+# Task 4 (Thread role API, 0.11.0): HearthThreadRole/HearthThreadInfo, on
+# the Hearth global itself, not a device type -- no arduino-esp32 class
+# carries a Thread role API on any SDK this library tracks. See README.md,
+# "Thread role and mesh identity".
+HearthThreadRole	KEYWORD1
+HearthThreadInfo	KEYWORD1
+
 # Event and callback types.
 hearthEvent_t	KEYWORD1
 hearthEventCB	KEYWORD1
@@ -285,6 +292,13 @@ hearthSetReconcileFailed	KEYWORD2
 link	KEYWORD2
 hearthReportProtocolError	KEYWORD2
 hearthResetCoprocessor	KEYWORD2
+
+# Task 4 (Thread role API, 0.11.0): AT+MTTHREAD? and +MTEVT:28.
+# hearthThreadRoleName is a free function (a display helper), not a method.
+threadInfo	KEYWORD2
+threadRole	KEYWORD2
+onThreadRoleChange	KEYWORD2
+hearthThreadRoleName	KEYWORD2
 
 # ArduinoMatter (the Matter global): upstream's closed surface, verbatim.
 onEvent	KEYWORD2
@@ -699,6 +713,16 @@ HEARTH_CMD_TIMEOUT	LITERAL1
 HEARTH_TRANSPORT_WIFI	LITERAL1
 HEARTH_TRANSPORT_THREAD	LITERAL1
 HEARTH_ERR_NOT_SUPPORTED	LITERAL1
+
+# HearthThreadRole (Task 4, 0.11.0, HearthThread.h): Matter's RoutingRoleEnum,
+# decoded. See AT_MT_SPEC.md S3.27.
+HEARTH_THREAD_UNSPECIFIED	LITERAL1
+HEARTH_THREAD_UNASSIGNED	LITERAL1
+HEARTH_THREAD_SLEEPY_END_DEVICE	LITERAL1
+HEARTH_THREAD_END_DEVICE	LITERAL1
+HEARTH_THREAD_REED	LITERAL1
+HEARTH_THREAD_ROUTER	LITERAL1
+HEARTH_THREAD_LEADER	LITERAL1
 
 # matterEvent_t: upstream's names and values, verbatim.
 MATTER_WIFI_CONNECTIVITY_CHANGE	LITERAL1

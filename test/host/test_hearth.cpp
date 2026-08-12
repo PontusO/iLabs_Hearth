@@ -163,7 +163,17 @@ static void test_evt27_raises_link_event(void) {
   Hearth.onLinkEvent(nullptr);
 }
 
-static void test_evt28_still_dropped(void) {
+/*
+ * Task 4 (0.11.0): bit 28 gained real meaning (MT_EVT_THREAD_ROLE_CHANGED,
+ * AT_MT_SPEC.md S3.27), so it is no longer simply reserved -- but it still
+ * never reaches onLinkEvent() or Matter.onEvent(): it routes only to
+ * Hearth.onThreadRoleChange(), test_thread.cpp's own suite. This test
+ * narrows to the one case that still IS silently dropped by both of those:
+ * a payload-less "+MTEVT:28" line, which carries no role token for
+ * hearthDispatchThreadRoleEvt() to decode and is treated the same as any
+ * other malformed URC in this file.
+ */
+static void test_evt28_malformed_no_payload_still_dropped(void) {
   MockStream ms;
   Hearth.begin(ms);
   static int gotAny;
@@ -172,7 +182,7 @@ static void test_evt28_still_dropped(void) {
   Matter.onEvent([](matterEvent_t, const chip::DeviceLayer::ChipDeviceEvent *) { gotAny++; });
   ms.injectURC("+MTEVT:28");
   Hearth.poll();
-  check("evt28 dropped silently", gotAny == 0);
+  check("a payload-less evt28 still reaches neither onLinkEvent nor Matter.onEvent", gotAny == 0);
   Matter.onEvent(nullptr);
   Hearth.onLinkEvent(nullptr);
 }
@@ -218,7 +228,7 @@ int main(void) {
   test_net_three_fields_still_parses();
   test_net_four_fields_mismatch();
   test_evt27_raises_link_event();
-  test_evt28_still_dropped();
+  test_evt28_malformed_no_payload_still_dropped();
   test_evt27_reaches_link_even_when_matter_unregistered();
   test_decommission_sends_matter_reset();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);

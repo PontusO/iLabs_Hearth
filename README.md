@@ -300,6 +300,88 @@ Two smaller differences in the same area, for completeness:
   that particular echo from being treated as a fresh controller change; it
   does not roll back the cache the setter already committed.
 
+## Thread role and mesh identity
+
+`Hearth.threadInfo()`, `Hearth.threadRole()`, `Hearth.onThreadRoleChange()`
+and `hearthThreadRoleName()` (library 0.11.0, firmware 0.11.0,
+`AT_MT_SPEC.md` S3.27 / event bit 28) surface the Thread routing role and
+mesh identity a Thread-image co-processor already carries on its
+`ThreadNetworkDiagnostics` cluster. No `arduino-esp32` class has a Thread
+role API on any SDK this library tracks, so this is a Hearth original, the
+same as `onLinkEvent()`/`transportMismatch()` in "Wiring" above.
+
+**Needs the Thread image to do anything.** On a WiFi image, or the combined
+image booted in WiFi mode, there is no `ThreadNetworkDiagnostics` cluster on
+endpoint 0 to read: `threadInfo()` returns `false` with `Hearth.lastError()
+== HEARTH_ERR_NOT_SUPPORTED` (8), and `threadRole()` reports
+`HEARTH_THREAD_UNSPECIFIED`.
+
+Two read paths, deliberately different costs:
+
+- `Hearth.threadInfo(HearthThreadInfo &out)` always round-trips
+  (`AT+MTTHREAD?`) and fills every field, including the `has*` flags for
+  the wire's four nullable ones (`hasChannel`/`hasPanId`/`hasExtPanId`/
+  `hasPartitionId`): **a `has*` flag false is the only honest signal of
+  "unknown"**, never the numeric value on its own. A real PAN ID of
+  `0xFFFF`, an all-ones extended PAN ID, or a partition ID of `0xFFFFFFFF`
+  renders on the wire identically to null; `AT_MT_SPEC.md` S3.27 documents
+  this as a property of the underlying `Nullable` encoding, not something
+  this command invented. `name` arrives as a plain, already-unescaped C
+  string (up to 16 bytes plus a NUL): the wire's own quoting rule (`"`
+  escaped as `\"`, `\` as `\\`, the first free-form string field in the
+  `AT+MT` family) is this library's problem, not the sketch's.
+- `Hearth.threadRole()` returns a **cached** `HearthThreadRole` with **no
+  wire traffic at all** -- not even a URC drain. Seeded to
+  `HEARTH_THREAD_UNSPECIFIED` on `begin()` and refreshed by `threadInfo()`
+  and by every `+MTEVT:28`, so a sketch polling its role every `loop()`
+  iteration pays nothing for it. It never crashes on an enum value it does
+  not recognise: `HearthThreadRole` has no eighth "unknown" member of its
+  own, so both the wire's own decimal fallback (a future SDK addition
+  outside Matter's current seven-entry `RoutingRoleEnum`) and any token
+  this library's parser fails to match degrade honestly to
+  `HEARTH_THREAD_UNSPECIFIED` rather than being mis-mapped onto an
+  unrelated real role.
+
+`Hearth.onThreadRoleChange(void (*cb)(HearthThreadRole))` registers the
+role-change callback, a **plain function pointer** (`HearthDemControl`'s
+`onPowerAdjust`/`onCancelPowerAdjust` convention, not `std::function`:
+there is no verdict to return here, only a notification). It carries the
+exact same reentrancy rule as every other URC-dispatched callback in this
+library (see "Your `onChange` fires from inside your own setter" above,
+and `HearthDeviceEnergyManagement`'s power-adjust pair): **it runs inside
+URC dispatch**, so a wire write from inside it -- including calling
+`threadInfo()` itself -- is refused (`HEARTH_CMD_REENTRANT`) and reaches
+nothing. Set a flag in the callback and act on it from `loop()`:
+
+```cpp
+volatile bool g_roleChanged = false;
+HearthThreadRole g_lastRole = HEARTH_THREAD_UNSPECIFIED;
+
+void onRoleChange(HearthThreadRole role) {
+  g_lastRole = role;
+  g_roleChanged = true;   // do not call the library from here
+}
+
+void loop() {
+  Hearth.poll();
+  if (g_roleChanged) {
+    g_roleChanged = false;
+    Serial.println(hearthThreadRoleName(g_lastRole));
+  }
+}
+```
+
+`hearthThreadRoleName(HearthThreadRole)` returns a display string for any
+of the seven roles (`"UNSPECIFIED"`, `"UNASSIGNED"`,
+`"SLEEPY_END_DEVICE"`, `"END_DEVICE"`, `"REED"`, `"ROUTER"`, `"LEADER"`),
+and falls back to `"UNSPECIFIED"` for an out-of-range value rather than
+returning `nullptr` or undefined text.
+
+See `examples/FullAPI/HearthThreadRole/` for a full reference, and note
+that sketch's own banner on why it does not call `Matter.begin()`: this
+surface is not scoped to any declared endpoint, and the sketch declares
+none.
+
 ## Supported device types
 
 All twenty of arduino-esp32's `Matter*` endpoint classes exist today,
@@ -1153,6 +1235,19 @@ commissioned device without guessing cluster and attribute names. See
 and its Task C9 report for the eight added when the seven-type batch's
 device types reached the library surface.
 
+**`HearthThreadRole/` (Task 4, 0.11.0) is the one folder in this tier with
+no device type behind it.** The Thread role surface lives on the Hearth
+global, not on any `Matter*` class (see "Thread role and mesh identity"
+above), so its sketch exercises `Hearth.threadInfo()`/`threadRole()`/
+`onThreadRoleChange()`/`hearthThreadRoleName()` directly and, deliberately,
+never calls `Matter.begin()` -- the sketch's own banner explains why
+(declaring zero endpoints and reconciling would wipe a real device's
+composition). Everything else about the tier's conventions above still
+applies: the banner-as-checklist, `Hearth.poll()` first, the menu, and the
+`chip-tool` cross-reference (`threadnetworkdiagnostics read ...` in place of
+a cluster/attribute pair, since this command decodes six of that cluster's
+attributes at once rather than wrapping one).
+
 ## Preferences
 
 `arduino-pico` ships no `Preferences` and nothing equivalent, so every
@@ -1297,3 +1392,11 @@ sequence without any hardware. Hardware verification: the automatic reset
 path and the transport API were verified during C4 end-to-end (2026-07-28)
 and transport smoke tests (2026-08-03). See `HARDWARE-BRINGUP.md` for
 additional commissioning flows and coverage.
+
+**0.11.0** adds the Thread role and mesh identity surface (`threadInfo()`/
+`threadRole()`/`onThreadRoleChange()`/`hearthThreadRoleName()`), host-side
+coverage only at this point: the wire parse (every field, every `has*`
+flag, the escaped-name grammar, the unknown-role degrade), the cached read
+path's zero wire traffic, the `+MTEVT:28` dispatch and its reentrancy
+guard, and a probe proving that dispatch touches no other path. Hardware
+verification is the firmware repo's own bench task, not this library's.

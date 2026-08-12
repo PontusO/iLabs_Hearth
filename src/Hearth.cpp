@@ -21,7 +21,9 @@ HearthClass::HearthClass()
     _expectedRebootArmedAt(0),
     _expectedRebootTimeoutMs(0),
     _cmdRespQueueCount(0),
-    _deferredWorkPending(false) {}
+    _deferredWorkPending(false),
+    _threadRole(HEARTH_THREAD_UNSPECIFIED),
+    _onThreadRoleChangeCB(nullptr) {}
 
 void HearthClass::begin(Stream &serial, unsigned long baud) {
   (void)baud;  // see the header: a caller-supplied Stream has no begin() of its own to call with it;
@@ -33,6 +35,13 @@ void HearthClass::begin(Stream &serial, unsigned long baud) {
   _expectedRebootSeen = false;
   _expectedRebootArmedAt = 0;
   _expectedRebootTimeoutMs = 0;
+  /* A new link is a new start for the cached role too (Task 4): whatever
+   * the previous link last learned no longer describes anything. The
+   * callback registration (_onThreadRoleChangeCB) is deliberately left
+   * alone: begin() never clears _linkEventCB either, the "no existing
+   * endpoint class clears a callback registration on begin()" precedent
+   * this library follows throughout. */
+  _threadRole = HEARTH_THREAD_UNSPECIFIED;
 }
 
 #ifdef ARDUINO
@@ -433,9 +442,18 @@ void hearthDispatchIdent(const char *rest) {
 /* Parses "<bit>[,<detail>]" (the text after "+MTEVT:") and, if a sketch has
  * registered one, calls ArduinoMatter's event callback. Bit 27 is a
  * Hearth-specific transport-mismatch event that goes to the link-event
- * callback instead. Bits 28-31 (reserved per S3.11) and malformed input
- * are dropped silently, the same policy given for an unrecognised endpoint
- * in hearthDispatchAttr()/hearthDispatchIdent() in the anonymous namespace. */
+ * callback instead. Bit 28 (Task 4, 0.11.0, AT_MT_SPEC.md S3.27) is
+ * MT_EVT_THREAD_ROLE_CHANGED: unlike every bit below it, its payload is
+ * the decoded Thread role TOKEN (e.g. "ROUTER"), not a number, so it is
+ * intercepted here too, ahead of the generic `detail = atoi(...)` parse
+ * below, which would silently read a non-numeric token as 0. It routes to
+ * hearthDispatchThreadRoleEvt() (HearthThread.cpp), Hearth's own
+ * onThreadRoleChange() callback, never to ArduinoMatter's matterEvent_t
+ * table: no upstream matterEvent_t exists for a Thread role change, the
+ * same reasoning bit 27 already follows for transport mismatch. Bits 29-31
+ * (reserved per S3.11) and malformed input are dropped silently, the same
+ * policy given for an unrecognised endpoint in
+ * hearthDispatchAttr()/hearthDispatchIdent() in the anonymous namespace. */
 void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
   char *end;
   long bit = strtol(rest, &end, 10);
@@ -446,6 +464,15 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
     /* Transport mismatch is a Hearth extension with no upstream
      * matterEvent_t; it goes to the link-event callback. */
     self->hearthRaiseEvent(HEARTH_TRANSPORT_MISMATCH);
+    return;
+  }
+  if (bit == 28) {
+    /* No payload (malformed: this bit carries no meaningful numeric
+     * <detail> to fall back to) is dropped, the same silent-drop policy
+     * every other malformed URC in this file uses. */
+    if (*end == ',') {
+      hearthDispatchThreadRoleEvt(end + 1, self);
+    }
     return;
   }
   if (bit >= 27) {

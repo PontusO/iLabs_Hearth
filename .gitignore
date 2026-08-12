@@ -60,6 +60,7 @@ build/
 /test/host/test_solarpower
 /test/host/test_batterystorage
 /test/host/test_dem
+/test/host/test_thread
 
 *.bin
 *.uf2
