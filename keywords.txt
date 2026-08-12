@@ -724,6 +724,13 @@ HEARTH_THREAD_REED	LITERAL1
 HEARTH_THREAD_ROUTER	LITERAL1
 HEARTH_THREAD_LEADER	LITERAL1
 
+# HEARTH_THREAD_UNKNOWN (review round): library-side "unrecognised wire
+# token" sentinel, 255 so it can never collide with a future RoutingRoleEnum
+# member. Distinct from HEARTH_THREAD_UNSPECIFIED, the wire's own honest
+# "the Thread interface is down". See README.md, "Thread role and mesh
+# identity".
+HEARTH_THREAD_UNKNOWN	LITERAL1
+
 # matterEvent_t: upstream's names and values, verbatim.
 MATTER_WIFI_CONNECTIVITY_CHANGE	LITERAL1
 MATTER_THREAD_CONNECTIVITY_CHANGE	LITERAL1

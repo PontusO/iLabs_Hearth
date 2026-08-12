@@ -335,12 +335,17 @@ Two read paths, deliberately different costs:
   `HEARTH_THREAD_UNSPECIFIED` on `begin()` and refreshed by `threadInfo()`
   and by every `+MTEVT:28`, so a sketch polling its role every `loop()`
   iteration pays nothing for it. It never crashes on an enum value it does
-  not recognise: `HearthThreadRole` has no eighth "unknown" member of its
-  own, so both the wire's own decimal fallback (a future SDK addition
+  not recognise: the wire's own decimal fallback (a future SDK addition
   outside Matter's current seven-entry `RoutingRoleEnum`) and any token
-  this library's parser fails to match degrade honestly to
-  `HEARTH_THREAD_UNSPECIFIED` rather than being mis-mapped onto an
-  unrelated real role.
+  this library's parser fails to match both degrade to
+  `HEARTH_THREAD_UNKNOWN` (255, chosen so it can never collide with a
+  future `RoutingRoleEnum` member), **never to `HEARTH_THREAD_UNSPECIFIED`**.
+  Those two are provably distinct: `UNSPECIFIED` is the wire's own honest
+  "the Thread interface is down", and collapsing an unrecognised token onto
+  it would misreport a device that is up, attached and running a role this
+  library predates as if its radio were off (review round, design spec
+  2026-08-12 S2.1's "degrades to a number rather than a lie" principle,
+  which the library must not undo).
 
 `Hearth.onThreadRoleChange(void (*cb)(HearthThreadRole))` registers the
 role-change callback, a **plain function pointer** (`HearthDemControl`'s
@@ -372,10 +377,11 @@ void loop() {
 ```
 
 `hearthThreadRoleName(HearthThreadRole)` returns a display string for any
-of the seven roles (`"UNSPECIFIED"`, `"UNASSIGNED"`,
-`"SLEEPY_END_DEVICE"`, `"END_DEVICE"`, `"REED"`, `"ROUTER"`, `"LEADER"`),
-and falls back to `"UNSPECIFIED"` for an out-of-range value rather than
-returning `nullptr` or undefined text.
+of the seven named roles (`"UNSPECIFIED"`, `"UNASSIGNED"`,
+`"SLEEPY_END_DEVICE"`, `"END_DEVICE"`, `"REED"`, `"ROUTER"`, `"LEADER"`)
+and for `HEARTH_THREAD_UNKNOWN` (`"UNKNOWN"`), and falls back to
+`"UNKNOWN"` for a value outside the whole enum rather than returning
+`nullptr` or undefined text.
 
 See `examples/FullAPI/HearthThreadRole/` for a full reference, and note
 that sketch's own banner on why it does not call `Matter.begin()`: this
@@ -1396,7 +1402,10 @@ additional commissioning flows and coverage.
 **0.11.0** adds the Thread role and mesh identity surface (`threadInfo()`/
 `threadRole()`/`onThreadRoleChange()`/`hearthThreadRoleName()`), host-side
 coverage only at this point: the wire parse (every field, every `has*`
-flag, the escaped-name grammar, the unknown-role degrade), the cached read
-path's zero wire traffic, the `+MTEVT:28` dispatch and its reentrancy
-guard, and a probe proving that dispatch touches no other path. Hardware
-verification is the firmware repo's own bench task, not this library's.
+flag, both escapes in the name grammar, the unrecognised-role degrade), the
+cached read path's zero wire traffic, the `+MTEVT:28` dispatch and its
+reentrancy guard, and a probe proving that dispatch touches no other path.
+A review round added `HEARTH_THREAD_UNKNOWN` as its own sentinel, distinct
+from `HEARTH_THREAD_UNSPECIFIED`: see "Thread role and mesh identity"
+above. Hardware verification is the firmware repo's own bench task, not
+this library's.

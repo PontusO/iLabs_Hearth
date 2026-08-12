@@ -32,14 +32,18 @@ const HearthThreadRoleEntry kThreadRoleTable[] = {
 };
 
 /*
- * Wire role token -> HearthThreadRole. Handles both a real token
- * ("ROUTER") and S3.27's decimal fallback for a value outside Matter's
- * current seven-entry enum ("42") identically: neither matches the table,
- * so both degrade to HEARTH_THREAD_UNSPECIFIED. See HearthThread.h's own
- * comment on the enum for why that degrade target, not a crash or a
- * mis-mapped real role, is the right answer. `len` rather than a NUL-
- * terminated token because the caller may be pointing into the middle of a
- * longer wire line (the query reply's first field, ahead of five more).
+ * Wire role token -> HearthThreadRole. A real token ("ROUTER") maps to its
+ * named enum value; S3.27's decimal fallback for a value outside Matter's
+ * current seven-entry enum ("42", a future SDK addition) matches nothing
+ * in the table and degrades to HEARTH_THREAD_UNKNOWN (review round,
+ * HearthThread.h's own comment on the enum), never to
+ * HEARTH_THREAD_UNSPECIFIED: that value is the wire's own honest "the
+ * Thread interface is down", a real and different fact from "this library
+ * does not recognise the token it was sent", and conflating the two would
+ * turn the firmware's own degrade-not-lie design back into a lie. `len`
+ * rather than a NUL-terminated token because the caller may be pointing
+ * into the middle of a longer wire line (the query reply's first field,
+ * ahead of five more).
  */
 HearthThreadRole hearthThreadRoleFromToken(const char *s, size_t len) {
   for (size_t i = 0; i < sizeof(kThreadRoleTable) / sizeof(kThreadRoleTable[0]); i++) {
@@ -48,7 +52,7 @@ HearthThreadRole hearthThreadRoleFromToken(const char *s, size_t len) {
       return kThreadRoleTable[i].role;
     }
   }
-  return HEARTH_THREAD_UNSPECIFIED;
+  return HEARTH_THREAD_UNKNOWN;
 }
 
 /*
@@ -225,7 +229,8 @@ const char *hearthThreadRoleName(HearthThreadRole role) {
     case HEARTH_THREAD_REED: return "REED";
     case HEARTH_THREAD_ROUTER: return "ROUTER";
     case HEARTH_THREAD_LEADER: return "LEADER";
-    default: return "UNSPECIFIED";
+    case HEARTH_THREAD_UNKNOWN: return "UNKNOWN";
+    default: return "UNKNOWN";  // an out-of-range cast; same fallback as an unrecognised wire token
   }
 }
 

@@ -52,17 +52,25 @@
 /*
  * Matter's RoutingRoleEnum, decoded (S3.27's own table, cited to
  * thread-network-diagnostics-provider.cpp, not OpenThread's otDeviceRole,
- * which is a different, smaller vocabulary). Values and order are fixed by
- * the plan's task-4 brief (spec section 3, verbatim); do not renumber.
+ * which is a different, smaller vocabulary). The seven named values and
+ * their order are fixed by the plan's task-4 brief (spec section 3,
+ * verbatim); do not renumber them.
  *
- * An unrecognized wire token -- S3.27's own decimal fallback for a future
- * SDK addition -- degrades to HEARTH_THREAD_UNSPECIFIED rather than being
- * rejected or mis-mapped onto an unrelated real role: this enum has no
- * eighth "unknown" value of its own, and UNSPECIFIED is already the wire's
- * own "nothing meaningful to report" answer (S3.27: "the Thread interface
- * is down"), so reusing it here degrades honestly to the same shape of
- * answer rather than fabricating a value the wire never actually sent. See
- * HearthThread.cpp's hearthThreadRoleFromToken().
+ * HEARTH_THREAD_UNKNOWN = 255 (review round, design spec 2026-08-12 S3):
+ * the wire's own decimal fallback for an enum value outside this set (a
+ * future SDK addition) degrades to a raw number specifically so it "degrades
+ * to a number rather than a lie" (design spec S2.1). The first cut of this
+ * enum had no slot for that case and collapsed it onto
+ * HEARTH_THREAD_UNSPECIFIED instead, which turns the firmware's honest
+ * degrade back into exactly the lie the wire format exists to avoid: a
+ * device that is up, attached and running a role this library predates
+ * would read as "the Thread interface is down" (UNSPECIFIED's real wire
+ * meaning, S3.27). UNKNOWN is this library's own "I do not recognise this
+ * token" case, provably distinct from the wire's UNSPECIFIED (see
+ * hearthThreadRoleFromToken()'s test coverage in test_thread.cpp). 255,
+ * not the next free value 7, so this sentinel can never collide with a
+ * future SDK addition to the real RoutingRoleEnum: any such addition
+ * still degrades to UNKNOWN here rather than a wrong done deal.
  */
 enum HearthThreadRole {
   HEARTH_THREAD_UNSPECIFIED = 0,
@@ -72,6 +80,7 @@ enum HearthThreadRole {
   HEARTH_THREAD_REED,
   HEARTH_THREAD_ROUTER,
   HEARTH_THREAD_LEADER,
+  HEARTH_THREAD_UNKNOWN = 255,
 };
 
 /*
@@ -103,8 +112,9 @@ struct HearthThreadInfo {
 };
 
 /* Display name for a role, e.g. for a status line. Every value
- * HearthThreadRole defines has one; an out-of-range value (a raw cast a
- * caller should not be doing, but this must not crash on) falls back to
- * "UNSPECIFIED", the same degrade hearthThreadRoleFromToken() applies on
- * the wire-parsing side. See HearthThread.cpp. */
+ * HearthThreadRole defines has one, including HEARTH_THREAD_UNKNOWN
+ * ("UNKNOWN"); a value outside the whole enum (a raw cast a caller should
+ * not be doing, but this must not crash on) falls back to "UNKNOWN" too,
+ * the same degrade hearthThreadRoleFromToken() applies on the wire-parsing
+ * side. See HearthThread.cpp. */
 const char *hearthThreadRoleName(HearthThreadRole role);

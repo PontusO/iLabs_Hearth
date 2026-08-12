@@ -45,8 +45,10 @@ public:
   }
 };
 
-/* hearthThreadRoleName(): the display helper, all seven tokens plus the
- * out-of-range fallback. */
+/* hearthThreadRoleName(): the display helper, all seven named tokens, the
+ * review-round HEARTH_THREAD_UNKNOWN sentinel, and a truly out-of-range
+ * cast (neither a named role nor the sentinel itself), which also falls
+ * back to "UNKNOWN" rather than crashing or misreporting. */
 static void test_role_name_strings(void) {
   check("UNSPECIFIED", strcmp(hearthThreadRoleName(HEARTH_THREAD_UNSPECIFIED), "UNSPECIFIED") == 0);
   check("UNASSIGNED", strcmp(hearthThreadRoleName(HEARTH_THREAD_UNASSIGNED), "UNASSIGNED") == 0);
@@ -55,7 +57,8 @@ static void test_role_name_strings(void) {
   check("REED", strcmp(hearthThreadRoleName(HEARTH_THREAD_REED), "REED") == 0);
   check("ROUTER", strcmp(hearthThreadRoleName(HEARTH_THREAD_ROUTER), "ROUTER") == 0);
   check("LEADER", strcmp(hearthThreadRoleName(HEARTH_THREAD_LEADER), "LEADER") == 0);
-  check("out-of-range value falls back to UNSPECIFIED's name", strcmp(hearthThreadRoleName((HearthThreadRole)99), "UNSPECIFIED") == 0);
+  check("UNKNOWN sentinel", strcmp(hearthThreadRoleName(HEARTH_THREAD_UNKNOWN), "UNKNOWN") == 0);
+  check("a truly out-of-range value also falls back to UNKNOWN's name", strcmp(hearthThreadRoleName((HearthThreadRole)99), "UNKNOWN") == 0);
 }
 
 /* The exact wire pin for the query itself: no set form, no extra traffic. */
@@ -133,6 +136,22 @@ static void test_threadinfo_name_with_escaped_quote(void) {
   check("escaped quote unescaped to a plain \"", strcmp(info.name, "Bob\"s Net") == 0);
 }
 
+/* A name containing a literal backslash: S3.27's OTHER quoting rule,
+ * '\' escaped as '\\'. Not exercised by the escaped-quote test above (same
+ * unescape branch, but review-round finding: the spec states both escapes
+ * as normative, so both need their own wire pin, not just the more
+ * memorable one). */
+static void test_threadinfo_name_with_literal_backslash(void) {
+  MockStream s;
+  Hearth.begin(s);
+  s.expect(
+    "AT+MTTHREAD?", "+MTTHREAD:ROUTER,1,15,0xFA25,0x000DB01A5C3F2E10,0x00003A21,\"C:\\\\Thread\"\r\nOK\r\n"
+  );
+  HearthThreadInfo info;
+  check("threadInfo succeeds", Hearth.threadInfo(info));
+  check("escaped backslash unescaped to a plain \\", strcmp(info.name, "C:\\Thread") == 0);
+}
+
 /* A name at Thread's exact 16-byte limit: the 17-byte buffer (16 + NUL)
  * must hold it whole, not truncate one short. */
 static void test_threadinfo_name_at_16_byte_limit(void) {
@@ -148,23 +167,43 @@ static void test_threadinfo_name_at_16_byte_limit(void) {
 }
 
 /* An unknown role number (S3.27: a future SDK addition renders as the raw
- * decimal instead of a token). This library's HearthThreadRole enum has no
- * eighth "unknown" value of its own (the API is fixed, spec section 3
- * verbatim), so it must not crash and must not mis-map onto an unrelated
- * real role: it degrades to HEARTH_THREAD_UNSPECIFIED, honestly "nothing
- * useful to report" rather than a lie. Every other field on the same line
- * must still parse correctly, proving the unfamiliar role token does not
- * derail the rest of the parse. */
+ * decimal instead of a token). Review-round finding: collapsing this onto
+ * HEARTH_THREAD_UNSPECIFIED would misreport a device that is up, attached
+ * and running a role this library predates as "the Thread interface is
+ * down" -- exactly the lie the wire's own decimal degrade
+ * (design spec S2.1: "degrades to a number rather than a lie") exists to
+ * avoid. It must not crash and must not mis-map onto ANY named real role
+ * either: it degrades to the dedicated HEARTH_THREAD_UNKNOWN sentinel
+ * (255, chosen so it can never collide with a future RoutingRoleEnum
+ * value). Every other field on the same line must still parse correctly,
+ * proving the unfamiliar role token does not derail the rest of the
+ * parse. */
 static void test_threadinfo_unknown_role_number(void) {
   MockStream s;
   Hearth.begin(s);
   s.expect("AT+MTTHREAD?", "+MTTHREAD:99,1,15,0xFA25,0x000DB01A5C3F2E10,0x00003A21,\"Foo\"\r\nOK\r\n");
   HearthThreadInfo info;
   check("threadInfo still succeeds (does not crash)", Hearth.threadInfo(info));
-  check("unrecognized role degrades to UNSPECIFIED, not a mis-mapped real role", info.role == HEARTH_THREAD_UNSPECIFIED);
+  check("unrecognized role degrades to the UNKNOWN sentinel, not UNSPECIFIED and not a mis-mapped real role", info.role == HEARTH_THREAD_UNKNOWN);
   check("attached still parsed correctly", info.attached == true);
   check("channel still parsed correctly", info.hasChannel && info.channel == 15);
   check("name still parsed correctly", strcmp(info.name, "Foo") == 0);
+}
+
+/* The other half of the same review-round finding: a literal "UNSPECIFIED"
+ * wire token -- the device's own honest "the Thread interface is down" --
+ * must still decode to HEARTH_THREAD_UNSPECIFIED, provably distinct from
+ * the unrecognized-token case above, which decodes to
+ * HEARTH_THREAD_UNKNOWN. If these two ever collapsed onto the same value
+ * again, this test and the one above could not both pass. */
+static void test_threadinfo_literal_unspecified_token_stays_unspecified(void) {
+  MockStream s;
+  Hearth.begin(s);
+  s.expect("AT+MTTHREAD?", "+MTTHREAD:UNSPECIFIED,0,,,,,\"\"\r\nOK\r\n");
+  HearthThreadInfo info;
+  check("threadInfo succeeds", Hearth.threadInfo(info));
+  check("a literal UNSPECIFIED token decodes to HEARTH_THREAD_UNSPECIFIED, not UNKNOWN", info.role == HEARTH_THREAD_UNSPECIFIED);
+  check("distinct from the unrecognized-token case", HEARTH_THREAD_UNSPECIFIED != HEARTH_THREAD_UNKNOWN);
 }
 
 /* +MTERR:8 (design point 4): on a WiFi image (or the combined image booted
@@ -308,8 +347,10 @@ int main(void) {
   test_threadinfo_detached_line();
   test_threadinfo_name_with_comma();
   test_threadinfo_name_with_escaped_quote();
+  test_threadinfo_name_with_literal_backslash();
   test_threadinfo_name_at_16_byte_limit();
   test_threadinfo_unknown_role_number();
+  test_threadinfo_literal_unspecified_token_stays_unspecified();
   test_threadinfo_wifi_image_unsupported();
   test_threadrole_seeded_no_wire();
   test_threadrole_refreshed_by_evt28();
