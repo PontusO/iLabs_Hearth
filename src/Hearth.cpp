@@ -21,7 +21,10 @@ HearthClass::HearthClass()
     _expectedRebootArmedAt(0),
     _expectedRebootTimeoutMs(0),
     _cmdRespQueueCount(0),
-    _deferredWorkPending(false) {}
+    _deferredWorkPending(false),
+    _threadRole(HEARTH_THREAD_UNSPECIFIED),
+    _onThreadRoleChangeCB(nullptr),
+    _evtResubscribeNeeded(false) {}
 
 void HearthClass::begin(Stream &serial, unsigned long baud) {
   (void)baud;  // see the header: a caller-supplied Stream has no begin() of its own to call with it;
@@ -33,6 +36,22 @@ void HearthClass::begin(Stream &serial, unsigned long baud) {
   _expectedRebootSeen = false;
   _expectedRebootArmedAt = 0;
   _expectedRebootTimeoutMs = 0;
+  /* A new link is a new start for the cached role too (Task 4): whatever
+   * the previous link last learned no longer describes anything. The
+   * callback registration (_onThreadRoleChangeCB) is deliberately left
+   * alone: begin() never clears _linkEventCB either, the "no existing
+   * endpoint class clears a callback registration on begin()" precedent
+   * this library follows throughout. */
+  _threadRole = HEARTH_THREAD_UNSPECIFIED;
+  /* Bench review round: a fresh link means the device-side event mask is
+   * unknown again (begin() usually pairs with hearthResetCoprocessor(),
+   * which puts the C6 through its own boot and the RAM-only mask back to
+   * the firmware default, AT_MT_SPEC.md S3.11). Recomputed from scratch,
+   * not OR'd into whatever was pending: if no callback is registered right
+   * now, there is nothing to reconcile and this must not linger true from
+   * before this begin() call, which would spend a wire round trip
+   * confirming a subscription state nobody wants. */
+  _evtResubscribeNeeded = (_onThreadRoleChangeCB != nullptr);
 }
 
 #ifdef ARDUINO
@@ -191,6 +210,10 @@ void HearthClass::poll() {
    * deferred behind its verdict, so the AT+MTCMDRESP always precedes the
    * push on the wire. See hearthDrainDeferredWork()'s own comment. */
   hearthDrainDeferredWork();
+  /* Bench review round: then the Thread role event-mask subscription, if
+   * onThreadRoleChange() (or a +MTREADY this same _link.poll() just
+   * dispatched) armed it. See hearthDrainEvtResubscribe()'s own comment. */
+  hearthDrainEvtResubscribe();
 }
 
 void HearthClass::hearthOnVerLine(const char *line, void *arg) {
@@ -255,6 +278,10 @@ int HearthClass::hearthCommand(const char *cmd, HearthLink::LineCb onLine, void 
    * the drain itself saves and restores _lastError (see its comment), so
    * background pushes never clobber this caller's own outcome either. */
   hearthDrainDeferredWork();
+  /* Bench review round: same ordering reason again. hearthDrainEvtResubscribe()
+   * also saves/restores _lastError, so a background mask sync can never
+   * clobber what this call itself is about to return via lastError(). */
+  hearthDrainEvtResubscribe();
   return rc;
 }
 
@@ -433,9 +460,18 @@ void hearthDispatchIdent(const char *rest) {
 /* Parses "<bit>[,<detail>]" (the text after "+MTEVT:") and, if a sketch has
  * registered one, calls ArduinoMatter's event callback. Bit 27 is a
  * Hearth-specific transport-mismatch event that goes to the link-event
- * callback instead. Bits 28-31 (reserved per S3.11) and malformed input
- * are dropped silently, the same policy given for an unrecognised endpoint
- * in hearthDispatchAttr()/hearthDispatchIdent() in the anonymous namespace. */
+ * callback instead. Bit 28 (Task 4, 0.11.0, AT_MT_SPEC.md S3.27) is
+ * MT_EVT_THREAD_ROLE_CHANGED: unlike every bit below it, its payload is
+ * the decoded Thread role TOKEN (e.g. "ROUTER"), not a number, so it is
+ * intercepted here too, ahead of the generic `detail = atoi(...)` parse
+ * below, which would silently read a non-numeric token as 0. It routes to
+ * hearthDispatchThreadRoleEvt() (HearthThread.cpp), Hearth's own
+ * onThreadRoleChange() callback, never to ArduinoMatter's matterEvent_t
+ * table: no upstream matterEvent_t exists for a Thread role change, the
+ * same reasoning bit 27 already follows for transport mismatch. Bits 29-31
+ * (reserved per S3.11) and malformed input are dropped silently, the same
+ * policy given for an unrecognised endpoint in
+ * hearthDispatchAttr()/hearthDispatchIdent() in the anonymous namespace. */
 void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
   char *end;
   long bit = strtol(rest, &end, 10);
@@ -446,6 +482,15 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
     /* Transport mismatch is a Hearth extension with no upstream
      * matterEvent_t; it goes to the link-event callback. */
     self->hearthRaiseEvent(HEARTH_TRANSPORT_MISMATCH);
+    return;
+  }
+  if (bit == 28) {
+    /* No payload (malformed: this bit carries no meaningful numeric
+     * <detail> to fall back to) is dropped, the same silent-drop policy
+     * every other malformed URC in this file uses. */
+    if (*end == ',') {
+      hearthDispatchThreadRoleEvt(end + 1, self);
+    }
     return;
   }
   if (bit >= 27) {
@@ -802,12 +847,26 @@ void HearthClass::hearthDrainDeferredWork() {
  * (ArduinoMatter::begin(), before AT+MTEPAPPLY), clears the arm silently
  * instead: see hearthExpectedRebootSeen().
  *
+ * Bench review round: EVERY +MTREADY, expected or not, also means the
+ * co-processor's event mask just reset to the firmware default
+ * (AT_MT_SPEC.md S3.11: RAM-only, no persistence across a reboot). If a
+ * Thread role callback is registered, whatever subscription
+ * hearthDrainEvtResubscribe() last established is now stale device-side,
+ * so this arms it again here -- checked before branching on
+ * _expectingReboot, so it applies uniformly to a reboot this host caused
+ * (AT+MTEPAPPLY) and to a spontaneous one. Nothing is armed when no
+ * callback is registered: the device's post-reboot default already
+ * matches that desired state (bit 28 off) with zero wire traffic needed.
+ *
  * +MTEVT, +MTATTR and +MTIDENT are the Matter-named layer's concern, each
  * routed to its dispatcher above.
  */
 void HearthClass::hearthOnURCLine(const char *line, void *arg) {
   HearthClass *self = (HearthClass *)arg;
   if (strncmp(line, "+MTREADY", 8) == 0) {
+    if (self->_onThreadRoleChangeCB) {
+      self->_evtResubscribeNeeded = true;
+    }
     if (self->_expectingReboot) {
       self->_expectingReboot = false;
       self->_expectedRebootSeen = true;

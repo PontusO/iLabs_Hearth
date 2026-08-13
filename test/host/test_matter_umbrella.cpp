@@ -23,6 +23,7 @@
  * compile pass against real hardware examples.
  */
 #include <stdio.h>
+#include <string.h>
 #include "ArduinoShim.h"
 #include "MockStream.h"
 #include "Matter.h"
@@ -200,6 +201,17 @@ MatterSolarPower umbrellaSolarPower;
 MatterBatteryStorage umbrellaBatteryStorage;
 MatterDeviceEnergyManagement umbrellaDem;
 
+/*
+ * Task 4 (Thread role API, 0.11.0): NOT a device type, so there is no
+ * MatterXxx global to declare here -- HearthThreadRole/HearthThreadInfo and
+ * Hearth.threadInfo()/threadRole()/onThreadRoleChange()/hearthThreadRoleName()
+ * live on the Hearth global itself (Hearth.h's own "Task 4" comment on its
+ * include list). This file's only iLabs Hearth include is still "Matter.h",
+ * so the smoke test below (test_threadrole_resolves_via_matter_h_alone)
+ * is this addition's compile/link guard: dropping HearthThread.h's include
+ * from Hearth.h fails this build.
+ */
+
 static int g_pass = 0, g_fail = 0;
 static void check(const char *name, bool cond) {
   printf("  [%s] %s\n", cond ? "PASS" : "FAIL", name);
@@ -265,12 +277,30 @@ static void test_tempsensor_resolves_and_works(void) {
   check("no unexpected commands", s.unexpected().empty());
 }
 
+/*
+ * Task 4: the Thread role surface, reached through nothing but "Matter.h".
+ * A real round trip, the same "not merely declarable, fully linked" bar the
+ * four device-type tests above hold themselves to.
+ */
+static void test_threadrole_resolves_via_matter_h_alone(void) {
+  MockStream s;
+  Hearth.begin(s);
+  s.expect("AT+MTTHREAD?", "+MTTHREAD:ROUTER,1,15,0xFA25,0x000DB01A5C3F2E10,0x00003A21,\"UmbrellaNet\"\r\nOK\r\n");
+  HearthThreadInfo info;
+  check("Hearth.threadInfo resolves via Matter.h alone", Hearth.threadInfo(info));
+  check("role decoded", info.role == HEARTH_THREAD_ROUTER);
+  check("threadRole cache reflects it with no further wire traffic", Hearth.threadRole() == HEARTH_THREAD_ROUTER);
+  check("hearthThreadRoleName resolves", strcmp(hearthThreadRoleName(info.role), "ROUTER") == 0);
+  check("no unexpected commands", s.unexpected().empty());
+}
+
 int main(void) {
   printf("===== Matter.h umbrella include tests =====\n");
   test_onoff_resolves_and_works();
   test_dimmable_resolves_and_works();
   test_colortemp_resolves_and_works();
   test_tempsensor_resolves_and_works();
+  test_threadrole_resolves_via_matter_h_alone();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

@@ -300,6 +300,131 @@ Two smaller differences in the same area, for completeness:
   that particular echo from being treated as a fresh controller change; it
   does not roll back the cache the setter already committed.
 
+## Thread role and mesh identity
+
+`Hearth.threadInfo()`, `Hearth.threadRole()`, `Hearth.onThreadRoleChange()`
+and `hearthThreadRoleName()` (library 0.11.0, firmware 0.11.0,
+`AT_MT_SPEC.md` S3.27 / event bit 28) surface the Thread routing role and
+mesh identity a Thread-image co-processor already carries on its
+`ThreadNetworkDiagnostics` cluster. No `arduino-esp32` class has a Thread
+role API on any SDK this library tracks, so this is a Hearth original, the
+same as `onLinkEvent()`/`transportMismatch()` in "Wiring" above.
+
+**Needs the Thread image to do anything.** On a WiFi image, or the combined
+image booted in WiFi mode, there is no `ThreadNetworkDiagnostics` cluster on
+endpoint 0 to read: `threadInfo()` returns `false` with `Hearth.lastError()
+== HEARTH_ERR_NOT_SUPPORTED` (8), and `threadRole()` reports
+`HEARTH_THREAD_UNSPECIFIED`.
+
+Two read paths, deliberately different costs:
+
+- `Hearth.threadInfo(HearthThreadInfo &out)` always round-trips
+  (`AT+MTTHREAD?`) and fills every field, including the `has*` flags for
+  the wire's four nullable ones (`hasChannel`/`hasPanId`/`hasExtPanId`/
+  `hasPartitionId`): **a `has*` flag false is the only honest signal of
+  "unknown"**, never the numeric value on its own. A real PAN ID of
+  `0xFFFF`, an all-ones extended PAN ID, or a partition ID of `0xFFFFFFFF`
+  renders on the wire identically to null; `AT_MT_SPEC.md` S3.27 documents
+  this as a property of the underlying `Nullable` encoding, not something
+  this command invented. `name` arrives as a plain, already-unescaped C
+  string (up to 16 bytes plus a NUL): the wire's own quoting rule (`"`
+  escaped as `\"`, `\` as `\\`, the first free-form string field in the
+  `AT+MT` family) is this library's problem, not the sketch's.
+
+  **`partitionId` is the one field where a true `has*` flag is not evidence
+  of an active mesh membership** (bench round, design spec 2026-08-12
+  S2.1 as corrected): a device with a Thread dataset installed but not
+  yet attached already reports a real `channel`, `panId`, `extPanId` and
+  `name`, and `partitionId` renders as `0x00000000` -- `hasPartitionId` is
+  `true` and the value is a genuine `0`, not an unset field. CHIP's null
+  gate is "no dataset installed", not "not attached" (S3.27). **`attached`
+  is therefore the only reliable "am I on a network" predicate**: a sketch
+  keying off `hasPanId`, `hasExtPanId` or a nonempty `name` gets a false
+  positive for the whole window between dataset install and mesh
+  attachment, because those fields describe the network the device has
+  been told to join, not one it has joined. Check `attached`, not the
+  presence of the id fields.
+- `Hearth.threadRole()` returns a **cached** `HearthThreadRole` with **no
+  wire traffic at all** -- not even a URC drain. Seeded to
+  `HEARTH_THREAD_UNSPECIFIED` on `begin()` and refreshed by `threadInfo()`
+  and by every `+MTEVT:28`, so a sketch polling its role every `loop()`
+  iteration pays nothing for it. It never crashes on an enum value it does
+  not recognise: the wire's own decimal fallback (a future SDK addition
+  outside Matter's current seven-entry `RoutingRoleEnum`) and any token
+  this library's parser fails to match both degrade to
+  `HEARTH_THREAD_UNKNOWN` (255, chosen so it can never collide with a
+  future `RoutingRoleEnum` member), **never to `HEARTH_THREAD_UNSPECIFIED`**.
+  Those two are provably distinct: `UNSPECIFIED` is the wire's own honest
+  "the Thread interface is down", and collapsing an unrecognised token onto
+  it would misreport a device that is up, attached and running a role this
+  library predates as if its radio were off (review round, design spec
+  2026-08-12 S2.1's "degrades to a number rather than a lie" principle,
+  which the library must not undo).
+
+`Hearth.onThreadRoleChange(void (*cb)(HearthThreadRole))` registers the
+role-change callback, a **plain function pointer** (`HearthDemControl`'s
+`onPowerAdjust`/`onCancelPowerAdjust` convention, not `std::function`:
+there is no verdict to return here, only a notification). It carries the
+exact same reentrancy rule as every other URC-dispatched callback in this
+library (see "Your `onChange` fires from inside your own setter" above,
+and `HearthDeviceEnergyManagement`'s power-adjust pair): **it runs inside
+URC dispatch**, so a wire write from inside it -- including calling
+`threadInfo()` itself -- is refused (`HEARTH_CMD_REENTRANT`) and reaches
+nothing. Set a flag in the callback and act on it from `loop()`:
+
+```cpp
+volatile bool g_roleChanged = false;
+HearthThreadRole g_lastRole = HEARTH_THREAD_UNSPECIFIED;
+
+void onRoleChange(HearthThreadRole role) {
+  g_lastRole = role;
+  g_roleChanged = true;   // do not call the library from here
+}
+
+void loop() {
+  Hearth.poll();
+  if (g_roleChanged) {
+    g_roleChanged = false;
+    Serial.println(hearthThreadRoleName(g_lastRole));
+  }
+}
+```
+
+**Registering is what subscribes** (bench round: on real hardware the
+callback never fired at all, because nothing had ever asked the device to
+send `+MTEVT:28` in the first place -- bit 28 is opt-in, `AT_MT_SPEC.md`
+S3.11's default event mask has no Thread role bit, so the device was
+correctly silent). The one call above, `Hearth.onThreadRoleChange(cb)`,
+arms a background `AT+MTEVT?` / `AT+MTEVT=` read-modify-write that the
+next `Hearth.poll()`/any library call carries out: it reads the mask
+first, then OR's bit 28 in (or AND's it out for a `nullptr` registration)
+and writes the result back whole, never blindly overwriting whatever else
+a sketch or another part of this library already subscribed to. Passing
+`nullptr` unsubscribes the same way, in reverse.
+
+**The subscription survives a co-processor reboot with no sketch action.**
+`AT_MT_SPEC.md` S3.11 states the mask lives in RAM only and reverts to the
+firmware default on every reboot, expected (an `AT+MTEPAPPLY` composition
+apply) or spontaneous -- so a subscription made once in `setup()` would
+otherwise silently stop working the first time the C6 restarts, the same
+shape of staleness this library's endpoint-composition reconcile already
+guards against. This library re-arms the same read-modify-write on its
+own on every `+MTREADY` while a callback is registered; a registration
+made before the link even exists yet (before the first call that brings
+it up) is deferred and applied the same way once it does.
+
+`hearthThreadRoleName(HearthThreadRole)` returns a display string for any
+of the seven named roles (`"UNSPECIFIED"`, `"UNASSIGNED"`,
+`"SLEEPY_END_DEVICE"`, `"END_DEVICE"`, `"REED"`, `"ROUTER"`, `"LEADER"`)
+and for `HEARTH_THREAD_UNKNOWN` (`"UNKNOWN"`), and falls back to
+`"UNKNOWN"` for a value outside the whole enum rather than returning
+`nullptr` or undefined text.
+
+See `examples/FullAPI/HearthThreadRole/` for a full reference, and note
+that sketch's own banner on why it does not call `Matter.begin()`: this
+surface is not scoped to any declared endpoint, and the sketch declares
+none.
+
 ## Supported device types
 
 All twenty of arduino-esp32's `Matter*` endpoint classes exist today,
@@ -1153,6 +1278,19 @@ commissioned device without guessing cluster and attribute names. See
 and its Task C9 report for the eight added when the seven-type batch's
 device types reached the library surface.
 
+**`HearthThreadRole/` (Task 4, 0.11.0) is the one folder in this tier with
+no device type behind it.** The Thread role surface lives on the Hearth
+global, not on any `Matter*` class (see "Thread role and mesh identity"
+above), so its sketch exercises `Hearth.threadInfo()`/`threadRole()`/
+`onThreadRoleChange()`/`hearthThreadRoleName()` directly and, deliberately,
+never calls `Matter.begin()` -- the sketch's own banner explains why
+(declaring zero endpoints and reconciling would wipe a real device's
+composition). Everything else about the tier's conventions above still
+applies: the banner-as-checklist, `Hearth.poll()` first, the menu, and the
+`chip-tool` cross-reference (`threadnetworkdiagnostics read ...` in place of
+a cluster/attribute pair, since this command decodes six of that cluster's
+attributes at once rather than wrapping one).
+
 ## Preferences
 
 `arduino-pico` ships no `Preferences` and nothing equivalent, so every
@@ -1297,3 +1435,25 @@ sequence without any hardware. Hardware verification: the automatic reset
 path and the transport API were verified during C4 end-to-end (2026-07-28)
 and transport smoke tests (2026-08-03). See `HARDWARE-BRINGUP.md` for
 additional commissioning flows and coverage.
+
+**0.11.0** adds the Thread role and mesh identity surface (`threadInfo()`/
+`threadRole()`/`onThreadRoleChange()`/`hearthThreadRoleName()`). A review
+round added `HEARTH_THREAD_UNKNOWN` as its own sentinel, distinct from
+`HEARTH_THREAD_UNSPECIFIED`, and corrected `partitionId`'s nullability
+claim (`hasPartitionId` can be `true` with a genuine `0` while detached
+with a dataset installed; `attached` is the only reliable "on a network"
+predicate): see "Thread role and mesh identity" above for both.
+
+Bench E2E on real hardware confirmed `threadInfo()` (all seven fields
+against the live link), `threadRole()`'s zero-wire-traffic cached read,
+and the role decoding, but found the change callback never fired at all:
+`onThreadRoleChange()` stored the function pointer with no wire effect,
+so bit 28 (opt-in, off by the firmware's default event mask) was never
+actually subscribed to and the device, correctly, never sent it. Every
+host test had passed regardless, because they all inject `+MTEVT:28`
+straight into dispatch, which proves the handler and cannot prove
+anything ever asks the device to send it -- recorded here as a test
+design lesson, not only a bug. Fixed by making registration itself
+subscribe (a background `AT+MTEVT?`/`AT+MTEVT=` read-modify-write,
+re-armed on every co-processor reboot and for a registration made before
+the link exists): see "Thread role and mesh identity" above.
