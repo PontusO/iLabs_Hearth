@@ -455,6 +455,36 @@ static void test_undeclared_endpoint_refuses_every_call(void) {
 
 int main(void) {
   printf("\n===== HearthRowTransfer tests =====\n");
+  /*
+   * Fix round 2: this suite's own mutation history (round 1's finding 1,
+   * plus M13/M15/M20 from the original task-10 pass) found that a guard or
+   * wire-format regression here does not fail, it HANGS -- HearthLink's
+   * read loop spins on a fake millis() that only advances via yield(), and
+   * yield() is only ever called from readLine()'s timeout branch. As
+   * WRITTEN TODAY every test below is a proven no-op against that: a
+   * correctly-guarded call returns before Hearth.hearthCommand() is ever
+   * reached, and a correctly-matched wire call has its whole reply already
+   * sitting in MockStream's buffer, so readLine()'s inner
+   * `while (_s->available() > 0)` loop returns the assembled line from
+   * inside itself and never falls through to the timeout check or the
+   * yield() call at all (HearthLink.cpp's readLine(), read before making
+   * this change, not assumed). Setting g_yieldAdvanceMs nonzero here has
+   * therefore zero effect on any test as it stands; it exists purely so a
+   * FUTURE regression that lets an unguarded or misrendered call reach the
+   * wire converges to command()'s ordinary -2 timeout in a bounded number
+   * of loop iterations instead of spinning forever, producing an ordinary
+   * red FAIL line a future session (or CI) can act on.
+   *
+   * One bracket around the whole run rather than one per test function
+   * (test_hearthlink.cpp's usual per-assertion idiom): several tests here
+   * exercise the SAME snprintf call site (getRow() alone is exercised by
+   * five of them, stage() by four), so bracketing only the specific
+   * assertions a review happened to catch hanging would still let the
+   * suite hang on the next, unbracketed test sharing that same regressed
+   * call site. A whole-run bracket closes that gap for every test in this
+   * file at once, at zero cost to the ones that do not need it.
+   */
+  g_yieldAdvanceMs = 1;
   test_stage_pins_design_spec_worked_example_soc_only();
   test_stage_pins_design_spec_worked_example_energy_only();
   test_stage_both_optionals_present();
@@ -477,6 +507,7 @@ int main(void) {
   test_seq_zero_refused_host_side();
   test_malformed_row_line_is_dropped();
   test_undeclared_endpoint_refuses_every_call();
+  g_yieldAdvanceMs = 0;
 
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
