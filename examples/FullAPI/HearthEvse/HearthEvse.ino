@@ -45,15 +45,22 @@
  *                            days explicitly.
  *
  * STACK HEADROOM. This sketch prints rp2040.getFreeStack() from inside
- * the onSetTargets() callback, which is the deepest point of the
+ * the onSetTargets() callback. This is NOT the deepest point of the
  * library's deepest call chain: hearthOnDeferredWork()'s `proposed`
  * (a HearthChargingSchedule, about 1192 bytes) is live across the
- * callback, and an accepted proposal then calls hearthMergeByDay(),
- * whose `merged` is a second one. Roughly 2.4 KB of locals in one chain
- * on a core-0 stack of 4 KB, with core 1's stack immediately below and
- * stack protection off, so an overflow would corrupt silently rather
- * than fault. It has NOT been observed to overflow; the figure is
- * printed so the bench records a real number instead of an argument.
+ * callback, but the true peak comes AFTER the callback returns, when an
+ * accepted proposal calls hearthMergeByDay(), whose `merged` is a
+ * second, equally-sized HearthChargingSchedule live on top of `proposed`
+ * at the same time. Roughly 2.4 KB of locals in one chain on a core-0
+ * stack of 4 KB, with core 1's stack immediately below and stack
+ * protection off, so an overflow would corrupt silently rather than
+ * fault. It has NOT been observed to overflow; the figure printed here
+ * OVERSTATES the true margin at peak by roughly one HearthChargingSchedule
+ * (about 1200 bytes), since it is taken one frame short of
+ * hearthMergeByDay(). The bench procedure
+ * (.superpowers/sdd/2026-08-14-energy-round-c2/task-13-report.md section
+ * 7.17) subtracts that before applying its pass/fail bands; this sketch
+ * only prints the raw number, it does not correct or assert it.
  *   onDisableCharging(cb)    setup(); the verdict answers the controller,
  *                            then setSupplyState() reports the outcome
  *   onEnableCharging(cb)     setup(); same shape, three fields
@@ -85,7 +92,7 @@
  *   chip-tool energyevse get-targets <node> <ep> --timedInteractionTimeoutMs 5000
  *   chip-tool energyevse set-targets '[{"dayOfWeekForSequence":2,"chargingTargets":[{"targetTimeMinutesPastMidnight":480,"addedEnergy":25000000}]}]' <node> <ep> --timedInteractionTimeoutMs 5000
  *   chip-tool energyevse disable <node> <ep> --timedInteractionTimeoutMs 5000
- *   chip-tool energyevse enable-charging '{"chargingEnabledUntil":null}' 6000 32000 <node> <ep> --timedInteractionTimeoutMs 5000
+ *   chip-tool energyevse enable-charging null 6000 32000 <node> <ep> --timedInteractionTimeoutMs 5000
  * Every EnergyEvse command is mustUseTimedInvoke, so
  * --timedInteractionTimeoutMs is mandatory on all of them.
  */

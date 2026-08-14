@@ -48,8 +48,10 @@
  *
  * THERE IS NO READ-BACK VERB, deliberately, on the firmware side (task 9's
  * report, design spec 6.3): a worst-case identity line is 265 bytes
- * (cmd_mtmeterid's field-by-field arithmetic in mt_at.c) and the host's own
- * receive limit would silently discard it. HEARTH_LINE_MAX is 256
+ * (the field-by-field arithmetic is in mt_meter.cpp's "why there is no
+ * read-back verb" comment, not cmd_mtmeterid's, which documents the
+ * command's grammar and error codes but carries no byte count) and the
+ * host's own receive limit would silently discard it. HEARTH_LINE_MAX is 256
  * (HearthLink.h), of which 255 bytes are usable payload: HearthLink.cpp's
  * accumulator guards on `_acc_len < HEARTH_LINE_MAX - 1`, reserving the
  * last byte for the terminator. Both figures were wrong in an earlier
