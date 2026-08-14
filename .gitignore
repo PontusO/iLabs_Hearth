@@ -61,6 +61,8 @@ build/
 /test/host/test_batterystorage
 /test/host/test_dem
 /test/host/test_thread
+/test/host/test_rowtransfer
+/test/host/test_chargingschedule
 
 *.bin
 *.uf2
