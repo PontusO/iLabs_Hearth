@@ -64,6 +64,7 @@ build/
 /test/host/test_rowtransfer
 /test/host/test_chargingschedule
 /test/host/test_evse
+/test/host/test_utilitymeter
 
 *.bin
 *.uf2

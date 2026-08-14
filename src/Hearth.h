@@ -209,6 +209,7 @@
 #include "MatterEndpoints/MatterBatteryStorage.h"
 #include "MatterEndpoints/MatterDeviceEnergyManagement.h"
 #include "MatterEndpoints/MatterEvse.h"
+#include "MatterEndpoints/MatterElectricalUtilityMeter.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART
