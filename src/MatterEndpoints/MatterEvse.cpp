@@ -208,6 +208,44 @@ bool MatterEvse::setChargingSchedule(const HearthChargingSchedule &schedule) {
     return true;
   }
 
+  /*
+   * SPECULATIVE STAGE DISCARD, round C2 final review. Without this, one
+   * failed push wedges every SHORTER one afterwards, permanently.
+   *
+   * mt_rows.c's mt_rows_stage() makes the firmware's `count` a HIGH-WATER
+   * MARK: staging index i only ever raises it to max(count, i+1), and
+   * staging for the same (ep, kind) never lowers it. mt_at.c's
+   * cmd_mtrowapply() returns on a FAILED apply BEFORE it reaches the
+   * mt_rows_init() that would have reset the stage. So after any
+   * mid-sequence failure (a wire refusal on stage N, or an apply refused
+   * by the SOC-variant rule), the device is left holding a stage whose
+   * count is the OLD, longer one. The next setChargingSchedule() with
+   * fewer rows stages 0..n-1 correctly, then apply(n) is compared against
+   * the stale high-water count, mismatches, and answers +MTERR:1. Every
+   * shorter schedule fails from then on, for the life of the boot.
+   *
+   * The recovery is one command, and both the firmware's own harness
+   * (test/mt_regression.py's 3.27 SOC-variant arm) and AT_MT_SPEC.md
+   * already do exactly this: discard the stage before starting a new
+   * one. This library never issued it: clearStaged() had zero call sites,
+   * and `rows` is protected, so a sketch could not issue it either.
+   *
+   * Unconditional and result-ignored, deliberately. AT+MTROWCLEAR is
+   * REFUSED (+MTERR:1) when nothing is currently staged for this
+   * (ep, kind), which is the normal, healthy case; treating that as a
+   * failure would break every ordinary push. lastError() is saved and
+   * restored around it for the same reason Hearth.cpp's own reconcile
+   * walk saves it: a speculative call must not clobber the error code the
+   * CALLER is about to read after a genuine failure below.
+   *
+   * The count()==0 path above does not need this and does not get it:
+   * apply(0) is the unconditional whole-payload clear and mt_at.c's
+   * count-0 branch calls mt_rows_init() itself before anything else.
+   */
+  int savedError = Hearth.lastError();
+  (void)rows.clearStaged();
+  Hearth.hearthSetError(savedError);
+
   uint8_t dayMask = 0;
   for (uint8_t i = 0; i < schedule.count(); i++) {
     HearthRowTransfer::Row row;
@@ -248,7 +286,8 @@ bool MatterEvse::setChargingSchedule(const HearthChargingSchedule &schedule) {
   return true;
 }
 
-void MatterEvse::onSetTargets(bool (*handler)(const HearthChargingSchedule &)) {
+void MatterEvse::onSetTargets(bool (*handler)(const HearthChargingSchedule &,
+                                             uint8_t affectedDayMask)) {
   _onSetTargetsCB = handler;
 }
 
@@ -349,7 +388,14 @@ void MatterEvse::hearthOnDeferredWork() {
     built = proposed.addTarget(bits, hearthTargetFromRow(_rowBuf[i]));
   }
 
-  bool allow = (built && _onSetTargetsCB) ? _onSetTargetsCB(proposed) : false;
+  /* The mask goes to the sketch alongside the proposal (header comment):
+   * it is the only thing that distinguishes a day being EMPTIED from a
+   * day not being mentioned, and rowcount 0 with a non-zero mask ("clear
+   * these days") from rowcount 0 with a zero mask (the fabric-only
+   * no-op). It is the same `dayMask` hearthMergeByDay() is handed below,
+   * deliberately, so what the sketch saw and what the cache did cannot
+   * disagree. */
+  bool allow = (built && _onSetTargetsCB) ? _onSetTargetsCB(proposed, dayMask) : false;
 
   /* "AT+MTCMDRESP=" (13) + seq (up to 10, u32) + "," (1) + verdict (1) + NUL
    * = 26; 40 matches Hearth.cpp's own hearthDrainCmdRespQueue() buffer for

@@ -37,7 +37,23 @@
  *                            dispatch itself, so it is free to take as
  *                            long as ordinary sketch code would, and it
  *                            must never be assumed to run synchronously
- *                            with the controller's own invoke
+ *                            with the controller's own invoke. Its second
+ *                            argument is the AFFECTED-DAY MASK, which is
+ *                            not derivable from the schedule: a day named
+ *                            by the mask with no row in the proposal is
+ *                            being EMPTIED. This sketch reports those
+ *                            days explicitly.
+ *
+ * STACK HEADROOM. This sketch prints rp2040.getFreeStack() from inside
+ * the onSetTargets() callback, which is the deepest point of the
+ * library's deepest call chain: hearthOnDeferredWork()'s `proposed`
+ * (a HearthChargingSchedule, about 1192 bytes) is live across the
+ * callback, and an accepted proposal then calls hearthMergeByDay(),
+ * whose `merged` is a second one. Roughly 2.4 KB of locals in one chain
+ * on a core-0 stack of 4 KB, with core 1's stack immediately below and
+ * stack protection off, so an overflow would corrupt silently rather
+ * than fault. It has NOT been observed to overflow; the figure is
+ * printed so the bench records a real number instead of an argument.
  *   onDisableCharging(cb)    setup(); the verdict answers the controller,
  *                            then setSupplyState() reports the outcome
  *   onEnableCharging(cb)     setup(); same shape, three fields
@@ -123,10 +139,20 @@ void setup() {
   // this file's own top comment). Runs from hearthOnDeferredWork(), well
   // after the +MTCMD line that triggered it; the proposal has NOT been
   // applied yet when this fires.
-  Evse.onSetTargets([](const HearthChargingSchedule &proposed) -> bool {
+  Evse.onSetTargets([](const HearthChargingSchedule &proposed,
+                       uint8_t affectedDayMask) -> bool {
+    // Stack headroom probe (see this file's top comment): this callback
+    // sits at the deepest point of the library's deepest call chain, and
+    // core 0's stack on an RP2350 is 4 KB with core 1's immediately
+    // below it and stack protection off. Printed, not asserted: the
+    // bench records the figure, and a number in the low hundreds is the
+    // signal to act on.
     Serial.print("SetTargets proposal: ");
     Serial.print(proposed.count());
-    Serial.println(" target(s)");
+    Serial.print(" target(s), affected days 0x");
+    Serial.print(affectedDayMask, HEX);
+    Serial.print(", free stack ");
+    Serial.println(rp2040.getFreeStack());
     for (uint8_t i = 0; i < proposed.count(); i++) {
       const HearthChargingTarget &t = proposed.targetAt(i);
       Serial.print("  day 0x");
@@ -138,6 +164,32 @@ void setup() {
         Serial.print((long)t.addedEnergy);
       }
       Serial.println();
+    }
+    // The mask is NOT derivable from `proposed`, which is the whole
+    // reason it is an argument. A day named by the mask but carrying no
+    // row in `proposed` is being EMPTIED: the controller sent it with an
+    // empty chargingTargets list. Accepting this proposal DELETES that
+    // day's stored targets.
+    uint8_t clearedDays = 0;
+    for (uint8_t bit = 0; bit < 7; bit++) {
+      uint8_t dayBit = (uint8_t)(1u << bit);
+      if (!(affectedDayMask & dayBit)) {
+        continue;
+      }
+      bool hasRow = false;
+      for (uint8_t i = 0; i < proposed.count(); i++) {
+        if (proposed.dayBitmapAt(i) & dayBit) {
+          hasRow = true;
+          break;
+        }
+      }
+      if (!hasRow) {
+        clearedDays = (uint8_t)(clearedDays | dayBit);
+      }
+    }
+    if (clearedDays != 0) {
+      Serial.print("  NOTE: accepting this CLEARS day bits 0x");
+      Serial.println(clearedDays, HEX);
     }
     Serial.println("-> accepted (a real sketch would check tariff/site-limit/user preference first)");
     return true;

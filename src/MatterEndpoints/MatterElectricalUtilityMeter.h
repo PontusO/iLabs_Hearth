@@ -47,9 +47,15 @@
  * MeterTypeEnum and PowerThresholdSourceEnum, mt_meter.cpp's own citations).
  *
  * THERE IS NO READ-BACK VERB, deliberately, on the firmware side (task 9's
- * report, design spec 6.3): a full identity line is about 271 bytes and the
- * host's own receive limit (HearthLink::readLine(), HEARTH_LINE_MAX 255
- * bytes) would silently discard it. This class therefore exposes no getters
+ * report, design spec 6.3): a worst-case identity line is 265 bytes
+ * (cmd_mtmeterid's field-by-field arithmetic in mt_at.c) and the host's own
+ * receive limit would silently discard it. HEARTH_LINE_MAX is 256
+ * (HearthLink.h), of which 255 bytes are usable payload: HearthLink.cpp's
+ * accumulator guards on `_acc_len < HEARTH_LINE_MAX - 1`, reserving the
+ * last byte for the terminator. Both figures were wrong in an earlier
+ * version of this comment (271 and "HEARTH_LINE_MAX 255"), corrected by
+ * round C2's final review; the conclusion is unchanged and if anything
+ * firmer, since 265 still overruns 255 by ten bytes. This class therefore exposes no getters
  * either: the identity is host-originated, so a sketch that needs its own
  * values already has them, the same reasoning that already governs why
  * MatterEvse exposes no getters for its own scalar setters.

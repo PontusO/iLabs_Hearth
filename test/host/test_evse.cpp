@@ -222,6 +222,7 @@ static void test_no_soc_variant_requires_absent_or_100(void) {
 
   HearthChargingSchedule ok100;
   check("add a target with SoC exactly 100", ok100.addTarget(0x02, socOnly(480, 100)));
+  s.expect("AT+MTROWCLEAR=1,1", "+MTERR:1\r\nERROR\r\n");  // speculative discard, refused when nothing is staged
   s.expect("AT+MTROW=1,1,0,2,480,100,", "OK\r\n");
   s.expect("AT+MTROWAPPLY=1,1,1", "OK\r\n");
   check("NO_SOC accepts SoC == 100", dev.setChargingSchedule(ok100));
@@ -237,6 +238,7 @@ static void test_full_variant_soc_and_energy_both_present(void) {
 
   HearthChargingSchedule sched;
   check("a target with SoC and added energy both set", sched.addTarget(0x08 /* Wednesday */, both(600, 90, 5000)));
+  s.expect("AT+MTROWCLEAR=1,1", "+MTERR:1\r\nERROR\r\n");  // speculative discard, refused when nothing is staged
   s.expect("AT+MTROW=1,1,0,8,600,90,5000", "OK\r\n");
   s.expect("AT+MTROWAPPLY=1,1,1", "OK\r\n");
   check("FULL accepts a target with SoC and energy both present", dev.setChargingSchedule(sched));
@@ -254,6 +256,7 @@ static void test_set_schedule_stages_applies_and_caches(void) {
   check("Monday target", sched.addTarget(0x02, energyOnly(480, 25000000)));
   check("Tuesday target", sched.addTarget(0x04, energyOnly(420, 30000000)));
 
+  s.expect("AT+MTROWCLEAR=1,1", "+MTERR:1\r\nERROR\r\n");  // speculative discard, refused when nothing is staged
   s.expect("AT+MTROW=1,1,0,2,480,,25000000", "OK\r\n");
   s.expect("AT+MTROW=1,1,1,4,420,,30000000", "OK\r\n");
   s.expect("AT+MTROWAPPLY=1,1,2", "OK\r\n");
@@ -272,6 +275,7 @@ static void test_set_schedule_empty_clears_everything(void) {
 
   HearthChargingSchedule sched;
   check("one target", sched.addTarget(0x02, energyOnly(480, 25000000)));
+  s.expect("AT+MTROWCLEAR=1,1", "+MTERR:1\r\nERROR\r\n");  // speculative discard, refused when nothing is staged
   s.expect("AT+MTROW=1,1,0,2,480,,25000000", "OK\r\n");
   s.expect("AT+MTROWAPPLY=1,1,1", "OK\r\n");
   check("populate the cache first", dev.setChargingSchedule(sched));
@@ -291,6 +295,7 @@ static void test_set_schedule_stage_failure_applies_nothing(void) {
 
   HearthChargingSchedule sched;
   check("one target", sched.addTarget(0x02, energyOnly(480, 25000000)));
+  s.expect("AT+MTROWCLEAR=1,1", "+MTERR:1\r\nERROR\r\n");  // speculative discard, refused when nothing is staged
   s.expect("AT+MTROW=1,1,0,2,480,,25000000", "+MTERR:1\r\nERROR\r\n");
   check("a refused stage fails the whole call", !dev.setChargingSchedule(sched));
   check("no AT+MTROWAPPLY was ever sent", s.scriptDrained());
@@ -312,6 +317,7 @@ static void test_set_schedule_merges_by_day(void) {
   HearthChargingSchedule first;
   check("Monday", first.addTarget(0x02, energyOnly(480, 1000)));
   check("Tuesday", first.addTarget(0x04, energyOnly(420, 2000)));
+  s.expect("AT+MTROWCLEAR=1,1", "+MTERR:1\r\nERROR\r\n");  // speculative discard, refused when nothing is staged
   s.expect("AT+MTROW=1,1,0,2,480,,1000", "OK\r\n");
   s.expect("AT+MTROW=1,1,1,4,420,,2000", "OK\r\n");
   s.expect("AT+MTROWAPPLY=1,1,2", "OK\r\n");
@@ -319,6 +325,7 @@ static void test_set_schedule_merges_by_day(void) {
 
   HearthChargingSchedule second;
   check("a NEW Monday target", second.addTarget(0x02, energyOnly(500, 9999)));
+  s.expect("AT+MTROWCLEAR=1,1", "+MTERR:1\r\nERROR\r\n");  // speculative discard, refused when nothing is staged
   s.expect("AT+MTROW=1,1,0,2,500,,9999", "OK\r\n");
   s.expect("AT+MTROWAPPLY=1,1,1", "OK\r\n");
   check("second push replaces only Monday", dev.setChargingSchedule(second));
@@ -358,13 +365,17 @@ static void test_set_targets_allowed_full_real_dispatch(void) {
    * convert to the callback type; the file-scope g_evse_test_* cells below
    * are what a capture would have closed over. */
   extern HearthChargingSchedule g_evse_test_seenSchedule;
+  extern uint8_t g_evse_test_seenMask;
   extern int g_evse_test_calls;
   extern bool g_evse_test_verdict;
   g_evse_test_calls = 0;
   g_evse_test_verdict = true;
-  dev.onSetTargets([](const HearthChargingSchedule &proposed) -> bool {
+  g_evse_test_seenMask = 0xFF;
+  dev.onSetTargets([](const HearthChargingSchedule &proposed,
+                      uint8_t affectedDayMask) -> bool {
     g_evse_test_calls++;
     g_evse_test_seenSchedule = proposed;
+    g_evse_test_seenMask = affectedDayMask;
     return g_evse_test_verdict;
   });
 
@@ -379,6 +390,7 @@ static void test_set_targets_allowed_full_real_dispatch(void) {
   Hearth.poll();
 
   check("the onSetTargets handler fired exactly once", g_evse_test_calls == 1);
+  check("the handler was handed the wire's own day mask (6 = Mon|Tue)", g_evse_test_seenMask == 0x06);
   check("the proposal carries 3 targets", g_evse_test_seenSchedule.count() == 3);
   check("row 0 is Monday", g_evse_test_seenSchedule.dayBitmapAt(0) == 0x02);
   check("row 0 has no SoC (NO_SOC variant, empty token)", !g_evse_test_seenSchedule.targetAt(0).hasTargetSoC);
@@ -395,13 +407,17 @@ static void test_set_targets_denied_cache_untouched(void) {
   bringUp(s, dev, MatterEvse::NO_SOC);
 
   extern HearthChargingSchedule g_evse_test_seenSchedule;
+  extern uint8_t g_evse_test_seenMask;
   extern int g_evse_test_calls;
   extern bool g_evse_test_verdict;
   g_evse_test_calls = 0;
   g_evse_test_verdict = false;
-  dev.onSetTargets([](const HearthChargingSchedule &proposed) -> bool {
+  g_evse_test_seenMask = 0xFF;
+  dev.onSetTargets([](const HearthChargingSchedule &proposed,
+                      uint8_t affectedDayMask) -> bool {
     g_evse_test_calls++;
     g_evse_test_seenSchedule = proposed;
+    g_evse_test_seenMask = affectedDayMask;
     return g_evse_test_verdict;
   });
 
@@ -432,19 +448,24 @@ static void test_set_targets_zero_rows_nonzero_daymask_clears_the_day(void) {
   HearthChargingSchedule seedSched;
   check("seed Monday", seedSched.addTarget(0x02, energyOnly(480, 1000)));
   check("seed Tuesday", seedSched.addTarget(0x04, energyOnly(420, 2000)));
+  s.expect("AT+MTROWCLEAR=1,1", "+MTERR:1\r\nERROR\r\n");  // speculative discard, refused when nothing is staged
   s.expect("AT+MTROW=1,1,0,2,480,,1000", "OK\r\n");
   s.expect("AT+MTROW=1,1,1,4,420,,2000", "OK\r\n");
   s.expect("AT+MTROWAPPLY=1,1,2", "OK\r\n");
   check("seed the cache with two days", dev.setChargingSchedule(seedSched));
 
   extern HearthChargingSchedule g_evse_test_seenSchedule;
+  extern uint8_t g_evse_test_seenMask;
   extern int g_evse_test_calls;
   extern bool g_evse_test_verdict;
   g_evse_test_calls = 0;
   g_evse_test_verdict = true;
-  dev.onSetTargets([](const HearthChargingSchedule &proposed) -> bool {
+  g_evse_test_seenMask = 0xFF;
+  dev.onSetTargets([](const HearthChargingSchedule &proposed,
+                      uint8_t affectedDayMask) -> bool {
     g_evse_test_calls++;
     g_evse_test_seenSchedule = proposed;
+    g_evse_test_seenMask = affectedDayMask;
     return g_evse_test_verdict;
   });
 
@@ -456,9 +477,128 @@ static void test_set_targets_zero_rows_nonzero_daymask_clears_the_day(void) {
   Hearth.poll();
 
   check("the handler saw an EMPTY proposal", g_evse_test_seenSchedule.count() == 0);
+  check("but a NON-ZERO mask (2 = Monday), the only signal that a day is being cleared",
+        g_evse_test_seenMask == 0x02);
   check("the verdict was answered", s.scriptDrained());
   check("Monday is gone from the cache", dev.chargingSchedule().count() == 1);
   check("the survivor is Tuesday, untouched", dev.chargingSchedule().dayBitmapAt(0) == 0x04);
+}
+
+/*
+ * Round C2 final review, the finding this callback signature changed for.
+ * A controller sends Monday with an EMPTY chargingTargets list (clear it)
+ * together with Tuesday carrying one target. The firmware derives the mask
+ * from the controller's ENTRIES, so the wire line is rowcount 1, mask 6:
+ * one Tuesday row, and Monday named nowhere in the rows at all.
+ *
+ * Before the fix the handler received `proposed` only and could not
+ * possibly have known Monday was about to be deleted: one Tuesday row is
+ * exactly what an ordinary Tuesday-only proposal looks like. This test
+ * fails to compile against the old signature and fails its mask assertion
+ * against any implementation that passes a mask derived from the rows.
+ */
+static void test_set_targets_mask_names_a_day_with_no_row(void) {
+  MockStream s;
+  MatterEvse dev;
+  bringUp(s, dev, MatterEvse::NO_SOC);
+
+  HearthChargingSchedule seedSched;
+  check("seed Monday", seedSched.addTarget(0x02, energyOnly(480, 1000)));
+  check("seed Tuesday", seedSched.addTarget(0x04, energyOnly(420, 2000)));
+  s.expect("AT+MTROWCLEAR=1,1", "+MTERR:1\r\nERROR\r\n");  // speculative discard, refused when nothing is staged
+  s.expect("AT+MTROW=1,1,0,2,480,,1000", "OK\r\n");
+  s.expect("AT+MTROW=1,1,1,4,420,,2000", "OK\r\n");
+  s.expect("AT+MTROWAPPLY=1,1,2", "OK\r\n");
+  check("seed the cache with two days", dev.setChargingSchedule(seedSched));
+
+  extern HearthChargingSchedule g_evse_test_seenSchedule;
+  extern uint8_t g_evse_test_seenMask;
+  extern int g_evse_test_calls;
+  extern bool g_evse_test_verdict;
+  g_evse_test_calls = 0;
+  g_evse_test_verdict = true;
+  g_evse_test_seenMask = 0xFF;
+  dev.onSetTargets([](const HearthChargingSchedule &proposed,
+                      uint8_t affectedDayMask) -> bool {
+    g_evse_test_calls++;
+    g_evse_test_seenSchedule = proposed;
+    g_evse_test_seenMask = affectedDayMask;
+    return g_evse_test_verdict;
+  });
+
+  /* rowcount 1, mask 6: the single row is TUESDAY's replacement, and
+   * Monday is in the mask only because the controller sent it empty. */
+  s.expect("AT+MTROWGET=1,1,,12", "+MTROW:0,1,4,600,,7777\r\nOK\r\n");
+  s.expect("AT+MTCMDRESP=12,1", "OK\r\n");
+  s.injectURC("+MTCMD:12,1,153,5,1,6");
+  Hearth.poll();
+
+  check("the handler ran", g_evse_test_calls == 1);
+  check("the proposal carries exactly one row", g_evse_test_seenSchedule.count() == 1);
+  check("and that row is TUESDAY, not Monday", g_evse_test_seenSchedule.dayBitmapAt(0) == 0x04);
+  /* THE assertion: the mask names Monday, which no row does. Deriving a
+   * mask from the rows would give 4 here, not 6. */
+  check("the mask names BOTH days (6), including the row-less Monday", g_evse_test_seenMask == 0x06);
+  check("Monday is not represented in the proposal at all",
+        (g_evse_test_seenSchedule.dayBitmapAt(0) & 0x02) == 0);
+  check("the verdict was answered", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  /* And the allow really does delete Monday, which is what the sketch
+   * could not have predicted without the mask. */
+  check("after the allow the cache holds one entry", dev.chargingSchedule().count() == 1);
+  check("and it is the new Tuesday", dev.chargingSchedule().dayBitmapAt(0) == 0x04);
+  check("Monday's stored target is gone", dev.chargingSchedule().targetAt(0).minutesPastMidnight == 600);
+}
+
+/*
+ * Round C2 final review, the "partial upload wedges every shorter one"
+ * finding. mt_rows.c makes the firmware's staged `count` a HIGH-WATER
+ * MARK, and mt_at.c's cmd_mtrowapply() returns on a failed apply BEFORE
+ * the reset that would clear it. So a two-row push that fails at the
+ * APPLY leaves a stage of count 2 behind, and the next one-row push used
+ * to stage index 0, apply count 1, be compared against the stale 2, and
+ * answer +MTERR:1 -- forever, for every shorter schedule, for the life of
+ * the boot. The library never issued AT+MTROWCLEAR (clearStaged() had
+ * zero call sites and `rows` is protected, so a sketch could not either).
+ *
+ * This test scripts the exact sequence and fails without the speculative
+ * discard: with no AT+MTROWCLEAR in the second push, the third command
+ * MockStream sees is AT+MTROW rather than AT+MTROWCLEAR, the script
+ * mismatches, and the recovery is never proven.
+ */
+static void test_failed_apply_does_not_wedge_a_shorter_push(void) {
+  MockStream s;
+  MatterEvse dev;
+  bringUp(s, dev, MatterEvse::NO_SOC);
+
+  /* Push 1: two rows staged fine, then the APPLY is refused (on a real
+   * device this is the SOC-variant rule, or any other apply-time check).
+   * The firmware's stage is now count 2 and still active. */
+  HearthChargingSchedule two;
+  check("Monday", two.addTarget(0x02, energyOnly(480, 1000)));
+  check("Tuesday", two.addTarget(0x04, energyOnly(420, 2000)));
+  s.expect("AT+MTROWCLEAR=1,1", "+MTERR:1\r\nERROR\r\n");
+  s.expect("AT+MTROW=1,1,0,2,480,,1000", "OK\r\n");
+  s.expect("AT+MTROW=1,1,1,4,420,,2000", "OK\r\n");
+  s.expect("AT+MTROWAPPLY=1,1,2", "+MTERR:1\r\nERROR\r\n");
+  check("the refused apply fails the call", !dev.setChargingSchedule(two));
+  check("with the wire's error code", Hearth.lastError() == 1);
+  check("the cache was not updated", dev.chargingSchedule().count() == 0);
+
+  /* Push 2: ONE row. The speculative discard is what makes this work; the
+   * device's stale count-2 stage is dropped and the apply(1) matches.
+   * Note the AT+MTROWCLEAR now SUCCEEDS, because something really is
+   * staged this time. */
+  HearthChargingSchedule one;
+  check("a single Monday target", one.addTarget(0x02, energyOnly(500, 9999)));
+  s.expect("AT+MTROWCLEAR=1,1", "OK\r\n");
+  s.expect("AT+MTROW=1,1,0,2,500,,9999", "OK\r\n");
+  s.expect("AT+MTROWAPPLY=1,1,1", "OK\r\n");
+  check("the shorter push is NOT wedged by the previous failure", dev.setChargingSchedule(one));
+  check("the discard, the stage and the apply all went out, in order", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  check("the cache holds the new schedule", dev.chargingSchedule().count() == 1);
+  check("lastError() is clean after a successful push", Hearth.lastError() == 0);
 }
 
 static void test_set_targets_no_callback_denies_synchronously_zero_traffic(void) {
@@ -489,7 +629,7 @@ static void test_set_targets_stale_seq_sends_no_verdict(void) {
 
   extern int g_evse_test_calls;
   g_evse_test_calls = 0;
-  dev.onSetTargets([](const HearthChargingSchedule &) -> bool {
+  dev.onSetTargets([](const HearthChargingSchedule &, uint8_t) -> bool {
     g_evse_test_calls++;
     return true;
   });
@@ -761,6 +901,8 @@ int main(void) {
   test_set_targets_allowed_full_real_dispatch();
   test_set_targets_denied_cache_untouched();
   test_set_targets_zero_rows_nonzero_daymask_clears_the_day();
+  test_set_targets_mask_names_a_day_with_no_row();
+  test_failed_apply_does_not_wedge_a_shorter_push();
   test_set_targets_no_callback_denies_synchronously_zero_traffic();
   test_set_targets_stale_seq_sends_no_verdict();
   test_set_targets_wiring_removed_would_be_caught();
@@ -791,3 +933,8 @@ HearthChargingSchedule g_evse_test_seenSchedule;
 MatterEvse::EnableChargingInfo g_evse_test_seenInfo;
 int g_evse_test_calls = 0;
 bool g_evse_test_verdict = true;
+/* The affected-day mask onSetTargets() now carries (round C2 final
+ * review). Seeded to a value NO test ever legitimately produces, so a
+ * check that passes only because the cell was never written is
+ * impossible: 0xFF is not a valid day mask (only bits 0..6 exist). */
+uint8_t g_evse_test_seenMask = 0xFF;

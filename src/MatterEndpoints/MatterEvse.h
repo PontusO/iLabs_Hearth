@@ -5,9 +5,12 @@
  * below is this port's own design against the firmware's wire contract
  * (main/mt_evse.cpp, main/mt_at.c's cmd_mtrow* family, main/include/
  * mt_matter.h's MT_EVSE_F_* table) and the round's design spec sections 2
- * and 5.5. `docs/AT_MT_SPEC.md` does not describe EnergyEvse yet (Task 14
- * owns that); every wire fact cited here was verified directly against the
- * firmware source, not transcribed from a document.
+ * and 5.5. Every wire fact cited here was verified directly against the
+ * firmware source, not transcribed from a document. `docs/AT_MT_SPEC.md`
+ * now describes EnergyEvse extensively (Task 14 shipped it: the AT+MTROW
+ * family, the AT+MTMEAS 0x0099 field table, the +MTCMD forward shapes), so
+ * it is a second, authoritative source to check against, not the absence
+ * this comment used to report.
  *
  * THIS IS THE ROUND'S INTEGRATION POINT: a controller's charging schedule
  * reaches a sketch, and the sketch's verdict reaches the fabric, through the
@@ -20,11 +23,29 @@
  * setChargingSchedule() below before any wire traffic). NO_SOC (1) omits the
  * SOC feature; a target's SoC must then be absent or exactly 100 (the XML's
  * "charge it fully" spelling for a device that cannot report state of
- * charge). mt_evse.cpp enforces this SAME rule again on the fabric's
- * SetTargets path (~line 1521), reading it from the endpoint's own metadata
- * rather than a stored variant, so the two can never disagree; this class's
- * host-side check exists only so a sketch discovers a malformed schedule at
- * the call that built it, not as a wire refusal three commands later.
+ * charge).
+ *
+ * WHICH LAYER GUARDS WHICH PATH (corrected by round C2's final review; the
+ * previous wording had it backwards). There are three checks, and they do
+ * not overlap the way the old text implied:
+ *
+ *   - CHIP's own Instance::ValidateTargets() guards the FABRIC path. It
+ *     runs inside the SDK, before HearthEvseDelegate::SetTargets() is ever
+ *     called, so a controller's malformed schedule never reaches this
+ *     firmware's code at all.
+ *   - mt_evse_targets_apply_locked()'s pass 1 (mt_evse.cpp, the
+ *     `soc_feature` check) exists because NOTHING guarded the AT path.
+ *     Without it a host could install over AT exactly the schedule a
+ *     controller's SetTargets would have been refused, and GetTargets would
+ *     then hand that schedule back to the controller. That function's own
+ *     comment says so in as many words. It reads the endpoint's own
+ *     metadata (StateOfCharge present or not) rather than a stored variant,
+ *     which is the same fact ValidateTargets reads from the Instance's
+ *     FeatureMap snapshot, so the two can never disagree.
+ *   - This class's host-side check in setChargingSchedule() is neither of
+ *     those: it is a convenience, so a sketch discovers a malformed
+ *     schedule at the call that built it rather than as a wire refusal
+ *     three commands later.
  *
  * THE COMMAND SURFACE, verified against main/mt_evse.cpp's HearthEvseDelegate
  * (cluster 0x0099 = 153 decimal):
@@ -239,11 +260,35 @@ public:
 
   // Register the host's verdict for a controller-invoked SetTargets
   // (cluster 0x0099, command 5). The handler receives the PROPOSED
-  // schedule (never applied yet) and returns true to allow. No callback
-  // registered denies by default (fail closed), the library's usual
-  // precedent. See the header comment for the full deferred-fetch sequence
-  // and the slow-loop case.
-  void onSetTargets(bool (*handler)(const HearthChargingSchedule &));
+  // schedule (never applied yet) AND the affected-day mask, and returns
+  // true to allow. No callback registered denies by default (fail
+  // closed), the library's usual precedent. See the header comment for
+  // the full deferred-fetch sequence and the slow-loop case.
+  //
+  // WHY THE MASK IS A SECOND ARGUMENT, not derivable from `proposed`
+  // (round C2 final review; this is a PUBLIC signature, so it had to be
+  // right before the tag rather than after it). The firmware derives the
+  // mask from the controller's schedule ENTRIES, not from its rows,
+  // precisely so a host can see a day being EMPTIED: a controller clears
+  // a day by sending it with an empty chargingTargets list, which
+  // produces no rows at all. Two shapes are indistinguishable without
+  // the mask:
+  //
+  //   - Monday-with-no-targets plus Tuesday-with-one-target arrives as
+  //     ONE Tuesday row and mask 6. Given the schedule alone, a sketch
+  //     sees a Tuesday row and no indication whatsoever that Monday is
+  //     about to be deleted.
+  //   - Rowcount 0 with a NON-ZERO mask (clear these days) versus
+  //     rowcount 0 with a ZERO mask (the fabric-only empty-SetTargets
+  //     no-op) both arrive as an empty HearthChargingSchedule.
+  //
+  // AT_MT_SPEC.md states this outright: it is why the mask exists at
+  // all. The mask is the same value hearthMergeByDay() uses on an allow,
+  // so a sketch that wants to predict the post-merge store can apply the
+  // identical rule: narrow every cached entry by `~mask`, then append
+  // `proposed`. A `mask` of 0 means nothing is being replaced.
+  void onSetTargets(bool (*handler)(const HearthChargingSchedule &,
+                                    uint8_t affectedDayMask));
 
   // Register the host's verdict for a controller-invoked Disable /
   // EnableCharging (cluster 0x0099, commands 1 and 2). Ordinary scalar
@@ -324,7 +369,7 @@ protected:
   uint32_t pendingSeq = 0;
   uint8_t pendingDayMask = 0;
 
-  bool (*_onSetTargetsCB)(const HearthChargingSchedule &) = nullptr;
+  bool (*_onSetTargetsCB)(const HearthChargingSchedule &, uint8_t) = nullptr;
   bool (*_onDisableChargingCB)() = nullptr;
   bool (*_onEnableChargingCB)(const EnableChargingInfo &) = nullptr;
 
