@@ -208,6 +208,7 @@
 #include "MatterEndpoints/MatterSolarPower.h"
 #include "MatterEndpoints/MatterBatteryStorage.h"
 #include "MatterEndpoints/MatterDeviceEnergyManagement.h"
+#include "MatterEndpoints/MatterEvse.h"
 
 /*
  * The board variant is the single source of truth for the link: which UART
@@ -618,6 +619,26 @@ public:
    */
   void hearthRequestDeferredWork();
 
+  /*
+   * Task 11 (energy round C2): defer the AT+MTCMDRESP for the +MTCMD
+   * dispatch currently on the stack. Called by an endpoint's
+   * hearthOnForwardedCommandFieldsSeq() override (MatterEndPoint.h) when the
+   * verdict cannot be produced synchronously -- EnergyEvse's SetTargets is
+   * the first consumer, which must first pull the proposed rows over
+   * AT+MTROWGET, a wire command that would be refused HEARTH_CMD_REENTRANT
+   * if attempted from inside this same dispatch.
+   *
+   * hearthDispatchCmd() reads this flag immediately after the override
+   * returns and, if set, sends NO AT+MTCMDRESP for this seq at all: the
+   * endpoint has taken over full responsibility for answering it later,
+   * typically from hearthOnDeferredWork() once hearthRequestDeferredWork()
+   * has also been armed. The flag is cleared by hearthDispatchCmd() the
+   * instant it is read, whether or not it was set, so it only ever applies
+   * to the ONE dispatch currently in progress; an override must call this
+   * again on every occasion it wants to defer, never once at begin().
+   */
+  void hearthDeferCurrentCmdResp();
+
   /* The underlying transport, for callers that need it directly. */
   HearthLink &link() {
     return _link;
@@ -731,6 +752,11 @@ private:
   HearthPendingCmdResp _cmdRespQueue[kHearthCmdRespQueueDepth];
   uint8_t _cmdRespQueueCount;
   bool _deferredWorkPending;
+  /* Task 11: set by hearthDeferCurrentCmdResp(), read and cleared by
+   * hearthDispatchCmd() (Hearth.cpp) immediately after the target's
+   * hearthOnForwardedCommandFieldsSeq() call returns. See that method's own
+   * comment above. */
+  bool _deferCurrentCmdResp;
 
   /* Task 4 (Thread role API, 0.11.0): threadRole()'s cache and
    * onThreadRoleChange()'s registration. See both methods' own comments

@@ -390,6 +390,19 @@ bool MatterEndPoint::hearthOnForwardedCommandFields(uint32_t cluster_id, uint32_
   return hearthOnForwardedCommand(cluster_id, command_id, hasPayload, payload);
 }
 
+/*
+ * Base default: delegate to hearthOnForwardedCommandFields(), dropping seq.
+ * Exactly the shape hearthOnForwardedCommandFields()'s own default takes
+ * toward hearthOnForwardedCommand() above: every existing endpoint type
+ * overrides only the narrower virtual, so this is what keeps its override
+ * reached with an unchanged signature. See the header comment for why seq
+ * exists at all and who its first (only, as of this task) consumer is.
+ */
+bool MatterEndPoint::hearthOnForwardedCommandFieldsSeq(uint32_t cluster_id, uint32_t command_id, const HearthCmdFields &fields, uint32_t seq) {
+  (void)seq;
+  return hearthOnForwardedCommandFields(cluster_id, command_id, fields);
+}
+
 MatterEndPoint *MatterEndPoint::hearthFindByEndPointId(uint16_t ep) {
   /* 0 is the Root Node and also the "not reconciled yet" value every
    * declared endpoint carries, so a match on it is never right: see the

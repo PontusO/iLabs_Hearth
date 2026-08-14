@@ -4,7 +4,7 @@
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer test_cmdfields test_roboticvacuum test_microwaveoven test_composition_parent test_refrigerator test_oven test_cooksurface test_attr64 test_electrical test_waterheater test_heatpump test_demcontrol test_solarpower test_batterystorage test_dem test_thread test_rowtransfer test_chargingschedule
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer test_cmdfields test_roboticvacuum test_microwaveoven test_composition_parent test_refrigerator test_oven test_cooksurface test_attr64 test_electrical test_waterheater test_heatpump test_demcontrol test_solarpower test_batterystorage test_dem test_thread test_rowtransfer test_chargingschedule test_evse
 
 all: $(TESTS)
 
@@ -319,6 +319,14 @@ test_rowtransfer: test_rowtransfer.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.c
 # charging-target value object. Pure logic with no wire or endpoint
 # dependency, so this recipe links nothing beyond the class itself.
 test_chargingschedule: test_chargingschedule.cpp ../../src/HearthChargingSchedule.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+# Task 11 (energy round C2): MatterEvse, the round's integration point. Links
+# both Task 10 helpers (HearthRowTransfer, HearthChargingSchedule) plus its
+# own class file; no other shared helper (no HearthMeasurementPush, no
+# HearthDemControl -- EVSE's DEM cluster is wired report-only in the
+# firmware and carries no PowerAdjustment surface on this endpoint).
+test_evse: test_evse.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/HearthThread.cpp ../../src/MatterEndPoint.cpp ../../src/HearthRowTransfer.cpp ../../src/HearthChargingSchedule.cpp ../../src/MatterEndpoints/MatterEvse.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all

@@ -22,6 +22,7 @@ HearthClass::HearthClass()
     _expectedRebootTimeoutMs(0),
     _cmdRespQueueCount(0),
     _deferredWorkPending(false),
+    _deferCurrentCmdResp(false),
     _threadRole(HEARTH_THREAD_UNSPECIFIED),
     _onThreadRoleChangeCB(nullptr),
     _evtResubscribeNeeded(false) {}
@@ -622,6 +623,19 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
  * nowhere else in the header, because `command` is the one header field
  * that is legitimately the last thing on the line.
  *
+ * Task 11 (energy round C2) widening: this now calls
+ * hearthOnForwardedCommandFieldsSeq() (MatterEndPoint.h), passing the parsed
+ * `seq` through, instead of calling hearthOnForwardedCommandFields()
+ * directly. The base class's default for the new virtual is what still
+ * calls the fields-only one, so this single call site covers every existing
+ * endpoint type unchanged, the same layering hearthOnForwardedCommandFields()
+ * itself already has over hearthOnForwardedCommand(). Immediately after that
+ * call returns, this checks self->_deferCurrentCmdResp
+ * (Hearth.hearthDeferCurrentCmdResp(), set by an override that cannot
+ * produce its verdict synchronously): if set, NO AT+MTCMDRESP is enqueued
+ * for this seq at all, and the flag is cleared either way so it can never
+ * leak into a later, unrelated dispatch.
+ *
  * The same review pass checked `ep` and `cluster` for the identical hole,
  * since both trust their own strtoul() out-pointer no more carefully than
  * `command` used to. Each was missing the "zero digits consumed" half of
@@ -699,12 +713,22 @@ void HearthClass::hearthDispatchCmd(const char *rest, HearthClass *self) {
   }
 
   MatterEndPoint *target = MatterEndPoint::hearthFindByEndPointId((uint16_t)ep);
-  bool verdict = target && target->hearthOnForwardedCommandFields((uint32_t)cluster, (uint32_t)command, fields);
+  self->_deferCurrentCmdResp = false;
+  bool verdict = target && target->hearthOnForwardedCommandFieldsSeq((uint32_t)cluster, (uint32_t)command, fields, (uint32_t)seq);
+  bool deferred = self->_deferCurrentCmdResp;
+  self->_deferCurrentCmdResp = false;
 
+  if (deferred) {
+    return;  // the endpoint has taken over answering this seq itself, later
+  }
   if (seq == 0) {
     return;  // notify-only: dispatch already ran above, no verdict to send
   }
   self->hearthEnqueueCmdResp((uint32_t)seq, verdict);
+}
+
+void HearthClass::hearthDeferCurrentCmdResp() {
+  _deferCurrentCmdResp = true;
 }
 
 /*
