@@ -15,8 +15,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ * `nfields` is clamped to kMaxFields here (fix round 1, finding 3): it is
+ * the invariant that makes stage()'s 224-byte buffer math (that method's
+ * own comment) actually hold. A caller is documented to pass
+ * `mt_rows_field_count(kind)`, which can never exceed the firmware's own
+ * MT_ROW_MAX_FIELDS == kMaxFields, so this is not expected to ever clamp
+ * anything in practice; it exists so a future misuse (a wrong constant, a
+ * copy-paste from a table row that does not belong to this kind) is turned
+ * into an under-count -- rows silently missing their tail fields, source-
+ * visible in the wire's own field count -- rather than a class whose
+ * buffer math is silently no longer true.
+ */
 HearthRowTransfer::HearthRowTransfer(MatterEndPoint *owner, uint8_t kind, uint8_t nfields)
-  : owner(owner), kind(kind), nfields(nfields) {}
+  : owner(owner), kind(kind), nfields(nfields > kMaxFields ? kMaxFields : nfields) {}
 
 /*
  * Shared state for one AT+MTROWGET exchange, filled by hearthOnRowLine()
@@ -154,6 +166,25 @@ bool HearthRowTransfer::stage(uint16_t idx, const Row &row) {
   char cmd[224];
   int n = snprintf(cmd, sizeof(cmd), "AT+MTROW=%u,%u,%u", (unsigned)owner->getEndPointId(), (unsigned)kind, (unsigned)idx);
   for (uint8_t i = 0; i < nfields; i++) {
+    /*
+     * Fix round 1, finding 3: guard against a size_t underflow in
+     * `sizeof(cmd) - (size_t)n` below. snprintf() returns the length it
+     * WOULD have written even when truncated, so if a prior append already
+     * filled or overflowed the buffer, `n` can be >= sizeof(cmd); computing
+     * `sizeof(cmd) - (size_t)n` as unsigned arithmetic would then wrap to a
+     * huge value and hand the next snprintf() call a corrupted size (and
+     * `cmd + n` a pointer past the buffer), a wild write rather than a
+     * clean truncation. Unreachable today: the constructor clamps
+     * `nfields` to kMaxFields, and this method's own header comment proves
+     * 224 bytes covers the worst case at kMaxFields fields, so `n` cannot
+     * reach sizeof(cmd) before this loop even starts its last iteration.
+     * The check costs one comparison per field and turns any future
+     * violation of that invariant into a clean refusal instead of
+     * undefined behaviour.
+     */
+    if (n < 0 || (size_t)n >= sizeof(cmd)) {
+      return false;
+    }
     if (row.present[i]) {
       n += snprintf(cmd + n, sizeof(cmd) - (size_t)n, ",%lld", (long long)row.value[i]);
     } else {

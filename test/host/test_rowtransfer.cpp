@@ -430,6 +430,26 @@ static void test_undeclared_endpoint_refuses_every_call(void) {
   check("getAll refused", !ep.rows.getAll(rows, 4, total, returned));
   check("error 2", Hearth.lastError() == 2);
 
+  /*
+   * Fix round 1, finding 1: getProposedRow()/getAllProposed() carry the
+   * identical getEndPointId() == 0 guard as the five methods above, but it
+   * went untested here (every other call site in this suite uses a
+   * declared endpoint). This class's own mutation history establishes that
+   * a missing wire-level guard here manifests as an INDEFINITE HANG, not a
+   * clean failure (HearthLink's blocking read loop against the host test's
+   * fake millis(), which only advances via yield()), so the untested path
+   * was exactly the one whose failure mode is worst. `seq` is a valid
+   * nonzero value (7) so the seq == 0 guard is not what refuses these
+   * calls: the endpoint guard, checked second in both methods, must be
+   * what fires.
+   */
+  Hearth.hearthSetError(0);
+  check("getProposedRow refused (endpoint guard, not the seq guard)", !ep.rows.getProposedRow(7, 0, row, total, gotRow));
+  check("error 2, not error 1: the endpoint guard fired, not the seq guard", Hearth.lastError() == 2);
+  Hearth.hearthSetError(0);
+  check("getAllProposed refused (endpoint guard, not the seq guard)", !ep.rows.getAllProposed(7, rows, 4, total, returned));
+  check("error 2, not error 1: the endpoint guard fired, not the seq guard", Hearth.lastError() == 2);
+
   check("zero wire traffic for the whole batch", s.scriptDrained() && s.unexpected().empty());
 }
 

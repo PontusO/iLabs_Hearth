@@ -55,6 +55,11 @@ bool HearthChargingSchedule::addTarget(uint8_t dayBitmap, const HearthChargingTa
     return false;
   }
   if (_count >= kMaxEntries) {
+    // Unreachable given the two checks below (day-ownership plus the
+    // per-day ceiling already cap `_count` at kMaxDays * kMaxTargetsPerDay
+    // == kMaxEntries), but this is `_dayBitmap[]`/`_target[]`'s own bounds
+    // guard for the write a few lines down, not mere defence in depth: see
+    // HearthChargingSchedule.h's own comment on kMaxEntries.
     return false;
   }
   if (dayOwnedByDifferentBitmap(dayBitmap)) {

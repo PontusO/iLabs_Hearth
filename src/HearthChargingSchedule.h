@@ -30,12 +30,22 @@
  * caused it, rather than building 70 entries and learning about a conflict
  * only when it tries to push the whole thing.
  *
- * VALIDATION HERE MIRRORS BUT DOES NOT REPLACE THE WIRE'S OWN (design spec
- * 2.5's error table, `mt_rows.c`'s field table): a host that only ever uses
- * this class to build a schedule can never construct one the firmware
- * would reject for shape, so `AT+MTROW`/`AT+MTROWAPPLY` failing on a
- * schedule built this way would be a bug in this class, not evidence the
- * device disagreed with something the host validated correctly.
+ * WHAT THIS CLASS GUARANTEES, AND WHAT IT DOES NOT (fix round 1 finding 2:
+ * an earlier version of this comment overclaimed the second half). This
+ * class enforces exactly the SHAPE rules listed above and nothing past
+ * them: the field ranges, the choice-of-optionals rule, the day-ownership
+ * rule and the two ceilings (design spec 2.5's error table, `mt_rows.c`'s
+ * field table). It does NOT know, and cannot know, about apply-time rules
+ * that depend on data this class never sees: `mt_evse.cpp`'s SoC-mandatory-
+ * per-variant check (around line 1521-1531) requires every target to carry
+ * a target state of charge on a variant-0 (FULL) EVSE endpoint, and
+ * requires it be ABSENT or exactly 100 on a variant-1 (NO_SOC) endpoint --
+ * a rule keyed on the EVSE's own variant, which belongs to `MatterEvse`
+ * (Task 11), not this class. A schedule built entirely through
+ * `addTarget()` can therefore still be refused by `AT+MTROWAPPLY` on a real
+ * device over that variant rule: that is not evidence of a bug in this
+ * class, it is the check Task 11 must apply (or pre-filter for) before
+ * staging, and Task 11 is where a reader should look for it.
  */
 #pragma once
 
@@ -63,6 +73,15 @@ public:
   static const uint8_t kMaxDays = 7;
   static const uint8_t kMaxTargetsPerDay = 10;
   static const uint8_t kMaxEntries = kMaxDays * kMaxTargetsPerDay;  // 70
+  // kMaxEntries is unreachable as an INDEPENDENT condition given the other
+  // two rules (only kMaxDays bits exist, so at most kMaxDays groups of at
+  // most kMaxTargetsPerDay can ever form: 7 * 10 = 70 exactly). Keep the
+  // check anyway (review round 1): it is not mere defence in depth, it is
+  // `_dayBitmap[kMaxEntries]`/`_target[kMaxEntries]`'s OWN bounds guard.
+  // addTarget() writes to `_dayBitmap[_count]`/`_target[_count]` on every
+  // accepted call; if the day-ownership or per-day-ceiling logic above it
+  // ever regresses and stops actually capping `_count` at 70, this is the
+  // one line standing between that regression and an out-of-bounds write.
   // Bits 0..6 = Sunday..Saturday (design spec 2.4); 0x7F is all seven set.
   static const uint8_t kDayBitmapMask = 0x7F;
 
