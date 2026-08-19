@@ -149,11 +149,30 @@ void setup() {
   Evse.onSetTargets([](const HearthChargingSchedule &proposed,
                        uint8_t affectedDayMask) -> bool {
     // Stack headroom probe (see this file's top comment): this callback
-    // sits at the deepest point of the library's deepest call chain, and
-    // core 0's stack on an RP2350 is 4 KB with core 1's immediately
+    // sits near the deepest point of the library's deepest call chain,
+    // and core 0's stack on an RP2350 is 4 KB with core 1's immediately
     // below it and stack protection off. Printed, not asserted: the
     // bench records the figure, and a number in the low hundreds is the
     // signal to act on.
+    //
+    // READ THE NUMBER WITH TWO CORRECTIONS, both measured on hardware
+    // 2026-08-19 (bench finding 7.17):
+    //   1. rp2040.getFreeStack() measures against __scratch_x_start__,
+    //      which is CORE 1's stack base, unless the sketch defines
+    //      setup1 or loop1 (RP2040Support.h). This sketch defines
+    //      neither, so the figure printed here includes core 1's whole
+    //      idle 4 KB region on top of core 0's own margin. Adding a
+    //      core-1 body to this sketch made the same run print exactly
+    //      4096 less, confirming it.
+    //   2. This is one frame short of the true peak. On an allow
+    //      verdict the library then calls hearthMergeByDay(), whose
+    //      `merged` is a second HearthChargingSchedule live on top of
+    //      `proposed`: sizeof(HearthChargingSchedule) is exactly 1192
+    //      bytes on the target ABI.
+    // As shipped (single core), 5608 printed here is 4416 at the true
+    // peak, which is comfortable. A sketch that also uses core 1 sees
+    // 1512 printed, i.e. 320 bytes at the true peak. Identical for a
+    // 1-target and a 70-target proposal, so nothing scales per row.
     Serial.print("SetTargets proposal: ");
     Serial.print(proposed.count());
     Serial.print(" target(s), affected days 0x");

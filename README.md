@@ -1381,6 +1381,29 @@ one.
   Command-forwarding for app-adjudicated commands (the door-lock family) is
   no longer deferred: `MatterDoorLock` implements it as a Hearth original,
   see "Hearth originals" above, not as an addition to this twenty.
+- **A sketch that uses core 1 AND EVSE charging targets runs on about 320
+  bytes of stack margin at the deepest path.** Measured on hardware
+  2026-08-19, not estimated. The chain is the `+MTCMD` dispatch ->
+  `hearthOnDeferredWork()` -> your `onSetTargets()` -> `hearthMergeByDay()`,
+  and the last of those builds a whole second `HearthChargingSchedule`
+  (exactly 1192 bytes on the target ABI) on top of the `proposed` one your
+  callback already holds. A single-core sketch has about 4416 bytes free
+  there, which is comfortable; adding a `setup1()`/`loop1()` body costs
+  4096 of it, because core 1's stack sits immediately below core 0's, and
+  stack protection is off on this core, so an overflow corrupts core 1
+  silently instead of faulting. Nothing overflowed on the bench in either
+  configuration, on a 70-target proposal (the largest the wire allows), and
+  the figure does not scale with the number of targets. Until the merge is
+  changed to work in place (`MatterEvse.h` records the fix and what makes
+  it safe), keep `onSetTargets()` shallow on a dual-core sketch: no string
+  formatting, no nested library calls, record the request and act on it
+  from `loop()`.
+  **Measuring this yourself needs one correction:** `rp2040.getFreeStack()`
+  measures against `__scratch_x_start__`, core 1's stack base, unless the
+  sketch defines `setup1` or `loop1` (`RP2040Support.h`). A single-core
+  sketch's printed figure is therefore 4096 bytes higher than its real core
+  0 margin, and one frame short of the peak besides. The FullAPI
+  `HearthEvse` sketch's probe comment carries both corrections.
 - **`MatterDoorLock`'s 1000 ms verdict window is a real latency budget, not
   a formality.** A sketch whose `loop()` blocks for a meaningful fraction of
   a second can miss `onLock`/`onUnlock` entirely and the lock fails closed.

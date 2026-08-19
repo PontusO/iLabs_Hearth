@@ -390,5 +390,32 @@ protected:
   // reconstruction step, which the header comment argues cannot happen
   // given the invariants both callers already hold; kept as a defensive
   // guard rather than assumed infallible.
+  //
+  // KNOWN STACK COST, measured 2026-08-19, deliberately NOT fixed yet.
+  // `merged` is a whole second HearthChargingSchedule (exactly 1192 bytes
+  // on the target ABI) live on top of the caller's `proposed`, and this
+  // sits at the deepest point of the library's deepest call chain
+  // (+MTCMD dispatch -> hearthOnDeferredWork() -> the sketch's
+  // onSetTargets() -> here). On a Challenger RP2350 that leaves about
+  // 4416 bytes of core 0 stack free for a single-core sketch, and about
+  // 320 bytes for a sketch that also defines setup1/loop1, because core
+  // 1's stack sits immediately below core 0's and stack protection is
+  // off. 320 bytes is thin: an overflow there corrupts core 1 silently
+  // instead of faulting. Nothing overflowed on the bench in either
+  // configuration, on a 70-target proposal (the largest the wire
+  // allows), and the figure does not scale with the number of targets.
+  //
+  // The fix, when it is taken, is to merge IN PLACE rather than into a
+  // second schedule: narrow the cached entries where they sit, then
+  // append. That removes 1192 bytes from the chain and takes the
+  // dual-core margin to about 1512. Doing it safely means bounds-
+  // checking the incoming rows BEFORE any mutation, since an in-place
+  // merge cannot roll back the way the swap-on-success shape above can.
+  //
+  // Measuring it: rp2040.getFreeStack() reads against core 1's stack
+  // base (__scratch_x_start__) unless the sketch defines setup1 or
+  // loop1, so a single-core sketch's printed figure is 4096 bytes
+  // higher than its real core 0 margin. The FullAPI HearthEvse sketch's
+  // probe comment carries both corrections.
   bool hearthMergeByDay(uint8_t dayMask, const HearthChargingSchedule &incoming);
 };
