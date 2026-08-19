@@ -316,6 +316,46 @@ public:
   virtual bool hearthOnForwardedCommandFields(uint32_t cluster_id, uint32_t command_id, const HearthCmdFields &fields);
 
   /*
+   * Task 11 (energy round C2) widening: the seq-carrying successor to
+   * hearthOnForwardedCommandFields() above. hearthDispatchCmd() (Hearth.cpp)
+   * now always calls THIS virtual, never the fields-only one directly; the
+   * base class default (MatterEndPoint.cpp) is what still calls the
+   * fields-only virtual, so every endpoint type in this library that
+   * overrides only hearthOnForwardedCommandFields() (every one of them, as
+   * of this task) keeps working unmodified -- the exact precedent Task 6 set
+   * when it added hearthOnForwardedCommandFields() alongside the
+   * four-argument hearthOnForwardedCommand() rather than widening either
+   * existing virtual's signature.
+   *
+   * `seq` exists for exactly one reason: HearthRowTransfer's seq-qualified
+   * proposal read (getProposedRow()/getAllProposed(), HearthRowTransfer.h)
+   * needs the exact seq value the wire's own `+MTCMD` line carried, and
+   * nothing before this task ever handed a dispatched endpoint its own seq
+   * at all -- hearthDispatchCmd() computed it only to enqueue the verdict
+   * reply itself. Nothing else in this library reads the parameter; only a
+   * row-bearing forward (EnergyEvse's SetTargets, MatterEvse, Task 11) has a
+   * reason to.
+   *
+   * A class that cannot produce its verdict synchronously -- SetTargets must
+   * first PULL the proposed rows over AT+MTROWGET, a wire command that would
+   * be refused HEARTH_CMD_REENTRANT if attempted from inside this call --
+   * calls Hearth.hearthDeferCurrentCmdResp() before returning.
+   * hearthDispatchCmd() checks that flag immediately after this call
+   * returns and, if set, sends NO AT+MTCMDRESP for this dispatch at all: the
+   * override has taken over full responsibility for answering this seq
+   * later, typically from hearthOnDeferredWork() once
+   * Hearth.hearthRequestDeferredWork() has also been armed. The return value
+   * of a deferred call is never used as a verdict (there is none yet), so
+   * returning false is the conventional placeholder; the flag, not the
+   * return value, is what hearthDispatchCmd() actually branches on.
+   *
+   * Same fail-closed default as hearthOnForwardedCommandFields(): a
+   * cluster_id/command_id pair this override does not recognise falls
+   * through to the narrower virtual's own default (which denies).
+   */
+  virtual bool hearthOnForwardedCommandFieldsSeq(uint32_t cluster_id, uint32_t command_id, const HearthCmdFields &fields, uint32_t seq);
+
+  /*
    * Hearth's own addition (Task 6, energy round B; same precedent as
    * hearthOnReconciled() above): called on every declared endpoint by
    * HearthClass::hearthDrainDeferredWork() (Hearth.cpp) after any queued
