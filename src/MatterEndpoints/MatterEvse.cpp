@@ -141,30 +141,20 @@ HearthChargingTarget MatterEvse::hearthTargetFromRow(const HearthRowTransfer::Ro
 /*
  * The merge-by-day algorithm (header comment): narrow every existing cached
  * entry by clearing the bits dayMask claims, dropping it if nothing is left,
- * then append every entry of `incoming` verbatim. Built into a fresh
- * HearthChargingSchedule and swapped in only if every step succeeds, so a
- * failure (should not happen, see the header comment) leaves the live cache
- * exactly as it was rather than half-rewritten.
+ * then append every entry of `incoming` verbatim.
+ *
+ * The algorithm itself lives in HearthChargingSchedule::mergeByDay(), which
+ * this class is a friend of, so that it can run IN PLACE on the cache
+ * (T307): it used to build a second, full-size HearthChargingSchedule here
+ * and swap it in, 1192 bytes of stack on top of a caller that already holds
+ * one, at the deepest point of this library's deepest call chain. The
+ * atomicity that temporary provided for free is now provided deliberately,
+ * by a validate pass that cannot mutate and an apply pass that cannot fail;
+ * that function's own comment carries the argument. What a CALLER sees is
+ * unchanged: false means the cache was left exactly as it was.
  */
 bool MatterEvse::hearthMergeByDay(uint8_t dayMask, const HearthChargingSchedule &incoming) {
-  HearthChargingSchedule merged;
-  for (uint8_t i = 0; i < _schedule.count(); i++) {
-    uint8_t bits = _schedule.dayBitmapAt(i);
-    uint8_t narrowed = (uint8_t)(bits & (uint8_t)~dayMask);
-    if (narrowed == 0) {
-      continue;  // every day this entry claimed was replaced
-    }
-    if (!merged.addTarget(narrowed, _schedule.targetAt(i))) {
-      return false;
-    }
-  }
-  for (uint8_t i = 0; i < incoming.count(); i++) {
-    if (!merged.addTarget(incoming.dayBitmapAt(i), incoming.targetAt(i))) {
-      return false;
-    }
-  }
-  _schedule = merged;
-  return true;
+  return _schedule.mergeByDay(dayMask, incoming);
 }
 
 /*

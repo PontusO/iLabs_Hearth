@@ -385,32 +385,38 @@ protected:
 
   // The merge-by-day algorithm (header comment): narrows every cached entry
   // whose bitmap overlaps dayMask, dropping it if nothing is left, then
-  // appends every entry of `incoming` verbatim. Returns false (cache left
-  // untouched) only if HearthChargingSchedule::addTarget() ever refuses a
-  // reconstruction step, which the header comment argues cannot happen
-  // given the invariants both callers already hold; kept as a defensive
-  // guard rather than assumed infallible.
+  // appends every entry of `incoming` verbatim. A thin forward to
+  // HearthChargingSchedule::mergeByDay(), which this class is a friend of;
+  // that function's own comment carries the algorithm and the atomicity
+  // argument. Returns false with the cache left EXACTLY as it was on any
+  // refusal, which is the contract both call sites are written against.
   //
-  // KNOWN STACK COST, measured 2026-08-19, deliberately NOT fixed yet.
-  // `merged` is a whole second HearthChargingSchedule (exactly 1192 bytes
-  // on the target ABI) live on top of the caller's `proposed`, and this
-  // sits at the deepest point of the library's deepest call chain
-  // (+MTCMD dispatch -> hearthOnDeferredWork() -> the sketch's
-  // onSetTargets() -> here). On a Challenger RP2350 that leaves about
-  // 4416 bytes of core 0 stack free for a single-core sketch, and about
-  // 320 bytes for a sketch that also defines setup1/loop1, because core
-  // 1's stack sits immediately below core 0's and stack protection is
-  // off. 320 bytes is thin: an overflow there corrupts core 1 silently
-  // instead of faulting. Nothing overflowed on the bench in either
-  // configuration, on a 70-target proposal (the largest the wire
+  // THE STACK COST THIS SHAPE EXISTS TO AVOID (T307, library 0.12.1).
+  // The merge used to build a whole second HearthChargingSchedule (exactly
+  // 1192 bytes on the target ABI) and swap it in, live on top of the
+  // caller's `proposed`, at the deepest point of the library's deepest
+  // call chain (+MTCMD dispatch -> hearthOnDeferredWork() -> the sketch's
+  // onSetTargets() -> here). Measured on a Challenger RP2350 on
+  // 2026-08-19, that left about 4416 bytes of core 0 stack free for a
+  // single-core sketch and about 320 for a sketch that also defines
+  // setup1/loop1, because core 1's stack sits immediately below core 0's
+  // and stack protection is off, so an overflow there corrupts core 1
+  // silently instead of faulting. Nothing overflowed on the bench in
+  // either configuration, on a 70-target proposal (the largest the wire
   // allows), and the figure does not scale with the number of targets.
   //
-  // The fix, when it is taken, is to merge IN PLACE rather than into a
-  // second schedule: narrow the cached entries where they sit, then
-  // append. That removes 1192 bytes from the chain and takes the
-  // dual-core margin to about 1512. Doing it safely means bounds-
-  // checking the incoming rows BEFORE any mutation, since an in-place
-  // merge cannot roll back the way the swap-on-success shape above can.
+  // Merging in place removes that whole frame from the chain.
+  // arm-none-eabi-g++ -mcpu=cortex-m33 -Os -fstack-usage puts the
+  // replacement at 96 bytes (0 here, it tail-calls, plus 40 for
+  // HearthChargingSchedule::mergeByDay() and 56 for mergeByDayFits())
+  // against the old 1224. That also MOVES the peak: the deepest point of
+  // this chain is no longer the merge but the AT+MTROWGET proposal fetch
+  // that runs BEFORE the callback (getAllProposed 104 + hearthSendGet 8 +
+  // hearthCommand 32 + HearthLink::command 48 + hearthOnRowLine 128, about
+  // 320 bytes of ordinary frames with no large buffer among them), so the
+  // dual-core margin should land near 1200 rather than 320. Those are the
+  // COMPILER's figures; the bench re-measurement is a separate step and
+  // this comment will carry the hardware number once it exists.
   //
   // Measuring it: rp2040.getFreeStack() reads against core 1's stack
   // base (__scratch_x_start__) unless the sketch defines setup1 or

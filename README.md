@@ -1381,29 +1381,39 @@ one.
   Command-forwarding for app-adjudicated commands (the door-lock family) is
   no longer deferred: `MatterDoorLock` implements it as a Hearth original,
   see "Hearth originals" above, not as an addition to this twenty.
-- **A sketch that uses core 1 AND EVSE charging targets runs on about 320
-  bytes of stack margin at the deepest path.** Measured on hardware
-  2026-08-19, not estimated. The chain is the `+MTCMD` dispatch ->
-  `hearthOnDeferredWork()` -> your `onSetTargets()` -> `hearthMergeByDay()`,
-  and the last of those builds a whole second `HearthChargingSchedule`
-  (exactly 1192 bytes on the target ABI) on top of the `proposed` one your
-  callback already holds. A single-core sketch has about 4416 bytes free
-  there, which is comfortable; adding a `setup1()`/`loop1()` body costs
-  4096 of it, because core 1's stack sits immediately below core 0's, and
-  stack protection is off on this core, so an overflow corrupts core 1
-  silently instead of faulting. Nothing overflowed on the bench in either
-  configuration, on a 70-target proposal (the largest the wire allows), and
-  the figure does not scale with the number of targets. Until the merge is
-  changed to work in place (`MatterEvse.h` records the fix and what makes
-  it safe), keep `onSetTargets()` shallow on a dual-core sketch: no string
-  formatting, no nested library calls, record the request and act on it
-  from `loop()`.
+- **A sketch that uses core 1 AND EVSE charging targets used to run on about
+  320 bytes of stack margin at the deepest path; 0.12.1 bought most of that
+  back.** The 320 figure was measured on hardware 2026-08-19, not estimated.
+  The chain is the `+MTCMD` dispatch -> `hearthOnDeferredWork()` -> your
+  `onSetTargets()` -> `hearthMergeByDay()`, and the last of those used to
+  build a whole second `HearthChargingSchedule` (exactly 1192 bytes on the
+  target ABI) on top of the `proposed` one your callback already holds. A
+  single-core sketch had about 4416 bytes free there, which is comfortable;
+  adding a `setup1()`/`loop1()` body costs 4096 of it, because core 1's
+  stack sits immediately below core 0's, and stack protection is off on this
+  core, so an overflow corrupts core 1 silently instead of faulting. Nothing
+  overflowed on the bench in either configuration, on a 70-target proposal
+  (the largest the wire allows), and the figure does not scale with the
+  number of targets.
+  **0.12.1 merges in place**, validating the whole merge before it touches
+  the cache instead of building a second schedule and swapping it in, so the
+  merge's own frame drops from 1224 bytes to 96
+  (`arm-none-eabi-g++ -mcpu=cortex-m33 -Os -fstack-usage`, the core's own
+  compiler). That moves the deepest point of the chain OFF the merge and on
+  to the proposal fetch that precedes your callback, roughly 320 bytes of
+  ordinary call frames with no large buffer among them, so the expected
+  dual-core margin is now on the order of 1200 bytes rather than 320. Those
+  are compiler figures; the hardware re-measurement is a separate step and
+  this entry will carry the bench number once it exists. Keeping
+  `onSetTargets()` shallow on a dual-core sketch is still the right habit:
+  no string formatting, no nested library calls, record the request and act
+  on it from `loop()`.
   **Measuring this yourself needs one correction:** `rp2040.getFreeStack()`
   measures against `__scratch_x_start__`, core 1's stack base, unless the
   sketch defines `setup1` or `loop1` (`RP2040Support.h`). A single-core
   sketch's printed figure is therefore 4096 bytes higher than its real core
-  0 margin, and one frame short of the peak besides. The FullAPI
-  `HearthEvse` sketch's probe comment carries both corrections.
+  0 margin. The FullAPI `HearthEvse` sketch's probe comment carries the
+  correction and where the peak now sits.
 - **`MatterDoorLock`'s 1000 ms verdict window is a real latency budget, not
   a formality.** A sketch whose `loop()` blocks for a meaningful fraction of
   a second can miss `onLock`/`onUnlock` entirely and the lock fails closed.

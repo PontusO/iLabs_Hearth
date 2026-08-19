@@ -45,22 +45,32 @@
  *                            days explicitly.
  *
  * STACK HEADROOM. This sketch prints rp2040.getFreeStack() from inside
- * the onSetTargets() callback. This is NOT the deepest point of the
- * library's deepest call chain: hearthOnDeferredWork()'s `proposed`
- * (a HearthChargingSchedule, about 1192 bytes) is live across the
- * callback, but the true peak comes AFTER the callback returns, when an
- * accepted proposal calls hearthMergeByDay(), whose `merged` is a
- * second, equally-sized HearthChargingSchedule live on top of `proposed`
- * at the same time. Roughly 2.4 KB of locals in one chain on a core-0
- * stack of 4 KB, with core 1's stack immediately below and stack
- * protection off, so an overflow would corrupt silently rather than
- * fault. It has NOT been observed to overflow; the figure printed here
- * OVERSTATES the true margin at peak by roughly one HearthChargingSchedule
- * (about 1200 bytes), since it is taken one frame short of
- * hearthMergeByDay(). The bench procedure
+ * the onSetTargets() callback. hearthOnDeferredWork()'s `proposed` (a
+ * HearthChargingSchedule, about 1192 bytes) is live across the callback,
+ * so the figure printed here is already deep in the library's deepest
+ * call chain, on a core-0 stack of 4 KB with core 1's immediately below
+ * and stack protection off (an overflow would corrupt silently rather
+ * than fault). It has NOT been observed to overflow.
+ *
+ * WHERE THE TRUE PEAK IS depends on the library version, and this is the
+ * correction the bench procedure applies:
+ *   - up to 0.12.0 it came AFTER this callback returned, when an accepted
+ *     proposal called hearthMergeByDay(), whose `merged` was a second,
+ *     equally-sized HearthChargingSchedule live on top of `proposed`:
+ *     roughly 2.4 KB of locals in one chain, and the figure printed here
+ *     overstated the true margin by about 1200 bytes.
+ *   - from 0.12.1 the merge runs IN PLACE (validate first, then apply, so
+ *     a refused merge still leaves the cache untouched) and its frame is
+ *     96 bytes instead of 1224. The deepest point moved BEFORE this
+ *     callback rather than after it: the AT+MTROWGET proposal fetch,
+ *     about 320 bytes of ordinary call frames with no large buffer among
+ *     them. The figure printed here now understates the true margin by
+ *     roughly that much, in the opposite direction.
+ * The original bench procedure
  * (.superpowers/sdd/2026-08-14-energy-round-c2/task-13-report.md section
- * 7.17) subtracts that before applying its pass/fail bands; this sketch
- * only prints the raw number, it does not correct or assert it.
+ * 7.17) subtracts the old correction before applying its pass/fail bands;
+ * this sketch only prints the raw number, it does not correct or assert
+ * it.
  *   onDisableCharging(cb)    setup(); the verdict answers the controller,
  *                            then setSupplyState() reports the outcome
  *   onEnableCharging(cb)     setup(); same shape, three fields
@@ -155,24 +165,28 @@ void setup() {
     // bench records the figure, and a number in the low hundreds is the
     // signal to act on.
     //
-    // READ THE NUMBER WITH TWO CORRECTIONS, both measured on hardware
-    // 2026-08-19 (bench finding 7.17):
-    //   1. rp2040.getFreeStack() measures against __scratch_x_start__,
-    //      which is CORE 1's stack base, unless the sketch defines
-    //      setup1 or loop1 (RP2040Support.h). This sketch defines
-    //      neither, so the figure printed here includes core 1's whole
-    //      idle 4 KB region on top of core 0's own margin. Adding a
-    //      core-1 body to this sketch made the same run print exactly
-    //      4096 less, confirming it.
-    //   2. This is one frame short of the true peak. On an allow
-    //      verdict the library then calls hearthMergeByDay(), whose
-    //      `merged` is a second HearthChargingSchedule live on top of
-    //      `proposed`: sizeof(HearthChargingSchedule) is exactly 1192
-    //      bytes on the target ABI.
-    // As shipped (single core), 5608 printed here is 4416 at the true
-    // peak, which is comfortable. A sketch that also uses core 1 sees
-    // 1512 printed, i.e. 320 bytes at the true peak. Identical for a
-    // 1-target and a 70-target proposal, so nothing scales per row.
+    // READ THE NUMBER WITH ONE CORRECTION, measured on hardware
+    // 2026-08-19 (bench finding 7.17): rp2040.getFreeStack() measures
+    // against __scratch_x_start__, which is CORE 1's stack base, unless
+    // the sketch defines setup1 or loop1 (RP2040Support.h). This sketch
+    // defines neither, so the figure printed here includes core 1's
+    // whole idle 4 KB region on top of core 0's own margin. Adding a
+    // core-1 body to this sketch made the same run print exactly 4096
+    // less, confirming it. On the bench that was 5608 printed
+    // single-core and 1512 with a core-1 body, identical for a 1-target
+    // and a 70-target proposal, so nothing scales per row.
+    //
+    // A SECOND correction applied up to library 0.12.0: the print was
+    // one frame short of the true peak, because an allow verdict then
+    // called hearthMergeByDay(), whose `merged` was a second
+    // HearthChargingSchedule (1192 bytes) live on top of `proposed`.
+    // That left the dual-core figure at 320 bytes of real margin. From
+    // 0.12.1 the merge runs in place and costs 96 bytes, so this print
+    // is no longer below the peak: the deepest point is now the
+    // AT+MTROWGET proposal fetch a little EARLIER in the same chain,
+    // about 320 bytes of ordinary frames, which has already unwound by
+    // the time this line runs.
+
     Serial.print("SetTargets proposal: ");
     Serial.print(proposed.count());
     Serial.print(" target(s), affected days 0x");

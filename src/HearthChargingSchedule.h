@@ -127,6 +127,51 @@ private:
   bool dayOwnedByDifferentBitmap(uint8_t dayBitmap) const;
   uint8_t countInGroup(uint8_t dayBitmap) const;
 
+  /*
+   * THE MERGE-BY-DAY ALGORITHM, IN PLACE (T307). Narrows every stored
+   * entry's bitmap by clearing the bits `dayMask` claims (dropping the
+   * entry outright if nothing is left), then appends every entry of
+   * `incoming` verbatim: the firmware's own subtract-days-then-append rule
+   * (main/mt_evse.cpp), reproduced host-side. MatterEvse::hearthMergeByDay()
+   * is the only caller, and MatterEvse.h is where the wire semantics are
+   * documented.
+   *
+   * PRIVATE, WITH ONE FRIEND, DELIBERATELY. This is EVSE wire semantics,
+   * not an operation a sketch should reach for on a value object, so it
+   * adds nothing to the public surface. It lives here rather than in
+   * MatterEvse.cpp because pass 2 writes `_dayBitmap`/`_target`/`_count`
+   * directly, and because pass 1 MIRRORS addTarget()'s own acceptance rules
+   * and must sit where a reader changing those rules cannot miss it.
+   * MatterOvenCavity/MatterCookSurface friend their owner classes for the
+   * same reason.
+   *
+   * VALIDATE THEN APPLY, and that shape is the whole point of the function.
+   * It used to build a whole second HearthChargingSchedule and swap it in on
+   * success, which made atomicity FREE but put 1192 bytes of stack on top of
+   * a caller that already holds a schedule of its own, at the deepest point
+   * of this library's deepest call chain. In place, atomicity has to be
+   * DELIBERATE:
+   *
+   *   - mergeByDayFits() (pass 1) mutates nothing and answers whether every
+   *     entry of the merged result would be accepted. It costs a couple of
+   *     dozen bytes of stack, not 1192, because the only NEW information is
+   *     the merged GROUP structure (at most kMaxDays groups), not the
+   *     entries: every entry involved already passed addTarget()'s field
+   *     checks when it was stored, and narrowing a bitmap touches no field.
+   *   - pass 2 then narrows, compacts and appends with raw array writes, and
+   *     CANNOT fail, because pass 1 established every bound it relies on.
+   *
+   * Returns false and leaves this schedule byte-identical on a refusal, and
+   * refuses `&incoming == this` outright: an in-place merge cannot read a
+   * source it is simultaneously rewriting, and a self-merge is meaningless
+   * (no caller does one, and the alternative to refusing it is a silently
+   * wrong answer). That hazard did not exist while the temporary did, so the
+   * guard is part of the same change rather than an old check moved.
+   */
+  bool mergeByDay(uint8_t dayMask, const HearthChargingSchedule &incoming);
+  bool mergeByDayFits(uint8_t dayMask, const HearthChargingSchedule &incoming) const;
+  friend class MatterEvse;
+
   uint8_t _count;
   uint8_t _dayBitmap[kMaxEntries];
   HearthChargingTarget _target[kMaxEntries];

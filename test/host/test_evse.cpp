@@ -672,6 +672,283 @@ static void test_set_targets_wiring_removed_would_be_caught(void) {
   check("see this function's own comment: two hand-run mutations, transcribed in the task report", true);
 }
 
+/* ===== the merge is ATOMIC (T307) =====
+ *
+ * WHY THIS SECTION EXISTS AT ALL, and why it did not before. Until 0.12.1
+ * hearthMergeByDay() built a whole second HearthChargingSchedule and swapped
+ * it in on success, so "a refused merge leaves the cache untouched" was FREE:
+ * nothing could be half-written because nothing was written until the end.
+ * That temporary is gone (it cost 1192 bytes of stack at the deepest point of
+ * the library's deepest call chain), and the merge now runs IN PLACE on the
+ * cache. Atomicity is therefore no longer a property of the shape; it is a
+ * property of HearthChargingSchedule::mergeByDayFits(), the validate pass
+ * that runs before a single byte is touched. A property that used to be free
+ * and is now deliberate needs a test that goes red when the deliberate part
+ * is removed, which is exactly what the two mutations recorded in
+ * test_merge_atomicity_mutations_would_be_caught() below do.
+ *
+ * Both refusal cases are driven through the REAL +MTCMD dispatch, this
+ * file's own standard: nothing here calls hearthMergeByDay() directly except
+ * the aliasing test, which cannot be reached any other way (that is the
+ * point of it).
+ */
+
+namespace {
+/*
+ * hearthMergeByDay() is protected, and NEITHER shipped call site can alias
+ * `incoming` with the cache (setChargingSchedule() passes its own parameter,
+ * hearthOnDeferredWork() passes its local `proposed`). A subclass is the only
+ * way to construct the aliased call at all: the hazard is created by the
+ * in-place rewrite, so the guard against it needs a test even though no
+ * caller can trip it today.
+ */
+class AliasProbeEvse : public MatterEvse {
+public:
+  bool mergeWithOwnCache(uint8_t dayMask) {
+    return hearthMergeByDay(dayMask, _schedule);
+  }
+};
+}  // namespace
+
+/*
+ * THE PER-DAY CEILING, the one rule a merge can genuinely fail on: an
+ * existing {Mon,Tue} group holding the full ten targets, narrowed by a
+ * Monday-only mask, becomes a {Tue} group still holding ten, and one
+ * incoming Tuesday target would make eleven.
+ *
+ * The +MTCMD line below is deliberately one a correct firmware would not
+ * emit (the mask names Monday while the row names Tuesday; mt_evse.cpp
+ * derives the mask from the controller's own entries, so a Tuesday row
+ * implies Tuesday in the mask). That is the point: this is the defensive
+ * path, and the assertion is about what the cache looks like AFTERWARDS.
+ */
+static void test_merge_refused_by_per_day_ceiling_leaves_cache_untouched(void) {
+  MockStream s;
+  MatterEvse dev;
+  bringUp(s, dev, MatterEvse::NO_SOC);
+
+  /* Ten stored targets, all in the one {Mon,Tue} (0x06) day group: the
+   * per-day ceiling exactly. */
+  s.expect(
+    "AT+MTROWGET=1,1",
+    "+MTROW:0,10,6,400,,1000\r\n"
+    "+MTROW:1,10,6,401,,1001\r\n"
+    "+MTROW:2,10,6,402,,1002\r\n"
+    "+MTROW:3,10,6,403,,1003\r\n"
+    "+MTROW:4,10,6,404,,1004\r\n"
+    "+MTROW:5,10,6,405,,1005\r\n"
+    "+MTROW:6,10,6,406,,1006\r\n"
+    "+MTROW:7,10,6,407,,1007\r\n"
+    "+MTROW:8,10,6,408,,1008\r\n"
+    "+MTROW:9,10,6,409,,1009\r\nOK\r\n"
+  );
+  reconcile(dev);
+  check("the cache holds ten {Mon,Tue} targets", dev.chargingSchedule().count() == 10);
+
+  extern HearthChargingSchedule g_evse_test_seenSchedule;
+  extern uint8_t g_evse_test_seenMask;
+  extern int g_evse_test_calls;
+  extern bool g_evse_test_verdict;
+  g_evse_test_calls = 0;
+  g_evse_test_verdict = true;
+  g_evse_test_seenMask = 0xFF;
+  dev.onSetTargets([](const HearthChargingSchedule &proposed,
+                      uint8_t affectedDayMask) -> bool {
+    g_evse_test_calls++;
+    g_evse_test_seenSchedule = proposed;
+    g_evse_test_seenMask = affectedDayMask;
+    return g_evse_test_verdict;
+  });
+
+  s.expect("AT+MTROWGET=1,1,,20", "+MTROW:0,1,4,600,,7777\r\nOK\r\n");
+  s.expect("AT+MTCMDRESP=20,1", "OK\r\n");
+  s.injectURC("+MTCMD:20,1,153,5,1,2");
+  Hearth.poll();
+
+  check("the handler still ran", g_evse_test_calls == 1);
+  check("the ALLOW verdict still went out: the merge is a cache concern, not a wire one", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+
+  /* THE assertion. A naive in-place merge narrows all ten entries to 0x04
+   * and appends the eleventh before discovering the ceiling; the cache
+   * would then hold 11 entries with bitmap 4. Byte-identical is the
+   * contract. */
+  check("the refused merge left the count alone", dev.chargingSchedule().count() == 10);
+  bool bitmapsIntact = true, targetsIntact = true;
+  for (uint8_t i = 0; i < dev.chargingSchedule().count(); i++) {
+    if (dev.chargingSchedule().dayBitmapAt(i) != 0x06) {
+      bitmapsIntact = false;
+    }
+    if (dev.chargingSchedule().targetAt(i).minutesPastMidnight != (uint16_t)(400 + i) ||
+        dev.chargingSchedule().targetAt(i).addedEnergy != (int64_t)(1000 + i)) {
+      targetsIntact = false;
+    }
+  }
+  check("every cached bitmap is still {Mon,Tue}, not narrowed to {Tue}", bitmapsIntact);
+  check("every cached target is still its own, in its own slot", targetsIntact);
+}
+
+/*
+ * The ceiling is INCLUSIVE, and a merge that exactly reaches it must still
+ * go through. Without this, a pass 1 that refused everything (or refused at
+ * ten rather than eleven) would look just as green as a correct one on the
+ * refusal test above.
+ */
+static void test_merge_that_exactly_fills_the_per_day_ceiling_succeeds(void) {
+  MockStream s;
+  MatterEvse dev;
+  bringUp(s, dev, MatterEvse::NO_SOC);
+
+  /* Nine this time, so the incoming tenth fits exactly. */
+  s.expect(
+    "AT+MTROWGET=1,1",
+    "+MTROW:0,9,6,400,,1000\r\n"
+    "+MTROW:1,9,6,401,,1001\r\n"
+    "+MTROW:2,9,6,402,,1002\r\n"
+    "+MTROW:3,9,6,403,,1003\r\n"
+    "+MTROW:4,9,6,404,,1004\r\n"
+    "+MTROW:5,9,6,405,,1005\r\n"
+    "+MTROW:6,9,6,406,,1006\r\n"
+    "+MTROW:7,9,6,407,,1007\r\n"
+    "+MTROW:8,9,6,408,,1008\r\nOK\r\n"
+  );
+  reconcile(dev);
+  check("the cache holds nine {Mon,Tue} targets", dev.chargingSchedule().count() == 9);
+
+  extern int g_evse_test_calls;
+  extern bool g_evse_test_verdict;
+  g_evse_test_calls = 0;
+  g_evse_test_verdict = true;
+  dev.onSetTargets([](const HearthChargingSchedule &, uint8_t) -> bool {
+    g_evse_test_calls++;
+    return g_evse_test_verdict;
+  });
+
+  s.expect("AT+MTROWGET=1,1,,21", "+MTROW:0,1,4,600,,7777\r\nOK\r\n");
+  s.expect("AT+MTCMDRESP=21,1", "OK\r\n");
+  s.injectURC("+MTCMD:21,1,153,5,1,2");
+  Hearth.poll();
+
+  check("the handler ran", g_evse_test_calls == 1);
+  check("the merge went through: nine narrowed plus one appended", dev.chargingSchedule().count() == 10);
+  bool allTuesday = true;
+  for (uint8_t i = 0; i < dev.chargingSchedule().count(); i++) {
+    if (dev.chargingSchedule().dayBitmapAt(i) != 0x04) {
+      allTuesday = false;
+    }
+  }
+  check("Monday was narrowed away from all nine, leaving {Tue}", allTuesday);
+  check("the first nine kept their own targets, in order", dev.chargingSchedule().targetAt(0).minutesPastMidnight == 400 &&
+                                                            dev.chargingSchedule().targetAt(8).minutesPastMidnight == 408);
+  check("the incoming target is appended last", dev.chargingSchedule().targetAt(9).minutesPastMidnight == 600);
+  check("script drained", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+}
+
+/*
+ * The DAY-OWNERSHIP rule, the second way a merge can be refused: a cached
+ * {Mon,Tue} entry narrowed by a Monday-only mask becomes {Tue}, and an
+ * incoming {Tue,Wed} entry then claims Tuesday under a DIFFERENT bitmap,
+ * which HearthChargingSchedule refuses by construction. Left half-merged
+ * this is worse than a lost update: the cache would hold a day split across
+ * two bitmaps, a state addTarget() cannot produce and nothing downstream
+ * expects.
+ */
+static void test_merge_refused_by_day_ownership_leaves_cache_untouched(void) {
+  MockStream s;
+  MatterEvse dev;
+  bringUp(s, dev, MatterEvse::NO_SOC);
+
+  s.expect("AT+MTROWGET=1,1", "+MTROW:0,1,6,480,,1000\r\nOK\r\n");
+  reconcile(dev);
+  check("the cache holds one {Mon,Tue} target", dev.chargingSchedule().count() == 1);
+
+  extern int g_evse_test_calls;
+  extern bool g_evse_test_verdict;
+  g_evse_test_calls = 0;
+  g_evse_test_verdict = true;
+  dev.onSetTargets([](const HearthChargingSchedule &, uint8_t) -> bool {
+    g_evse_test_calls++;
+    return g_evse_test_verdict;
+  });
+
+  /* mask 2 (Monday), one row for {Tue,Wed} (0x0C). */
+  s.expect("AT+MTROWGET=1,1,,22", "+MTROW:0,1,12,600,,7777\r\nOK\r\n");
+  s.expect("AT+MTCMDRESP=22,1", "OK\r\n");
+  s.injectURC("+MTCMD:22,1,153,5,1,2");
+  Hearth.poll();
+
+  check("the handler ran and the verdict went out", g_evse_test_calls == 1 && s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  check("the refused merge left the count alone", dev.chargingSchedule().count() == 1);
+  check("the cached bitmap is still {Mon,Tue}, not narrowed to {Tue}", dev.chargingSchedule().dayBitmapAt(0) == 0x06);
+  check("the cached target is still the old one", dev.chargingSchedule().targetAt(0).minutesPastMidnight == 480);
+  check("the incoming {Tue,Wed} entry did not land", dev.chargingSchedule().dayBitmapAt(1) == 0);
+}
+
+/*
+ * ALIASING, a hazard the in-place rewrite CREATED. With a temporary, passing
+ * the cache as `incoming` was merely wasteful; in place, pass 2 rewrites the
+ * array it would then have to read the incoming entries from. Refused
+ * outright, and the cache is left exactly as it was.
+ */
+static void test_merge_with_the_cache_itself_is_refused(void) {
+  MockStream s;
+  AliasProbeEvse dev;
+  bringUp(s, dev, MatterEvse::NO_SOC);
+
+  s.expect("AT+MTROWGET=1,1", "+MTROW:0,2,2,480,,1000\r\n+MTROW:1,2,4,420,,2000\r\nOK\r\n");
+  reconcile(dev);
+  check("the cache holds Monday and Tuesday", dev.chargingSchedule().count() == 2);
+
+  check("merging the cache into itself is refused", !dev.mergeWithOwnCache(0x02));
+  check("count unchanged", dev.chargingSchedule().count() == 2);
+  /* Unguarded, pass 2 compacts Monday away first, so entry 0 becomes
+   * Tuesday's target and the append then re-reads the slot it just
+   * overwrote: the cache ends up holding Tuesday twice and Monday not at
+   * all, with the same count. Checking count alone would miss it. */
+  check("entry 0 is still Monday", dev.chargingSchedule().dayBitmapAt(0) == 0x02);
+  check("entry 0 still carries Monday's own target", dev.chargingSchedule().targetAt(0).minutesPastMidnight == 480);
+  check("entry 1 is still Tuesday", dev.chargingSchedule().dayBitmapAt(1) == 0x04);
+  check("entry 1 still carries Tuesday's own target", dev.chargingSchedule().targetAt(1).minutesPastMidnight == 420);
+}
+
+/*
+ * Mutation record for the section above (this file's own standard, the same
+ * shape as test_set_targets_wiring_removed_would_be_caught): the checks are
+ * only evidence if they can be shown to fail. Each mutation was run by hand
+ * against src/ and reverted; the task report carries the transcripts.
+ *
+ * Mutation C: delete the "if (!mergeByDayFits(...)) return false;" guard
+ * from HearthChargingSchedule::mergeByDay(), i.e. remove pass 1 and keep the
+ * in-place apply. Observed: 6 checks red, all of them cache assertions and
+ * none of them wire assertions (the verdict still goes out either way, which
+ * is correct). The per-day-ceiling test sees 11 entries all narrowed to
+ * bitmap 4; the ownership test sees 2 entries with bitmaps 4 and 12, a day
+ * split across two bitmaps, a state addTarget() cannot produce. Note that
+ * the ownership test's "the cached target is still the old one" check stays
+ * GREEN under this mutation (the narrowed entry keeps its target where it
+ * was), which is why the BITMAP assertion is the load-bearing one.
+ * test_merge_that_exactly_fills_the_per_day_ceiling_succeeds() also stays
+ * green, which is the point of having it: it is the control that stops a
+ * pass 1 which simply refuses everything from looking correct.
+ *
+ * Mutation D: delete the "if (&incoming == this) return false;" guard from
+ * the same function. Observed: 4 checks red, all in
+ * test_merge_with_the_cache_itself_is_refused(). The merge returns true;
+ * entry 0 becomes Tuesday's 420-minute target (Monday was compacted away
+ * first and never re-appended); and count() reads 70, not 2, because the
+ * append loop re-reads `incoming._count` -- which IS the cache's own count
+ * when the two alias -- so the source grows exactly as fast as the loop
+ * consumes it, and only the kMaxEntries break stops it. Without that break
+ * the same mutation runs `_count` up to its uint8_t wrap, writing far past
+ * the end of both arrays: this is a memory-safety guard, not a tidiness
+ * one.
+ */
+static void test_merge_atomicity_mutations_would_be_caught(void) {
+  check("see this function's own comment: two hand-run mutations, transcribed in the task report", true);
+}
+
 /* ===== Disable / EnableCharging: ordinary scalar forwards ===== */
 
 static void test_disable_charging_dispatches_and_answers(void) {
@@ -906,6 +1183,12 @@ int main(void) {
   test_set_targets_no_callback_denies_synchronously_zero_traffic();
   test_set_targets_stale_seq_sends_no_verdict();
   test_set_targets_wiring_removed_would_be_caught();
+
+  test_merge_refused_by_per_day_ceiling_leaves_cache_untouched();
+  test_merge_that_exactly_fills_the_per_day_ceiling_succeeds();
+  test_merge_refused_by_day_ownership_leaves_cache_untouched();
+  test_merge_with_the_cache_itself_is_refused();
+  test_merge_atomicity_mutations_would_be_caught();
 
   test_disable_charging_dispatches_and_answers();
   test_disable_charging_no_callback_denies();
