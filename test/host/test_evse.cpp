@@ -669,7 +669,7 @@ static void test_set_targets_stale_seq_sends_no_verdict(void) {
  * the handler call count stays 0.
  */
 static void test_set_targets_wiring_removed_would_be_caught(void) {
-  check("see this function's own comment: five hand-run mutations, transcribed in the task report", true);
+  check("see this function's own comment: two hand-run mutations, transcribed in the task report", true);
 }
 
 /* ===== the merge is ATOMIC (T307) =====
@@ -1018,7 +1018,7 @@ static void test_set_schedule_repushing_the_cache_itself_succeeds(void) {
  * lines and the call reported failure anyway.
  */
 static void test_merge_atomicity_mutations_would_be_caught(void) {
-  check("see this function's own comment: two hand-run mutations, transcribed in the task report", true);
+  check("see this function's own comment: five hand-run mutations, transcribed in the task report", true);
 }
 
 /* ===== Disable / EnableCharging: ordinary scalar forwards ===== */
