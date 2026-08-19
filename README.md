@@ -1381,50 +1381,60 @@ one.
   Command-forwarding for app-adjudicated commands (the door-lock family) is
   no longer deferred: `MatterDoorLock` implements it as a Hearth original,
   see "Hearth originals" above, not as an addition to this twenty.
-- **A sketch that uses core 1 AND EVSE charging targets used to run on about
-  320 bytes of stack margin at the deepest path; 0.12.1 bought most of that
-  back.** The 320 figure was measured on hardware 2026-08-19, not estimated.
-  The chain is the `+MTCMD` dispatch -> `hearthOnDeferredWork()` -> your
-  `onSetTargets()` -> `hearthMergeByDay()`, and the last of those used to
-  build a whole second `HearthChargingSchedule` (exactly 1192 bytes on the
-  target ABI) on top of the `proposed` one your callback already holds. A
-  single-core sketch had about 4416 bytes free there, which is comfortable;
-  adding a `setup1()`/`loop1()` body costs 4096 of it, because core 1's
-  stack sits immediately below core 0's, and stack protection is off on this
-  core, so an overflow corrupts core 1 silently instead of faulting. Nothing
-  overflowed on the bench in either configuration, on a 70-target proposal
-  (the largest the wire allows), and the figure does not scale with the
-  number of targets.
+- **A sketch that uses core 1 AND EVSE charging targets ran on as little as
+  56 bytes of stack margin before 0.12.1, and on 616 to 804 after it.**
+  Measured on hardware 2026-08-19, by painting core 0's stack and scanning
+  for the deepest word touched, so libc, arduino-core and interrupt frames
+  are all counted. Not a probe reading and not a compiler estimate. The
+  chain is the `+MTCMD` dispatch -> `hearthOnDeferredWork()` -> your
+  `onSetTargets()` -> `hearthMergeByDay()`, and up to 0.12.0 the last of
+  those built a whole second `HearthChargingSchedule` (1224 bytes of frame:
+  1192 of locals plus 32 of saved registers) on top of the `proposed` one
+  your callback already holds. 56 bytes is an order of magnitude under this
+  library's own 512-byte "act" floor, and 56 bytes from core 1's stack,
+  which sits immediately below core 0's with no protection. Nothing
+  overflowed in any run, on a 70-target proposal (the largest the wire
+  allows) or a 1-target one.
   **0.12.1 merges in place**, validating the whole merge before it touches
-  the cache instead of building a second schedule and swapping it in, so the
-  merge's own frame drops from 1224 bytes to 96
-  (`arm-none-eabi-g++ -mcpu=cortex-m33 -Os -fstack-usage`, the core's own
-  compiler). That moves the deepest point of the chain OFF the merge and on
-  to the proposal fetch that precedes your callback, roughly 320 bytes of
-  ordinary call frames with no large buffer among them, so the expected
-  dual-core margin is now about 1224 bytes rather than 320. Two caveats on
-  that number: it counts iLabs frames only, so libc and the arduino-core
-  `Stream` below them are not in it (the delta is sound, the absolute is an
-  upper bound); and the fetch is the peak only among *library* frames, since
-  a sketch that pushes a schedule from inside `onSetTargets()` goes deeper
-  than the fetch does (`setChargingSchedule` -> `stage` -> `command` is 448)
-  and becomes the peak itself, at roughly 1100. Those are compiler figures;
-  the hardware re-measurement is a separate step and this entry will carry
-  the bench number once it exists. Keeping `onSetTargets()` shallow on a
-  dual-core sketch is therefore still the right habit: no string formatting,
-  no nested library calls, record the request and act on it from `loop()`.
-  **Measuring this yourself needs two corrections:** `rp2040.getFreeStack()`
-  measures against `__scratch_x_start__`, core 1's stack base, unless the
-  sketch defines `setup1` or `loop1` (`RP2040Support.h`), so a single-core
-  sketch's printed figure is 4096 bytes higher than its real core 0 margin.
-  And the probe inside `onSetTargets()` **overstates** the true margin in
-  every library version, because it is never taken at the peak: up to 0.12.0
-  the peak came after it (1512 printed, about 320 free, overstated by about
-  1192), and from 0.12.1 the peak comes before it and has already unwound
-  (1512 printed, about 1224 free, overstated by about 288). Reading that
-  direction the wrong way round is what once made a negative margin look
-  comfortable. The FullAPI `HearthEvse` sketch's probe comment carries both
-  corrections.
+  the cache instead of building a second schedule and swapping it in, and
+  took essentially all of the available headroom: an improvement of 560 to
+  648 bytes against a ceiling of 656. That ceiling is measured, not
+  argued. A run that DENIES the proposal never executes the merge at all,
+  and 0.12.1-allow, 0.12.1-deny and 0.12.0-deny all measure 2004 bytes free
+  on a minimal sketch, to the byte, so after 0.12.1 the merge is not
+  detectable on the stack and the peak is the proposal fetch and verdict
+  wire path (716 bytes deep), which that change never touched.
+  **The biggest single term was the example sketch, not the library.** A
+  `HearthChargingSchedule` declared inside a `switch` case of `loop()` is
+  hoisted into the function prologue by GCC and is live across
+  `Hearth.poll()` on every iteration, whether or not that branch ever runs:
+  1216 bytes, on the deepest path, always. The FullAPI `HearthEvse` example
+  did exactly that and no longer does (`loop()`'s prologue is 8 bytes now,
+  and the schedule lives in a `noinline` helper). If you copy from these
+  examples, keep large value types out of any `loop()` that calls into this
+  library. The figures above predate that fix, so a sketch without such a
+  local sits near the minimal shape's 1984 to 2004 instead.
+  **Reading stack figures on this platform, three corrections:**
+  `rp2040.getFreeStack()` measures against `__scratch_x_start__`, core 1's
+  stack base, unless the sketch defines `setup1` or `loop1`
+  (`RP2040Support.h`), so a single-core sketch's printed figure is 4096
+  bytes higher than its real core 0 margin. A point probe inside
+  `onSetTargets()` **overstates** the true margin in every version, because
+  it is never taken at the peak (1512 printed in every run, against 56-156
+  free at the 0.12.0 peak and 616-804 at the 0.12.1 one). And run-to-run
+  jitter is 50 to 100 bytes because interrupt frames share this stack, so
+  apply any band to the worst of several runs rather than to one.
+  A last one for anyone predicting instead of measuring: `-fstack-usage`
+  over library sources alone undercounts real depth by a factor of about
+  2.2 here (the fetch chain counts 312 iLabs bytes and measures 716; the
+  `setChargingSchedule` push chain counts 448 and measures 996). The push
+  chain being the deeper of the two still matters, since the deferred drain
+  deliberately permits wire traffic from inside `onSetTargets()`: a sketch
+  that pushes a schedule from its own SetTargets callback becomes the peak
+  itself, bottoming out near 520 free on the shipped shape. That is the
+  tightest case on this path now, so keeping `onSetTargets()` shallow (no
+  string formatting, no nested library calls, record the request and act on
+  it from `loop()`) is not a formality.
 - **`MatterDoorLock`'s 1000 ms verdict window is a real latency budget, not
   a formality.** A sketch whose `loop()` blocks for a meaningful fraction of
   a second can miss `onLock`/`onUnlock` entirely and the lock fails closed.
