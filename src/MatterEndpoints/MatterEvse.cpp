@@ -266,6 +266,38 @@ bool MatterEvse::setChargingSchedule(const HearthChargingSchedule &schedule) {
   if (!rows.apply((uint16_t)schedule.count())) {
     return false;
   }
+
+  /*
+   * RE-PUSHING THE CACHE ITSELF is a legal call, and by this point the wire
+   * write has already succeeded. `chargingSchedule()` hands out a const
+   * reference to `_schedule`, so
+   * `evse.setChargingSchedule(evse.chargingSchedule())` arrives here with
+   * `&schedule == &_schedule`, and HearthChargingSchedule::mergeByDay()
+   * refuses an aliased merge outright (it cannot read a source it is
+   * rewriting). Passing that refusal on to the caller would be reporting
+   * FAILURE FOR A WRITE THE DEVICE ACCEPTED, which is the same mistake the
+   * firmware's own 0.10.1 round fixed for a same-value attribute write, and
+   * it would be the only reachable failure this function has left: with a
+   * well-formed mask (this function always builds one) the merge cannot
+   * refuse for any other reason.
+   *
+   * The merge is provably the IDENTITY here, so there is nothing to do and
+   * nothing to report: `dayMask` is the union of every bitmap in `schedule`,
+   * `schedule` IS the cache, so every cached entry is narrowed to nothing
+   * and then re-appended verbatim. That identity depends on how THIS
+   * function builds the mask, which is why the case is settled in the owner
+   * rather than by weakening the value class's refusal: an aliased merge
+   * under an arbitrary mask is NOT the identity and must stay refused.
+   *
+   * The wire traffic above is deliberately NOT short-circuited for this
+   * case. Pushing the schedule to the device is the whole point of the
+   * call, 0.12.0 issued every line of it and answered true, and turning a
+   * deliberate re-push into a silent no-op would be a worse lie than the
+   * one being fixed.
+   */
+  if (&schedule == &_schedule) {
+    return true;
+  }
   if (!hearthMergeByDay(dayMask, schedule)) {
     /* Should not happen (see hearthMergeByDay()'s own comment): the wire
      * write already succeeded, so the DEVICE's schedule is correct and only
@@ -394,6 +426,16 @@ void MatterEvse::hearthOnDeferredWork() {
   snprintf(cmd, sizeof(cmd), "AT+MTCMDRESP=%lu,%d", (unsigned long)seq, allow ? 1 : 0);
   Hearth.hearthCommand(cmd);
 
+  /* The merge's return value is discarded here, so a refused merge on this
+   * path is SILENT: the device applied the change and this host's cache
+   * would be left stale with nothing told to the sketch. Recorded, not
+   * fixed, and deliberately not attributed to the in-place rewrite (T307):
+   * the behaviour is unchanged from 0.12.0, which refused on exactly the
+   * same inputs, and the refusal is unreachable from correct firmware
+   * traffic anyway (mt_evse.cpp builds `affected` as the OR over the
+   * schedule ENTRIES, so it is always a superset of the row bitmaps, and a
+   * well-formed mask cannot be refused). The next reconcile resyncs the
+   * cache from the live store either way. */
   if (allow && dayMask != 0) {
     hearthMergeByDay(dayMask, proposed);
   }

@@ -669,7 +669,7 @@ static void test_set_targets_stale_seq_sends_no_verdict(void) {
  * the handler call count stays 0.
  */
 static void test_set_targets_wiring_removed_would_be_caught(void) {
-  check("see this function's own comment: two hand-run mutations, transcribed in the task report", true);
+  check("see this function's own comment: five hand-run mutations, transcribed in the task report", true);
 }
 
 /* ===== the merge is ATOMIC (T307) =====
@@ -684,7 +684,7 @@ static void test_set_targets_wiring_removed_would_be_caught(void) {
  * property of HearthChargingSchedule::mergeByDayFits(), the validate pass
  * that runs before a single byte is touched. A property that used to be free
  * and is now deliberate needs a test that goes red when the deliberate part
- * is removed, which is exactly what the two mutations recorded in
+ * is removed, which is exactly what the five mutations recorded in
  * test_merge_atomicity_mutations_would_be_caught() below do.
  *
  * Both refusal cases are driven through the REAL +MTCMD dispatch, this
@@ -891,6 +891,12 @@ static void test_merge_refused_by_day_ownership_leaves_cache_untouched(void) {
  * the cache as `incoming` was merely wasteful; in place, pass 2 rewrites the
  * array it would then have to read the incoming entries from. Refused
  * outright, and the cache is left exactly as it was.
+ *
+ * The refusal is the VALUE CLASS's answer, and it is the right one there.
+ * What an OWNER should do with it is a separate question, answered by
+ * test_set_schedule_repushing_the_cache_itself_succeeds() below: the one
+ * aliased call a sketch can actually make arrives with a mask that makes
+ * the merge the identity, so it is a success, not a failure.
  */
 static void test_merge_with_the_cache_itself_is_refused(void) {
   MockStream s;
@@ -914,36 +920,102 @@ static void test_merge_with_the_cache_itself_is_refused(void) {
 }
 
 /*
+ * THE OWNER'S SIDE OF THE ALIAS GUARD (fix round 1, review finding 1).
+ * `chargingSchedule()` hands out a const reference to the cache, so
+ * `setChargingSchedule(chargingSchedule())` is a legal call a sketch can
+ * make -- re-push what I believe the device already has -- and it arrives
+ * at the merge aliased. The value class refuses that merge, correctly. The
+ * owner must NOT turn the refusal into a failed return: every wire line
+ * went out and the device accepted them, and the merge is the identity in
+ * this case anyway (the mask is the union of the schedule's own bitmaps,
+ * so every entry is narrowed away and re-appended verbatim).
+ *
+ * 0.12.0 answered true here with all four lines on the wire; so does
+ * 0.12.1 after this fix. The push is deliberately NOT short-circuited:
+ * suppressing the wire traffic would turn a deliberate re-push into a
+ * silent no-op, which is a worse lie than the one being fixed.
+ */
+static void test_set_schedule_repushing_the_cache_itself_succeeds(void) {
+  MockStream s;
+  MatterEvse dev;
+  bringUp(s, dev, MatterEvse::NO_SOC);
+
+  HearthChargingSchedule first;
+  check("Monday", first.addTarget(0x02, energyOnly(480, 1000)));
+  check("Tuesday", first.addTarget(0x04, energyOnly(420, 2000)));
+  s.expect("AT+MTROWCLEAR=1,1", "+MTERR:1\r\nERROR\r\n");  // speculative discard, refused when nothing is staged
+  s.expect("AT+MTROW=1,1,0,2,480,,1000", "OK\r\n");
+  s.expect("AT+MTROW=1,1,1,4,420,,2000", "OK\r\n");
+  s.expect("AT+MTROWAPPLY=1,1,2", "OK\r\n");
+  check("seed the cache with two days", dev.setChargingSchedule(first));
+
+  /* The re-push, through the public API only: the same four lines again. */
+  s.expect("AT+MTROWCLEAR=1,1", "+MTERR:1\r\nERROR\r\n");
+  s.expect("AT+MTROW=1,1,0,2,480,,1000", "OK\r\n");
+  s.expect("AT+MTROW=1,1,1,4,420,,2000", "OK\r\n");
+  s.expect("AT+MTROWAPPLY=1,1,2", "OK\r\n");
+  check("re-pushing the cache to the device REPORTS SUCCESS", dev.setChargingSchedule(dev.chargingSchedule()));
+  check("and every wire line went out: the push is not short-circuited", s.scriptDrained());
+  check("no unexpected commands", s.unexpected().empty());
+  check("lastError() is clean after a successful re-push", Hearth.lastError() == 0);
+
+  check("the cache is unchanged: count", dev.chargingSchedule().count() == 2);
+  check("the cache is unchanged: Monday first", dev.chargingSchedule().dayBitmapAt(0) == 0x02 &&
+                                                 dev.chargingSchedule().targetAt(0).minutesPastMidnight == 480);
+  check("the cache is unchanged: Tuesday second", dev.chargingSchedule().dayBitmapAt(1) == 0x04 &&
+                                                   dev.chargingSchedule().targetAt(1).minutesPastMidnight == 420);
+}
+
+/*
  * Mutation record for the section above (this file's own standard, the same
  * shape as test_set_targets_wiring_removed_would_be_caught): the checks are
- * only evidence if they can be shown to fail. Each mutation was run by hand
- * against src/ and reverted; the task report carries the transcripts.
+ * only evidence if they can be shown to fail. Each mutation below was run by
+ * hand against src/, rebuilt, run and reverted, all against the FINAL code
+ * (fix round 1 included, suite baseline 204/0 for this binary); the task
+ * report carries the transcripts.
  *
  * Mutation C: delete the "if (!mergeByDayFits(...)) return false;" guard
  * from HearthChargingSchedule::mergeByDay(), i.e. remove pass 1 and keep the
- * in-place apply. Observed: 6 checks red, all of them cache assertions and
- * none of them wire assertions (the verdict still goes out either way, which
- * is correct). The per-day-ceiling test sees 11 entries all narrowed to
- * bitmap 4; the ownership test sees 2 entries with bitmaps 4 and 12, a day
- * split across two bitmaps, a state addTarget() cannot produce. Note that
- * the ownership test's "the cached target is still the old one" check stays
- * GREEN under this mutation (the narrowed entry keeps its target where it
- * was), which is why the BITMAP assertion is the load-bearing one.
+ * in-place apply. Observed 198/6: six checks red, all of them cache
+ * assertions and none of them wire assertions (the verdict still goes out
+ * either way, which is correct). The per-day-ceiling test sees 11 entries
+ * all narrowed to bitmap 4; the ownership test sees 2 entries with bitmaps 4
+ * and 12, a day split across two bitmaps, a state addTarget() cannot
+ * produce. Note that the ownership test's "the cached target is still the
+ * old one" check stays GREEN under this mutation (the narrowed entry keeps
+ * its target where it was), which is why the BITMAP assertion is the
+ * load-bearing one.
  * test_merge_that_exactly_fills_the_per_day_ceiling_succeeds() also stays
  * green, which is the point of having it: it is the control that stops a
  * pass 1 which simply refuses everything from looking correct.
  *
+ * Mutations F and G (fix round 1, from the review): delete ONLY the
+ * day-ownership check, or ONLY the per-day-ceiling check, from
+ * mergeByDayFits(). Each observed 201/3, and in each case the three red
+ * lines are exactly the corresponding refusal test's. So the two refusal
+ * tests are independently load-bearing, not a pair that only catches the
+ * wholesale removal of pass 1.
+ *
  * Mutation D: delete the "if (&incoming == this) return false;" guard from
- * the same function. Observed: 4 checks red, all in
+ * mergeByDay(). Observed 200/4, all in
  * test_merge_with_the_cache_itself_is_refused(). The merge returns true;
  * entry 0 becomes Tuesday's 420-minute target (Monday was compacted away
  * first and never re-appended); and count() reads 70, not 2, because the
  * append loop re-reads `incoming._count` -- which IS the cache's own count
  * when the two alias -- so the source grows exactly as fast as the loop
- * consumes it, and only the kMaxEntries break stops it. Without that break
- * the same mutation runs `_count` up to its uint8_t wrap, writing far past
- * the end of both arrays: this is a memory-safety guard, not a tidiness
- * one.
+ * consumes it, and only the kMaxEntries break stops it. Remove that break
+ * as well and `_count` runs to its uint8_t wrap, writing far past the end
+ * of both arrays; but the writes land INSIDE the enclosing MatterEvse and
+ * silently corrupt `rows` and `_rowBuf`, so AddressSanitizer reports
+ * nothing (intra-object overflow is not a wild pointer). That makes the
+ * guard more important than a catchable overrun, not less.
+ *
+ * Mutation E (fix round 1): delete the "if (&schedule == &_schedule) return
+ * true;" identity case from MatterEvse::setChargingSchedule(). Observed
+ * 203/1: exactly "re-pushing the cache to the device REPORTS SUCCESS" goes
+ * red, while "and every wire line went out" stays green. That pairing is
+ * the whole point of the finding it fixes: the device accepted all four
+ * lines and the call reported failure anyway.
  */
 static void test_merge_atomicity_mutations_would_be_caught(void) {
   check("see this function's own comment: two hand-run mutations, transcribed in the task report", true);
@@ -1188,6 +1260,7 @@ int main(void) {
   test_merge_that_exactly_fills_the_per_day_ceiling_succeeds();
   test_merge_refused_by_day_ownership_leaves_cache_untouched();
   test_merge_with_the_cache_itself_is_refused();
+  test_set_schedule_repushing_the_cache_itself_succeeds();
   test_merge_atomicity_mutations_would_be_caught();
 
   test_disable_charging_dispatches_and_answers();

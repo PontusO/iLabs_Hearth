@@ -248,6 +248,14 @@ public:
   // every target must carry a target SoC, on NO_SOC every target's SoC
   // must be absent or exactly 100; a violation answers Hearth error 1 with
   // zero wire traffic rather than a wire refusal three commands later.
+  //
+  // PASSING chargingSchedule() BACK IN is legal and is a plain success:
+  // re-push what this host believes the device already holds. Every wire
+  // line goes out (the push is not short-circuited, since pushing is the
+  // point of the call) and the cache is left as it was, because the merge
+  // in that case is provably the identity. See the .cpp for why that case
+  // is settled here rather than inside HearthChargingSchedule, which
+  // refuses an aliased merge and is right to.
   bool setChargingSchedule(const HearthChargingSchedule &schedule);
 
   // The cached view: the live store as last known to this host, updated on
@@ -413,15 +421,40 @@ protected:
   // this chain is no longer the merge but the AT+MTROWGET proposal fetch
   // that runs BEFORE the callback (getAllProposed 104 + hearthSendGet 8 +
   // hearthCommand 32 + HearthLink::command 48 + hearthOnRowLine 128, about
-  // 320 bytes of ordinary frames with no large buffer among them), so the
-  // dual-core margin should land near 1200 rather than 320. Those are the
-  // COMPILER's figures; the bench re-measurement is a separate step and
-  // this comment will carry the hardware number once it exists.
+  // 320 bytes of ordinary frames with no large buffer among them).
+  // Calibrating against the bench's own dual-core numbers (320 free at the
+  // old peak, 1512 printed inside the callback, old merge frame 1224, so
+  // the sketch callback's own frame is about 32): the new peak leaves
+  // about 1224 free and the merge branch about 1448, against 320 before.
+  //
+  // TWO CAVEATS ON THAT FIGURE, both from fix round 1. The 320 counts
+  // iLabs frames only: whatever libc and the arduino-core Stream cost
+  // below hearthOnRowLine is not in it, so the DELTA is sound (the same
+  // omission applied to the old 1224) but the absolute 1224 is an upper
+  // bound on free, not a floor. And "the fetch is now the peak" holds for
+  // library-internal frames only: setChargingSchedule 112 ->
+  // HearthRowTransfer::stage 256 -> hearthCommand 32 ->
+  // HearthLink::command 48 is 448, deeper than the fetch, and the
+  // deferred drain deliberately permits wire traffic from inside
+  // onSetTargets(), so a sketch that pushes a schedule from its own
+  // SetTargets callback becomes the peak itself, at roughly 1100. That is
+  // not a regression from this change, and it is why the advice to keep
+  // that callback shallow stands.
+  //
+  // These are the COMPILER's figures; the bench re-measurement is a
+  // separate step and this comment will carry the hardware number once it
+  // exists.
   //
   // Measuring it: rp2040.getFreeStack() reads against core 1's stack
   // base (__scratch_x_start__) unless the sketch defines setup1 or
   // loop1, so a single-core sketch's printed figure is 4096 bytes
-  // higher than its real core 0 margin. The FullAPI HearthEvse sketch's
-  // probe comment carries both corrections.
+  // higher than its real core 0 margin. And because the peak moved
+  // EARLIER in the chain, the probe inside onSetTargets() now sits ABOVE
+  // it rather than below it: the printed figure OVERSTATES the true
+  // margin by about 288. It always overstated it, including before
+  // 0.12.1, where the overstatement was about 1192; what changed is the
+  // magnitude and the reason (the peak is now earlier in the chain and has
+  // already unwound, rather than later and not yet reached). The FullAPI
+  // HearthEvse sketch's probe comment carries both.
   bool hearthMergeByDay(uint8_t dayMask, const HearthChargingSchedule &incoming);
 };

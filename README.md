@@ -1402,18 +1402,29 @@ one.
   compiler). That moves the deepest point of the chain OFF the merge and on
   to the proposal fetch that precedes your callback, roughly 320 bytes of
   ordinary call frames with no large buffer among them, so the expected
-  dual-core margin is now on the order of 1200 bytes rather than 320. Those
-  are compiler figures; the hardware re-measurement is a separate step and
-  this entry will carry the bench number once it exists. Keeping
-  `onSetTargets()` shallow on a dual-core sketch is still the right habit:
-  no string formatting, no nested library calls, record the request and act
-  on it from `loop()`.
-  **Measuring this yourself needs one correction:** `rp2040.getFreeStack()`
+  dual-core margin is now about 1224 bytes rather than 320. Two caveats on
+  that number: it counts iLabs frames only, so libc and the arduino-core
+  `Stream` below them are not in it (the delta is sound, the absolute is an
+  upper bound); and the fetch is the peak only among *library* frames, since
+  a sketch that pushes a schedule from inside `onSetTargets()` goes deeper
+  than the fetch does (`setChargingSchedule` -> `stage` -> `command` is 448)
+  and becomes the peak itself, at roughly 1100. Those are compiler figures;
+  the hardware re-measurement is a separate step and this entry will carry
+  the bench number once it exists. Keeping `onSetTargets()` shallow on a
+  dual-core sketch is therefore still the right habit: no string formatting,
+  no nested library calls, record the request and act on it from `loop()`.
+  **Measuring this yourself needs two corrections:** `rp2040.getFreeStack()`
   measures against `__scratch_x_start__`, core 1's stack base, unless the
-  sketch defines `setup1` or `loop1` (`RP2040Support.h`). A single-core
-  sketch's printed figure is therefore 4096 bytes higher than its real core
-  0 margin. The FullAPI `HearthEvse` sketch's probe comment carries the
-  correction and where the peak now sits.
+  sketch defines `setup1` or `loop1` (`RP2040Support.h`), so a single-core
+  sketch's printed figure is 4096 bytes higher than its real core 0 margin.
+  And the probe inside `onSetTargets()` **overstates** the true margin in
+  every library version, because it is never taken at the peak: up to 0.12.0
+  the peak came after it (1512 printed, about 320 free, overstated by about
+  1192), and from 0.12.1 the peak comes before it and has already unwound
+  (1512 printed, about 1224 free, overstated by about 288). Reading that
+  direction the wrong way round is what once made a negative margin look
+  comfortable. The FullAPI `HearthEvse` sketch's probe comment carries both
+  corrections.
 - **`MatterDoorLock`'s 1000 ms verdict window is a real latency budget, not
   a formality.** A sketch whose `loop()` blocks for a meaningful fraction of
   a second can miss `onLock`/`onUnlock` entirely and the lock fails closed.

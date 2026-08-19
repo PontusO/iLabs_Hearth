@@ -203,7 +203,17 @@ bool HearthChargingSchedule::mergeByDay(uint8_t dayMask, const HearthChargingSch
    * the same reason addTarget()'s own kMaxEntries check is kept: unreachable
    * with pass 1 and the alias refusal in front of it, and the one line
    * standing between a regression in either of them and a write past the end
-   * of `_dayBitmap`/`_target`. */
+   * of `_dayBitmap`/`_target`.
+   *
+   * What that write actually does is worse than a plain overrun, and it was
+   * measured rather than assumed (fix round 1). With this break removed and
+   * the alias guard deleted, `_count` runs to its uint8_t wrap, and
+   * `_target[255]` is 4080 bytes into a 1120-byte array: the writes land
+   * INSIDE the enclosing MatterEvse and quietly overwrite `rows` and
+   * `_rowBuf`. AddressSanitizer reports NOTHING, because intra-object
+   * overflow is not a wild pointer. Silent corruption of a neighbouring
+   * member is precisely the failure no test and no sanitizer would ever
+   * attribute back to this loop. */
   for (uint8_t i = 0; i < incoming._count; i++) {
     if (_count >= kMaxEntries) {
       break;

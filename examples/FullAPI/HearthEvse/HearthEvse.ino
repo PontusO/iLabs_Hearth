@@ -52,20 +52,29 @@
  * and stack protection off (an overflow would corrupt silently rather
  * than fault). It has NOT been observed to overflow.
  *
- * WHERE THE TRUE PEAK IS depends on the library version, and this is the
- * correction the bench procedure applies:
- *   - up to 0.12.0 it came AFTER this callback returned, when an accepted
- *     proposal called hearthMergeByDay(), whose `merged` was a second,
- *     equally-sized HearthChargingSchedule live on top of `proposed`:
- *     roughly 2.4 KB of locals in one chain, and the figure printed here
- *     overstated the true margin by about 1200 bytes.
+ * THE FIGURE PRINTED HERE OVERSTATES THE TRUE MARGIN. It always has;
+ * what the library version changes is by how much and why, and the
+ * direction is the part worth getting right (reading it the wrong way
+ * round is what once made a negative margin look comfortable):
+ *   - up to 0.12.0 the peak came AFTER this callback returned, when an
+ *     accepted proposal called hearthMergeByDay(), whose `merged` was a
+ *     second, equally-sized HearthChargingSchedule live on top of
+ *     `proposed`: roughly 2.4 KB of locals in one chain. Printed 1512
+ *     dual-core, about 320 free at the peak, so it overstated by about
+ *     1192.
  *   - from 0.12.1 the merge runs IN PLACE (validate first, then apply, so
  *     a refused merge still leaves the cache untouched) and its frame is
  *     96 bytes instead of 1224. The deepest point moved BEFORE this
  *     callback rather than after it: the AT+MTROWGET proposal fetch,
  *     about 320 bytes of ordinary call frames with no large buffer among
- *     them. The figure printed here now understates the true margin by
- *     roughly that much, in the opposite direction.
+ *     them, which has already unwound by the time this line runs. So the
+ *     print still reads HIGH, by about 288 now rather than 1192: 1512
+ *     printed against about 1224 free at the new peak.
+ * Both 0.12.1 figures are the compiler's (-fstack-usage), not the bench's,
+ * and they count iLabs frames only. Note too that a sketch which pushes a
+ * schedule from inside this callback goes deeper than the fetch does
+ * (setChargingSchedule -> stage -> command is 448), which is one more
+ * reason to keep this callback shallow.
  * The original bench procedure
  * (.superpowers/sdd/2026-08-14-energy-round-c2/task-13-report.md section
  * 7.17) subtracts the old correction before applying its pass/fail bands;
@@ -176,16 +185,18 @@ void setup() {
     // single-core and 1512 with a core-1 body, identical for a 1-target
     // and a 70-target proposal, so nothing scales per row.
     //
-    // A SECOND correction applied up to library 0.12.0: the print was
-    // one frame short of the true peak, because an allow verdict then
+    // AND READ IT AS AN OVERSTATEMENT of the true margin, in both
+    // library versions, for two different reasons. Up to 0.12.0 the
+    // print was one frame SHORT of the peak: an allow verdict then
     // called hearthMergeByDay(), whose `merged` was a second
-    // HearthChargingSchedule (1192 bytes) live on top of `proposed`.
-    // That left the dual-core figure at 320 bytes of real margin. From
-    // 0.12.1 the merge runs in place and costs 96 bytes, so this print
-    // is no longer below the peak: the deepest point is now the
-    // AT+MTROWGET proposal fetch a little EARLIER in the same chain,
-    // about 320 bytes of ordinary frames, which has already unwound by
-    // the time this line runs.
+    // HearthChargingSchedule (1192 bytes) live on top of `proposed`, so
+    // 1512 printed meant about 320 free at the peak, an overstatement of
+    // about 1192. From 0.12.1 the merge runs in place and costs 96
+    // bytes, and the deepest point is now the AT+MTROWGET proposal fetch
+    // a little EARLIER in the same chain (about 320 bytes of ordinary
+    // frames), which has already unwound by the time this line runs. So
+    // the print is now one frame PAST the peak and still reads high,
+    // 1512 against about 1224 free, an overstatement of about 288.
 
     Serial.print("SetTargets proposal: ");
     Serial.print(proposed.count());
