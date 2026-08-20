@@ -117,7 +117,10 @@ rather than one endpoint below the first that failed.
 
 The figures date from 2026-08-20 and were measured on real hardware, both
 transports, with the rig committed in the firmware repository as
-`test/mt_endpoint_cap.py`. Heap moves with the SDK, with cluster
+`test/mt_endpoint_cap.py`. They were re-checked on the 1.0.0 images at two
+points, one endpoint and twenty, and both came back within 260 bytes of the
+recorded values with the twenty-endpoint reading still above the 24,000
+floor. Heap moves with the SDK, with cluster
 configuration and with anything that changes what gets linked, so after an
 SDK bump or an `sdkconfig.defaults*` edit the cap is re-measured rather
 than argued about. The firmware repository's own README carries the full
