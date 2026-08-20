@@ -339,7 +339,33 @@ def resolve_images(manifest, variant_id):
     return version, out
 
 
-def print_and_verify_plan(variant, version, images):
+def resolve_bridge(manifest):
+    """Return (offset, path, name, sha256, size) for the bridge UF2.
+
+    The bridge is not written to the ESP's flash, so it has no offset; None
+    stands in that column so it travels through the same print and verify path
+    as the images rather than getting a shortcut of its own. It is the first
+    file written to the board and the one whose corruption strands a user
+    earliest, which is why it is covered at all.
+
+    The manifest names the file, not this code, so a bridge renamed or replaced
+    in fw/bridge/ is picked up by regenerating the manifest.
+    """
+    files = manifest.get("bridge", {}).get("files", {})
+    if not files:
+        die("manifest.json records no bridge. Run fw/make_manifest.py.")
+    want = os.path.basename(BOARD["bridge_uf2"])
+    rec = files.get(want)
+    if rec is None:
+        die(f"manifest has no record for bridge/{want} "
+            f"(it records {sorted(files)})")
+    path = os.path.join(HERE, BOARD["bridge_uf2"])
+    if not os.path.isfile(path):
+        die(f"missing bridge UF2: {path}")
+    return (None, path, want, rec["sha256"], rec["size"])
+
+
+def print_and_verify_plan(variant, version, images, bridge):
     """Print exactly what is about to be written, then prove it on disk.
 
     The print happens before the verify so that a mismatch is reported against
@@ -351,8 +377,10 @@ def print_and_verify_plan(variant, version, images):
     cprint(f"  firmware version {version}", style="bold")
     cprint(f"  board            {BOARD['label']}", style="dim")
     cprint("")
-    for offset, path, name, sha, size in images:
-        cprint(f"  0x{offset:06x}  {name}  ({size} bytes)")
+    everything = [bridge] + list(images)
+    for offset, path, name, sha, size in everything:
+        where = "RP2350   " if offset is None else f"0x{offset:06x}"
+        cprint(f"  {where}  {name}  ({size} bytes)")
         # Two-space indent, not aligned under the name: a 64-hex-digit hash
         # plus any deeper indent no longer fits an 80-column terminal, and a
         # wrapped hash is one nobody checks.
@@ -360,7 +388,7 @@ def print_and_verify_plan(variant, version, images):
     cprint("")
 
     bad = []
-    for offset, path, name, sha, size in images:
+    for offset, path, name, sha, size in everything:
         with open(path, "rb") as fh:
             blob = fh.read()
         got = hashlib.sha256(blob).hexdigest()
@@ -369,16 +397,17 @@ def print_and_verify_plan(variant, version, images):
     if bad:
         for name, got, size in bad:
             cprint(f"  {name}: on disk sha256 {got} ({size} bytes)", style="red")
-        die("shipped image does not match fw/manifest.json. Nothing was "
+        die("a shipped file does not match fw/manifest.json. Nothing was "
             "written.\n"
             "  This is not a warning to click past: the manifest records the "
-            "images\n"
+            "files\n"
             "  that were qualified on hardware, so a mismatch means the file "
             "on disk\n"
             "  is not one of them. Re-clone the library, or regenerate the "
             "manifest\n"
-            "  with fw/make_manifest.py if you deliberately replaced an image.")
-    cprint("  all files match fw/manifest.json", style="green")
+            "  with fw/make_manifest.py if you deliberately replaced a file.")
+    cprint(f"  all {len(everything)} files match fw/manifest.json",
+           style="green")
 
 
 # --------------------------------------------------------------------------- #
@@ -513,8 +542,39 @@ def wait_for_bridge_back(explicit_port, prev_port, timeout=30.0):
 
 
 # --------------------------------------------------------------------------- #
-# RP2350 mass-storage mount detection (cross-platform).
+# RP2350 mass-storage mount detection.
+#
+# Linux and macOS ONLY, and it says so rather than pretending. Automount paths
+# are the whole mechanism here and Windows has none of these: it assigns a
+# drive letter, which needs a different search entirely (enumerate the volumes,
+# look for the one holding INFO_UF2.TXT). Writing that blind, with no Windows
+# machine to run it on, would produce a path nobody has ever executed, and the
+# earlier "cross-platform" comment on Linux-only code is exactly how a claim
+# like that survives. So: supported platforms are named, and an unsupported one
+# fails immediately with the manual route instead of spending 60 seconds
+# waiting for a directory that can never appear.
 # --------------------------------------------------------------------------- #
+SUPPORTED_MOUNT_PLATFORMS = ("linux", "darwin")
+
+
+def mount_detection_supported():
+    return sys.platform.startswith(SUPPORTED_MOUNT_PLATFORMS)
+
+
+def unsupported_platform_message(uf2):
+    return (
+        f"automatic bridge installation is not supported on "
+        f"'{sys.platform}'.\n"
+        f"  Finding the RP2350's mass-storage drive is done through Linux and "
+        f"macOS automount\n"
+        f"  paths, and this platform has neither. Everything else works, so do "
+        f"stage 1 by hand:\n"
+        f"    1. put the board in BOOTSEL (hold BOOTSEL, tap RESET)\n"
+        f"    2. copy this file onto the drive that appears:\n"
+        f"         {uf2}\n"
+        f"    3. re-run with --skip-bridge --port <the board's serial port>")
+
+
 def candidate_mount_paths(label):
     user = getpass.getuser()
     if sys.platform == "darwin":
@@ -954,16 +1014,18 @@ def do_flash(esptool, images, port, keep_baud=False):
         _close_port(esp)
 
 
-def stage1_copy_bridge(dry_run=False, port_hint=None, auto_bootsel=True):
-    uf2 = os.path.join(HERE, BOARD["bridge_uf2"])
-    if not os.path.isfile(uf2):
-        die(f"missing bridge UF2: {uf2}")
-
+def stage1_copy_bridge(uf2, dry_run=False, port_hint=None, auto_bootsel=True):
+    """Copy the bridge UF2 onto the RP2350. `uf2` has already been checked
+    against the manifest by print_and_verify_plan; this never re-derives the
+    path, so there is no way to write a file the verify pass did not see."""
     if dry_run:
         cprint(f"[dry-run] would wait for mount '{BOARD['mount_label']}' and "
                f"copy", style="yellow")
         cprint(f"[dry-run]   {uf2}", style="dim")
         return list_serial_ports(), None
+
+    if not mount_detection_supported():
+        die(unsupported_platform_message(uf2))
 
     if auto_bootsel:
         try_auto_bootsel(port_hint)
@@ -1093,14 +1155,15 @@ def main():
 
     variant = resolve_variant(args.variant) or choose_variant_interactive(manifest)
     version, images = resolve_images(manifest, variant["id"])
-    print_and_verify_plan(variant, version, images)
+    bridge = resolve_bridge(manifest)
+    print_and_verify_plan(variant, version, images, bridge)
 
     if args.dry_run:
         if args.skip_bridge:
             cprint("[dry-run] would skip the bridge UF2 copy (--skip-bridge)",
                    style="yellow")
         else:
-            stage1_copy_bridge(dry_run=True)
+            stage1_copy_bridge(bridge[1], dry_run=True)
         port = args.port or "<the port that appears after the UF2 copy>"
         cprint(f"[dry-run] would flash on {port}:", style="yellow")
         for offset, path, name, sha, size in images:
@@ -1132,7 +1195,8 @@ def main():
     else:
         # Stage 1: bridge UF2 -> RP2350 mass storage.
         ports_before, _ = stage1_copy_bridge(
-            port_hint=args.port, auto_bootsel=not args.no_auto_bootsel)
+            bridge[1], port_hint=args.port,
+            auto_bootsel=not args.no_auto_bootsel)
 
         # Stage 2a: find the serial bridge port.
         if args.port:

@@ -1,4 +1,12 @@
 {
+  "bridge": {
+    "files": {
+      "RP2350USB2Serial.ino.uf2": {
+        "sha256": "ee31b4f5de18c704295bc277374ec5a852bf6801ab8604e4eee72996d6f100c1",
+        "size": 200704
+      }
+    }
+  },
   "images": {
     "combined": {
       "files": {
@@ -7,7 +15,7 @@
           "size": 22368
         },
         "hearth-combined-1.0.0.bin": {
-          "sha256": "86f5ac99c64db5bfe27aae5ee89b9123a969cb8943f897cb9e074d9b24496239",
+          "sha256": "76bc07b0ca67118eac7c6cc97734509edd6048f6949c8a268444735eb3b67c08",
           "size": 2122384
         },
         "partition-table.bin": {
@@ -23,7 +31,7 @@
           "size": 22368
         },
         "hearth-thread-1.0.0.bin": {
-          "sha256": "ddae4dd44007b2756a66f833598bcc1da86a708e57b0c64bdd5893342a842464",
+          "sha256": "183042fdfe54ffc82756d57db0f4aceb66b4bf946b46b0359e7fc1d6df0c98f4",
           "size": 1727792
         },
         "partition-table.bin": {
@@ -39,7 +47,7 @@
           "size": 22368
         },
         "hearth-wifi-1.0.0.bin": {
-          "sha256": "24626cb0a3f6df83c1ac5f116115db140389839895b3270e6f50546e3f74da3f",
+          "sha256": "fc869c5e4cfd9f02ecfe48d7b1cdc51648df56b6c73a3b7bd073ea78d18b49b7",
           "size": 1826320
         },
         "partition-table.bin": {

@@ -11,7 +11,7 @@ Contents:
 |---|---|
 | `images/wifi/`, `images/thread/`, `images/combined/` | one prebuilt image set per variant: bootloader, partition table, application |
 | `bridge/RP2350USB2Serial.ino.uf2` | the USB-to-serial bridge sketch for the RP2350 host MCU |
-| `manifest.json` | the SHA-256 and size of every shipped file |
+| `manifest.json` | the SHA-256 and size of every file written to a board, images and bridge alike |
 | `flash.py` | the flasher |
 | `make_manifest.py`, `test_manifest.py` | regenerate and check `manifest.json` |
 
@@ -133,6 +133,13 @@ That prints the variant menu, then runs two stages:
    occasionally loses the request or its ack), the flasher resets and retries,
    then falls back to 115200, which cannot hit the problem.
 
+**Supported platforms: Linux and macOS.** Stage 2 is pure pyserial and works
+anywhere, but stage 1 finds the RP2350's mass-storage drive through Linux and
+macOS automount paths, and Windows has no equivalent. On any other platform the
+flasher says so immediately, rather than waiting on a directory that cannot
+appear, and tells you to copy `bridge/RP2350USB2Serial.ino.uf2` onto the drive
+by hand and re-run with `--skip-bridge --port <device>`.
+
 Non-interactive, one variant, no menu:
 
 ```sh
@@ -229,28 +236,55 @@ an unsolicited line.
 
 ## The manifest
 
-`manifest.json` records the SHA-256 and byte size of every file under
-`images/`. It is not decoration:
+`manifest.json` records the SHA-256 and byte size of **every file this
+directory writes to a board**: the nine files under `images/`, and the bridge
+UF2 under `bridge/`. The bridge is covered because it is written first, before
+any image, so it is the file whose corruption strands a user earliest. It is
+not decoration:
 
-- `flash.py` prints the variant, the version and each file's hash **before it
-  writes anything**, then re-hashes the files on disk and refuses to flash if
-  any of them disagrees with the record.
-- `test_manifest.py` fails if an image and its record disagree, if a variant is
-  missing, or if the manifest version and `library.properties` have drifted
-  apart.
+- `flash.py` prints the variant, the version and every file's hash **before it
+  writes anything**, then re-hashes those files on disk and refuses to write
+  if any of them disagrees with the record. The bridge is checked in the same
+  pass, before stage 1, and the copy uses the path that pass verified.
+- `test_manifest.py` fails if a file and its record disagree, if a file on disk
+  is **not** in the manifest at all, if a variant or the bridge is missing, if
+  a variant does not ship an app named for it, or if the manifest version and
+  `library.properties` have drifted apart.
 
 ```sh
 python3 fw/test_manifest.py
 ```
 
-The point is a specific failure: an image copied in from an unqualified build
-directory. The images shipped here are the exact ones that were tested on
-hardware, and the hash is the only thing that can tell one 1.8 MB binary from
-another. If you deliberately replace an image, regenerate the record:
+The point is a specific failure: a file copied in from an unqualified build
+directory. What ships here is exactly what was tested on hardware, and the hash
+is the only thing that can tell one 1.8 MB binary from another. Both directions
+matter, which is why there is a check for an unrecorded file as well as one for
+a mismatched hash: a file the manifest has never heard of is a file nobody
+checked.
+
+The generator hashes directories whole rather than looking for filenames it
+knows, so adding a second bridge sketch to `bridge/`, or a fourth variant to
+`images/`, is covered without touching any code. If you deliberately replace or
+add a file, regenerate the record:
 
 ```sh
 python3 fw/make_manifest.py
 ```
+
+### Tracing an image back to a commit
+
+Each application image carries an ESP-IDF descriptor holding `git describe`
+output from the tree it was built in. It is separate from the AT-visible
+firmware version, so it is worth checking directly:
+
+```sh
+python3 -c "print(open('fw/images/wifi/hearth-wifi-1.0.0.bin','rb').read()[48:80].split(b'\0')[0].decode())"
+```
+
+The shipped images answer `0.12.0-9-g2bad13e`: a real commit, with no `-dirty`
+suffix. A `-dirty` suffix would mean the image came from a tree with
+uncommitted changes and cannot be tied to any commit, which is a thing worth
+noticing before shipping rather than after a field failure.
 
 ## Licences
 
