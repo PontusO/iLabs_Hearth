@@ -24,13 +24,88 @@ are the same firmware and the same AT protocol otherwise.
 |---|---|---|
 | 1 | **WiFi only** | your network is WiFi. **Most users want this one.** Commissioning still happens over BLE; the C6 joins WiFi on the credentials it is handed. |
 | 2 | **Thread only** | you have a Thread network and a border router. |
-| 3 | **WiFi + Thread** | you want one image that can do either. It carries both stacks, so it has less free RAM than the single-transport images. |
+| 3 | **WiFi + Thread** | you want one image that can do either. It carries both stacks, so it has less free RAM than the single-transport images, which caps how many endpoints it can serve when WiFi is the active transport: see [How many endpoints fit](#how-many-endpoints-fit). |
 
 You can reflash between variants at any time. A device that is already
 commissioned keeps its fabric across a reflash (the Matter fabric and the
 endpoint composition live in NVS, which the flasher does not erase), but a
 fabric commissioned over one transport is not reachable over the other, so
 after switching you will want to commission again.
+
+## How many endpoints fit
+
+Most sketches declare one endpoint, or a handful, and never meet this
+limit. Skip this section until you build something large.
+
+Every endpoint costs RAM on the C6, and the three variants do not start
+with the same amount, because a linked network stack holds memory whether
+it is the active transport or not. So the limit is not one number:
+
+| Image | Active transport | Endpoints of a typical mix | Endpoints of an energy-heavy mix |
+|---|---|---|---|
+| WiFi only | WiFi | 28 (the firmware's own maximum) | 28 |
+| Thread only | Thread | 28 | 28 |
+| WiFi + Thread | Thread | 28 | 28 |
+| **WiFi + Thread** | **WiFi** | **about 20** | **about 12** |
+
+Only one row is constrained: the combined image with WiFi as the active
+transport. Everything else reaches `MT_COMP_MAX_ENDPOINTS`, the firmware's
+own ceiling of 28, with room left over. (This library's own
+`HEARTH_MAX_ENDPOINTS` stops a sketch at 24 before the firmware ever sees
+it. Raise it with `-DHEARTH_MAX_ENDPOINTS=28` if you need the last four.)
+
+**Do not read "about 20" as a number you can just spend.** Endpoints are
+not interchangeable. Measured on this firmware, a simple type (a light, a
+sensor, a switch) costs about **1,166 bytes** and an energy type (electrical
+sensor or meter, water heater, heat pump, solar, battery, device energy
+management, EVSE) costs about **2,210**. One light plus nineteen energy
+endpoints is a legal-looking 20 that lands inside the failure band.
+
+### The rule underneath the table
+
+**Keep free heap at startup at or above 24,000 bytes.** That is the real
+limit; the endpoint counts above are proxies for it at particular mixes.
+
+To predict your own composition, start from the WiFi-active combined
+image's single-endpoint figure of **48,360 bytes** and subtract about 1,166
+per simple endpoint and about 2,210 per energy endpoint. If the result is
+below 24,000, use fewer endpoints or flash a single-transport image.
+
+The firmware measures the same thing and logs it on every boot:
+
+```
+mt_main: free heap at startup: 24204 (BLE resident)
+```
+
+That line goes to the **C6's own console UART (GPIO2)**, not to the AT link
+and not to the USB port your sketch prints on, so reading it takes a wire
+onto GPIO2 or a bridge that forwards that pin. Most people will use the
+arithmetic above instead; the log line is there for when a number has to be
+settled rather than estimated.
+
+### What exceeding it looks like
+
+Not an error. The composition is accepted, `AT+MTEPAPPLY` answers `OK`, and
+the device often commissions successfully. It then fails under controller
+traffic: lwIP runs out of memory on a send (CHIP error `0x3000001`),
+retransmissions exhaust, and the session times out. It reads like "Matter
+is broken" rather than like a documented limit, which is why the margin in
+the table is as wide as it is.
+
+The boundary is a band, not a step. In the measurements behind this table
+one composition failed and then passed at an identical boot heap, so the
+supported floor is set well above the last value that happened to work
+rather than one endpoint below the first that failed.
+
+### Re-measuring it
+
+The figures date from 2026-08-20 and were measured on real hardware, both
+transports, with the rig committed in the firmware repository as
+`test/mt_endpoint_cap.py`. Heap moves with the SDK, with cluster
+configuration and with anything that changes what gets linked, so after an
+SDK bump or an `sdkconfig.defaults*` edit the cap is re-measured rather
+than argued about. The firmware repository's own README carries the full
+curve and the failure evidence.
 
 ## Prerequisites
 
@@ -229,6 +304,11 @@ void setup() {
 
 void loop() {}
 ```
+
+The library's `HearthFirstLight` example prints exactly this as its second
+line, so opening it (**File > Examples > iLabs Hearth > HearthFirstLight**)
+confirms the flash and starts the next step at the same time. The library
+README's [Start here](../README.md#start-here) walks through it.
 
 `Hearth.firmwareVersion()` uses `AT+MTVER?`, which carries the same version as
 `AT+CGMR` in a prefixed form (`+MTVER:1.0.0`) that a parser can tell apart from

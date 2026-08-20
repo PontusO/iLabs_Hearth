@@ -1,35 +1,250 @@
 # iLabs Hearth
 
-An Arduino library for RP2040/RP2350 hosts (the iLabs Challenger family) that
-mirrors the `arduino-esp32` `Matter` library's class API closely enough that
-an **unmodified** arduino-esp32 Matter sketch can build and run on a
-Challenger. The Matter stack itself does not run on the RP2350: it runs on an
-ESP32-C6 co-processor flashed with the iLabs Hearth firmware
-([`iLabs_AT_Hearth`](https://github.com/PontusO/iLabs_AT_Hearth)), and this
-library speaks that firmware's `AT+MT` protocol over a UART link. Every call
-a sketch makes against `Matter.*` or a `Matter*Light`/`Matter*Sensor` object
-is translated into an AT command sent to the C6 and back.
+Build a **Matter** device with an Arduino sketch on an iLabs Challenger
+board. A light, a sensor, a thermostat or a dishwasher, commissioned onto a
+Matter fabric and driven from a Matter controller the way any other Matter
+accessory is, written with the same `Matter` API that `arduino-esp32`
+sketches use.
 
-## Firmware pairing
+Hearth is two halves: **this library**, which runs on the board's RP2350
+and gives your sketch that API, and the **Hearth firmware**, which runs on
+the board's ESP32-C6 co-processor and speaks Matter to the network. The
+library ships the firmware images and a flasher in [`fw/`](fw/), so you
+never build the firmware yourself.
 
-**Library 0.10.0 wants firmware 0.10.1 or newer**, not the 0.10.0 it shipped
-against. Firmware 0.10.1 corrects three ways an `AT+MTATTR` write used to
-fail ambiguously, and this library hits one of them on its own:
-`MatterBatteryStorage` re-pushes its configuration attributes on every
-reconcile, so it can legitimately write a value the device already holds. On
-firmware 0.10.0 that answers a bare `ERROR` and a successful no-op looks like
-a failure; on 0.10.1 it answers `OK`.
+**Never used it before? [Start here](#start-here).** It goes from a board
+in a drawer to a light you can switch from your phone, and takes about
+half an hour, most of it waiting for downloads.
 
-The other two corrections make `Hearth.lastError()` informative where it was
-silent. An out-of-range value now answers `+MTERR:1` instead of a bare
-`ERROR`. An attribute that exists but is served by a cluster Instance, so it
-cannot be written over AT at all, answers the new `+MTERR:11`, which a host
-can tell apart from `+MTERR:4` for an attribute that does not exist. Several
-of this round's own classes serve attributes that way.
+Already know your way around? [Firmware and library
+versions](#firmware-and-library-versions), [the examples
+map](#the-examples-map), [how it works](#how-it-works), or read on for the
+reference sections: the [event loop](#driving-the-event-loop), the
+[supported device types](#supported-device-types), the
+[examples](#examples) and the [limitations](#limitations).
 
-Nothing here is required to compile or to run: every class works against
-firmware 0.10.0, and the pairing is about honest failure reporting rather
-than features. Newer firmware is also fine, since the AT surface is additive.
+## Start here
+
+### What you need
+
+| | |
+|---|---|
+| **Board** | An iLabs Challenger RP2350 WiFi6/BLE5, and a USB-C cable that carries data. |
+| **Arduino IDE** | 2.x, from arduino.cc. |
+| **The arduino-pico core** | "Raspberry Pi Pico/RP2040/RP2350" by Earle F. Philhower, III. Paste its index URL into **File > Preferences > Additional boards manager URLs**, then install it from **Boards Manager**: `https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json`. This release is verified against core 5.5.1 and 6.0.0. |
+| **Python 3** | Only to flash the co-processor, once per board (step 2). The flasher runs on Linux and macOS; on Windows one of its two stages has to be done by hand, see [`fw/README.md`](fw/README.md). |
+| **A Matter controller** | NXP's `chip-tool` app for Android or iOS is the one verified against this firmware, and the CLI `chip-tool` also works. **Read the note under step 4 before reaching for Apple Home, Google Home or Alexa**, which are expected to refuse an uncertified device. |
+| **A network** | WiFi in almost every case. Thread works too and needs a border router; step 2 is where you choose. |
+
+You do not need an ESP-IDF toolchain, an esp-matter checkout, or any
+knowledge of the `AT+MT` protocol the two chips speak between themselves.
+
+### 1. Install this library
+
+The library is not in the Arduino Library Manager. Install it from the
+repository:
+
+- **From a ZIP**: download
+  [`iLabs_Hearth`](https://github.com/PontusO/iLabs_Hearth) as a ZIP, then
+  in the IDE choose **Sketch > Include Library > Add .ZIP Library** and
+  pick the file.
+- **Or with git**, into your sketchbook's `libraries` folder (the
+  sketchbook location is in **File > Preferences**):
+
+  ```sh
+  cd ~/Arduino/libraries
+  git clone https://github.com/PontusO/iLabs_Hearth
+  ```
+
+Restart the IDE afterwards so it picks up the new examples.
+
+### 2. Flash the co-processor
+
+**Do this once per board.** The Challenger has two chips: the RP2350 runs
+your sketch, and the ESP32-C6 next to it is a co-processor. Matter runs on
+the C6, and it needs the Hearth firmware before any sketch can do
+anything. A board fresh out of its bag is not running it.
+
+The images and the flasher live in this library, in [`fw/`](fw/). Plug the
+board in, then run the flasher from the library's own directory (the
+sketchbook path is whatever **File > Preferences** shows):
+
+```sh
+cd ~/Arduino/libraries/iLabs_Hearth
+python3 fw/flash.py
+```
+
+It offers three variants and **1, WiFi only, is the one to choose unless
+you know you want Thread.** It then reboots the board into a USB-to-serial
+bridge and writes the firmware to the C6 over it, with a progress bar.
+
+One prerequisite, and the flasher refuses to start without it rather than
+half-flashing a board: the **iLabs fork of esptool**. Stock
+`pip install esptool` cannot flash these boards, and no newer release of it
+can either. The C6 has no USB of its own, so the reset lines esptool
+toggles reach it only through the RP2350, and only the fork knows how to
+drive that. Clone it, install its dependencies, and tell the flasher where
+it is:
+
+```sh
+git clone https://github.com/PontusO/esptool ~/bin/esptool
+pip install -e ~/bin/esptool
+export ILABS_ESPTOOL_PATH=~/bin/esptool
+```
+
+`python3 fw/flash.py --list` checks that much on its own and prints the
+variant menu without touching the board, which is a good thing to run
+first.
+
+**[`fw/README.md`](fw/README.md) is the full account**: the prerequisites,
+what each variant is for, how many endpoints each one carries, every
+flasher option, and what to do when a step fails. Read it if `flash.py`
+tells you something you did not expect.
+
+### 3. Open `HearthFirstLight`
+
+In the IDE:
+
+1. **Tools > Board**, then the arduino-pico core's submenu (it is labelled
+   "Raspberry Pi RP2040/RP2350 Boards" or "Raspberry Pi RP2040(x.y.z)",
+   depending on the core release), and in it **iLabs Challenger 2350
+   WiFi/BLE**.
+2. **File > Examples > iLabs Hearth > HearthFirstLight**.
+3. **Tools > Port**, and pick the board. Then upload. The upload replaces
+   the serial bridge that step 2 left on the RP2350, which is expected. If
+   the IDE cannot see the board at all, hold **BOOTSEL**, tap **RESET**,
+   release BOOTSEL, and upload again.
+4. Open **Tools > Serial Monitor** and set it to **115200 baud**.
+
+You should see:
+
+```
+Hearth first light
+Firmware on the co-processor: 1.0.0
+Endpoint declared. Starting Matter...
+
+Not commissioned yet. Add this device in your Matter app.
+  Manual pairing code: 34970112332
+  QR code URL:         https://project-chip.github.io/connectedhomeip/qrcode.html?data=MT:Y.K9042C00KA0648G00
+```
+
+The two codes are your own board's. That is a working device: "not
+commissioned" is the normal state of a Matter accessory nobody has adopted
+yet.
+
+### 4. Commission it
+
+**Which app, and why it matters.** This firmware is uncertified and uses
+Matter's public development credentials (vendor ID `0xFFF1`, the test
+attestation certificates that ship with the SDK). Apple Home, Google Home
+and Alexa are entitled to refuse a device presenting those, and are
+expected to, either outright or behind an uncertified-accessory warning.
+That is what every Matter project looks like before its vendor pays for
+certification, not a defect in this firmware.
+
+**Use NXP's `chip-tool` app** (Android and iOS), which is the commissioner
+this project verifies against, or the CLI `chip-tool` from
+connectedhomeip. A consumer hub refusing the device is not a bug worth
+debugging.
+
+Open the QR code URL in a browser (it renders the code your phone will
+scan), then in your Matter app choose to add a device and scan it. Type
+the manual pairing code instead if the app offers that. Commissioning runs
+over Bluetooth LE and takes a minute or two; the app hands your WiFi
+credentials to the C6 as part of it, so the sketch never sees a password.
+
+When it finishes, the serial monitor says so, and the switch in your app
+drives the board's LED. The board's **BOOTSEL** button toggles the same
+light from this end and the app follows along, which is the two-way path
+working.
+
+Commissioning happens once. Every later boot goes straight to
+"Commissioned".
+
+**The pairing window is open for 15 minutes after boot**, and the sketch
+cannot tell that it has closed, so it keeps printing the same pairing code
+afterwards. If a pairing attempt fails and the board has been powered for a
+while, press **RESET** and try again with the fresh code.
+
+### If something does not work
+
+| What you see | What it means |
+|---|---|
+| Nothing at all in the serial monitor | The monitor is on the wrong port or the wrong baud rate. It is 115200. |
+| `Firmware on the co-processor: (no answer, ...)` | The sketch cannot reach the C6. Either it was never flashed (step 2), or the serial bridge from step 2 is still on the RP2350 and the sketch upload did not take. |
+| The version prints, but no pairing code appears | The device is already commissioned. It says so on the line before. Remove it from your Matter app to start over. |
+| `flash.py` refuses to start | It is telling you which prerequisite is missing. [`fw/README.md`](fw/README.md) quotes the refusals verbatim and gives the fix for each. |
+| The app finds the device, then refuses to add it | Almost always the development credentials described in step 4. Use NXP's `chip-tool` app rather than a consumer hub. |
+| Pairing fails on a board that has been on for a while | The 15 minute commissioning window has closed. Press RESET and use the code printed after the reboot. |
+| Callbacks fire late, or not at all | `loop()` is not calling into the library often enough. See [Driving the event loop](#driving-the-event-loop). |
+
+### Where to go next
+
+`HearthFirstLight` is one endpoint of one type. The rest of the examples
+are laid out in [the examples map](#the-examples-map) below: one sketch per
+device type to copy from, and a `FullAPI` tier that exercises every call a
+class has.
+
+Then, in rough order of when you will need them: [driving the event
+loop](#driving-the-event-loop) (the one way this library genuinely differs
+from `arduino-esp32`), [the supported device types](#supported-device-types),
+and [the limitations](#limitations).
+
+## Firmware and library versions
+
+The library and the firmware are released together and are tested as a
+pair. The pairing is about honest failure reporting rather than features:
+an older firmware than the row says generally still runs, and misreports
+some failures. **Newer firmware than the row says is always fine**, because
+the AT surface only ever gains commands.
+
+| Library | Firmware | Notes |
+|---|---|---|
+| 1.0.0 | 1.0.0 | Ships the matching images in `fw/`. |
+| 0.12.1 | 0.12.0 | EVSE stack margin fix; library-only, no firmware change. |
+| 0.12.0 | 0.12.0 | Energy round C2: EVSE and electrical utility meter. |
+| 0.11.0 | 0.11.0 | Thread role and mesh identity. |
+| 0.10.0 | 0.10.1 | Firmware 0.10.1 corrects three ambiguous attribute-write failures that 0.10.0's own classes can hit. |
+
+Ask the board which firmware it is running rather than remembering: the
+version `HearthFirstLight` prints in step 3 comes from
+`Hearth.firmwareVersion()`, which is the C6 answering. It should match
+`version=` in this library's `library.properties`.
+
+## The examples map
+
+**The IDE lists examples alphabetically, and there is no ordering hidden in
+the names.** This table is the map. The `Matter*` sketches at the examples
+root are byte-identical copies of `arduino-esp32`'s own, which is the
+evidence that an unmodified upstream sketch runs here, so they are never
+renamed, renumbered or reordered.
+
+| Example | What it is |
+|---|---|
+| **`HearthFirstLight`** | **Start here.** One on/off light, heavily commented for a first read: what `Matter.begin()` does, why the first boot needs commissioning, what the serial monitor should say. |
+| `MatterOnOffLight`, `MatterDimmableLight`, `MatterTemperatureSensor`, and 16 more at the examples root | One device type each, copied byte-identical from `arduino-esp32`. Copy from these when you want a specific device type. |
+| `MatterDoorLockAdjudicated`, `HearthSensorsAndAppliances` | Hearth originals: several classes composed into something closer to a real device, with an interactive serial menu. |
+| `FullAPI/` (54 sketches) | The deep end: one sketch per endpoint class, exercising every public member it has, with the equivalent `chip-tool` command printed for each observable effect. Reference material, not a starting point. |
+
+The [Examples](#examples) section further down describes each tier in
+detail, including which upstream sketches were copied and why the WiFi
+block in them compiles out here.
+
+## How it works
+
+Your sketch calls `Matter.*` or an endpoint object. This library turns each
+call into an `AT+MT` command, sends it over the UART the board wires
+between the RP2350 and the ESP32-C6, and reads the answer. The Matter stack
+itself, the fabric, the BLE commissioning and the network credentials all
+live on the C6, running the
+[`iLabs_AT_Hearth`](https://github.com/PontusO/iLabs_AT_Hearth) firmware.
+Changes coming the other way (a controller switching your light) arrive as
+unsolicited lines on that UART, which is why
+[`Hearth.poll()`](#driving-the-event-loop) exists.
+
+The class API mirrors `arduino-esp32`'s `Matter` library closely enough
+that an **unmodified** arduino-esp32 Matter sketch builds and runs on a
+Challenger, which is the property the parity examples exist to prove.
 
 ## Hearth and Matter
 
@@ -117,6 +332,9 @@ does define the control pins.
 
 ## Minimal example
 
+The shortest sketch that is a Matter device. For the same thing with every
+step explained, open `HearthFirstLight` (see [Start here](#start-here)).
+
 ```cpp
 #include <Matter.h>
 
@@ -149,7 +367,8 @@ and this rule, calls `Matter.begin()` last, after every endpoint's own
 
 **Do not call `Matter.begin()` from `loop()`.** An earlier version of this
 README suggested it. It is not harmless: on a composition the C6 rejects
-(an unimplemented device type, or more than sixteen endpoints) every call
+(an unimplemented device type, or more endpoints than
+`HEARTH_MAX_ENDPOINTS`, which is 24) every call
 runs a clear, the endpoint writes, an apply and a co-processor reboot, so
 calling it per iteration means unbounded NVS wear on the C6 and a device
 that never finishes booting. The library now latches a failed reconcile for
@@ -1031,7 +1250,7 @@ memory cleared, values not re-sent).
 ### The energy round C1
 
 Three more energy classes (library 0.10.0, firmware 0.10.0, though the
-firmware pairing note above asks for 0.10.1), none with an `arduino-esp32`
+the version table above pairs library 0.10.0 with firmware 0.10.1), none with an `arduino-esp32`
 counterpart, taking the total to fifty-two. The round adds
 one shared helper, `HearthDemControl`, the DeviceEnergyManagement (`0x0098`,
 152) surface: the state pushes on `AT+MTMEAS`'s `0x0098` field table, the
@@ -1109,8 +1328,15 @@ where it does.
 
 ## Examples
 
-`examples/` holds three tiers of sketches, each proving a different thing:
+[The examples map](#the-examples-map) near the top of this README is the
+short version. This section is the long one.
 
+`examples/` holds four tiers of sketches, each proving a different thing:
+
+- **The entry point**, `HearthFirstLight`: one on/off light, Hearth-original,
+  written to be read rather than to prove anything. It is the sketch
+  [Start here](#start-here) walks a first-time user through, and the only
+  one whose comments explain what `Matter.begin()` and commissioning are.
 - **Parity proofs**, at the examples root (documented in the list right
   below): byte-identical copies of `arduino-esp32`'s own Matter example
   sketches. They are the evidence that an unmodified upstream sketch
@@ -1118,8 +1344,8 @@ where it does.
   erase the proof, so this tier stays untouched.
 - **FullAPI references**, one per class under `examples/FullAPI/`
   (documented below, in its own subsection): a sketch that exercises the
-  complete public surface of exactly one `Matter*` endpoint class,
-  fifty-one in total. Each opens with a banner comment listing every public member and
+  complete public surface of exactly one endpoint class, fifty-four
+  folders in all. Each opens with a banner comment listing every public member and
   where the sketch exercises it; the banner is a coverage checklist against
   the class header, not narrative.
 - **Scenario showcases**: `MatterDoorLockAdjudicated` and
@@ -1164,14 +1390,15 @@ Task S4 report for the next two, and its Task C5 report for the last.
   TemperatureLevel example; this copy is the TemperatureNumber one, matching
   the class's default variant)
 
-`examples/MatterDoorLockAdjudicated/` is a twentieth example, and not part
-of the count above: **it is Hearth-original, not copied from upstream.**
+`examples/MatterDoorLockAdjudicated/` is one of the three sketches at the
+examples root that are not part of the count above: **it is
+Hearth-original, not copied from upstream.**
 `MatterDoorLock` has no `arduino-esp32` counterpart, so there is no example
 to copy byte-identical; the sketch header says so. See "Hearth originals"
 above for the class it demonstrates.
 
-`examples/HearthSensorsAndAppliances/` is a twenty-first example, and a
-second Hearth-original: it composes a representative subset of the
+`examples/HearthSensorsAndAppliances/` is the second Hearth-original at the
+root (`HearthFirstLight` is the third): it composes a representative subset of the
 ten-type swoop (`MatterAirQualitySensor`, `MatterPump`,
 `MatterRoomAirConditioner`), `Hearth.poll()`-driven and CDC (`Serial`)
 interactive like `MatterDoorLockAdjudicated`, with no upstream counterpart
@@ -1250,8 +1477,13 @@ Full commands and output for the original three-blocker analysis are in
 
 ### FullAPI references (`examples/FullAPI/`)
 
-One sketch per concrete `Matter*` endpoint class this library implements,
-fifty-one in total, folder name equal to sketch name. The two typed owned
+One sketch per concrete endpoint class this library implements, fifty-four
+folders in all. Folder name equals sketch name throughout, and equals the
+class name except in three places: `HearthEvse` and `HearthUtilityMeter`
+hold the `MatterEvse` and `MatterElectricalUtilityMeter` sketches (named
+for the Hearth-side surface they spend most of their lines on), and
+`MatterCooktopComposed` is a second `MatterCooktop` sketch, the one with
+surfaces attached. The two typed owned
 children have no folder of their own: `MatterOvenCavity` is exercised
 inside `MatterOven`'s sketch and `MatterCookSurface` inside
 `MatterCooktopComposed` (the zero-surface `MatterCooktop` folder is
@@ -1489,6 +1721,13 @@ sequence without any hardware. Hardware verification: the automatic reset
 path and the transport API were verified during C4 end-to-end (2026-07-28)
 and transport smoke tests (2026-08-03). See `HARDWARE-BRINGUP.md` for
 additional commissioning flows and coverage.
+
+**1.0.0** is the first release a newcomer can follow end to end without
+being handed anything privately: the library carries the Hearth firmware
+images and their flasher in [`fw/`](fw/), `HearthFirstLight` is the named
+entry point, and the firmware pairing is a
+[table](#firmware-and-library-versions) rather than a paragraph that has to
+be remembered. The device-type surface is unchanged from 0.12.1.
 
 **0.11.0** adds the Thread role and mesh identity surface (`threadInfo()`/
 `threadRole()`/`onThreadRoleChange()`/`hearthThreadRoleName()`). A review
