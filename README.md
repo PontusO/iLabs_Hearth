@@ -224,7 +224,7 @@ renamed, renumbered or reordered.
 | **`HearthFirstLight`** | **Start here.** One on/off light, heavily commented for a first read: what `Matter.begin()` does, why the first boot needs commissioning, what the serial monitor should say. |
 | `MatterOnOffLight`, `MatterDimmableLight`, `MatterTemperatureSensor`, and 16 more at the examples root | One device type each, copied byte-identical from `arduino-esp32`. Copy from these when you want a specific device type. |
 | `MatterDoorLockAdjudicated`, `HearthSensorsAndAppliances` | Hearth originals: several classes composed into something closer to a real device, with an interactive serial menu. |
-| `FullAPI/` (54 sketches) | The deep end: one sketch per endpoint class, exercising every public member it has, with the equivalent `chip-tool` command printed for each observable effect. Reference material, not a starting point. |
+| `FullAPI/` (54 sketches) | The deep end: one sketch per endpoint class (plus one for the Thread role surface, which belongs to no class), exercising every public member it has, with the equivalent `chip-tool` command printed for each observable effect. Reference material, not a starting point. |
 
 The [Examples](#examples) section further down describes each tier in
 detail, including which upstream sketches were copied and why the WiFi
@@ -1249,7 +1249,7 @@ memory cleared, values not re-sent).
 
 ### The energy round C1
 
-Three more energy classes (library 0.10.0, firmware 0.10.0, though the
+Three more energy classes (library 0.10.0, firmware 0.10.0, though
 the version table above pairs library 0.10.0 with firmware 0.10.1), none with an `arduino-esp32`
 counterpart, taking the total to fifty-two. The round adds
 one shared helper, `HearthDemControl`, the DeviceEnergyManagement (`0x0098`,
@@ -1479,11 +1479,12 @@ Full commands and output for the original three-blocker analysis are in
 
 One sketch per concrete endpoint class this library implements, fifty-four
 folders in all. Folder name equals sketch name throughout, and equals the
-class name except in three places: `HearthEvse` and `HearthUtilityMeter`
-hold the `MatterEvse` and `MatterElectricalUtilityMeter` sketches (named
-for the Hearth-side surface they spend most of their lines on), and
+class name in four places: `HearthEvse` and `HearthUtilityMeter` hold the
+`MatterEvse` and `MatterElectricalUtilityMeter` sketches (named for the
+Hearth-side surface they spend most of their lines on),
 `MatterCooktopComposed` is a second `MatterCooktop` sketch, the one with
-surfaces attached. The two typed owned
+surfaces attached, and `HearthThreadRole` has no class behind it at all
+(see the note at the end of this subsection). The two typed owned
 children have no folder of their own: `MatterOvenCavity` is exercised
 inside `MatterOven`'s sketch and `MatterCookSurface` inside
 `MatterCooktopComposed` (the zero-surface `MatterCooktop` folder is

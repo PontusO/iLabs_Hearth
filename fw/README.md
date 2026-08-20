@@ -43,16 +43,32 @@ it is the active transport or not. So the limit is not one number:
 
 | Image | Active transport | Endpoints of a typical mix | Endpoints of an energy-heavy mix |
 |---|---|---|---|
-| WiFi only | WiFi | 28 (the firmware's own maximum) | 28 |
-| Thread only | Thread | 28 | 28 |
-| WiFi + Thread | Thread | 28 | 28 |
+| WiFi only | WiFi | 24 | 24 |
+| Thread only | Thread | 24 | 24 |
+| WiFi + Thread | Thread | 24 | 24 |
 | **WiFi + Thread** | **WiFi** | **about 20** | **about 12** |
 
-Only one row is constrained: the combined image with WiFi as the active
-transport. Everything else reaches `MT_COMP_MAX_ENDPOINTS`, the firmware's
-own ceiling of 28, with room left over. (This library's own
-`HEARTH_MAX_ENDPOINTS` stops a sketch at 24 before the firmware ever sees
-it. Raise it with `-DHEARTH_MAX_ENDPOINTS=28` if you need the last four.)
+**24 is this library's ceiling, and from the Arduino IDE it is the ceiling
+full stop.** `HEARTH_MAX_ENDPOINTS` (`src/MatterEndPoint.h`) sizes the
+declaration registry at 24, and a sketch cannot declare a 25th: the
+registry refuses it before the C6 is ever asked.
+
+The firmware itself accepts 28 (`MT_COMP_MAX_ENDPOINTS`), and three of the
+four rows above have the heap for it, so the last four endpoints are real.
+They are just not reachable from the IDE. The IDE offers no way to add a
+`-D` to a build: `arduino-pico`'s `platform.txt` has no `build_opt.h` hook
+(the `esp32` core has one, which is why the trick works there), so a
+`build_opt.h` dropped in the sketch folder compiles with the define still
+at 24. Two routes do work, and neither is an IDE route:
+
+```sh
+arduino-cli compile -b rp2040:rp2040:challenger_2350_wifi6_ble5 \
+  --build-property "compiler.cpp.extra_flags=-DHEARTH_MAX_ENDPOINTS=28" \
+  YourSketch
+```
+
+or edit the `#define` in `src/MatterEndPoint.h`. The `--build-property`
+form is verified: it raises the registry and costs 48 bytes of RAM.
 
 **Do not read "about 20" as a number you can just spend.** Endpoints are
 not interchangeable. Measured on this firmware, a simple type (a light, a

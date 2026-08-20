@@ -92,17 +92,31 @@ const uint32_t debounceMs = 250;
 /* So the "not commissioned" reminder prints every few seconds rather than
  * thousands of times a second, and the "commissioned" line prints once. */
 uint32_t lastReminderAt = 0;
-bool wasCommissioned = false;
+uint32_t lastCheckAt = 0;
+bool commissioned = false;
 
 /*
  * The controller calls this. Anything a Matter app does to the light,
  * whether from a phone, a voice assistant or an automation, arrives here
  * as a new state, and the job of this function is to make the hardware
- * match it and say whether that worked.
+ * match it.
  *
- * Returning false tells the controller the change was refused, and the
- * attribute stays at its old value. A real device would return false when
- * it physically cannot do the thing.
+ * WHAT THE RETURN VALUE ACTUALLY DOES, because it is easy to assume more:
+ * by the time this runs the change has ALREADY happened on the C6 and the
+ * controller already believes it. Returning false does not refuse it and
+ * does not revert anything on the wire: the library discards this
+ * function's answer (Hearth.cpp, hearthDispatchAttr(), which calls
+ * attributeChangeCB() and ignores its result). All it changes is one
+ * thing, inside this object: on false, MatterOnOffLight::attributeChangeCB()
+ * skips updating its own cached copy, so getOnOff() keeps reporting the
+ * old value while the device and your app report the new one.
+ *
+ * So return true unless you specifically want that disagreement. To
+ * genuinely reject a state you cannot apply, push the correction back:
+ * record it here, and call light.setOnOff(oldState) from loop()
+ * afterwards. Not from inside this function, which is running inside a
+ * library call, and a nested call into the library is refused rather than
+ * served.
  *
  * IMPORTANT, and different from an ESP32: this runs from inside
  * Hearth.poll() (or any other call into the library), on the same core as
@@ -169,8 +183,17 @@ void setup() {
    * board, and the board variant already knows it. */
   printFirmwareVersion();
 
-  /* Register the callback before begin(), so a state the C6 already holds
-   * from a previous run is delivered rather than missed. */
+  /* Register the callback before begin(). Not because a state the C6
+   * already holds arrives that way, which it does not: any +MTATTR that
+   * lands before Matter.begin() has finished reconciling is deliberately
+   * consumed and dropped, since no endpoint has been given its id yet and
+   * there is nothing to deliver it to (Hearth.cpp, hearthDispatchAttr()'s
+   * header comment spells out why). Register early simply so that the
+   * first change AFTER that point has somewhere to go.
+   *
+   * The C6 holds the authoritative value across a host reboot. If your
+   * sketch cares about it, read it back after Matter.begin() with
+   * light.getOnOff(), or push your own with updateAccessory() as below. */
   light.onChange(onLightChange);
 
   /* begin() declares this endpoint locally. Still nothing on the wire. */
@@ -194,8 +217,8 @@ void setup() {
    */
   Matter.begin();
 
-  wasCommissioned = Matter.isDeviceCommissioned();
-  if (wasCommissioned) {
+  commissioned = Matter.isDeviceCommissioned();
+  if (commissioned) {
     Serial.println("Commissioned. The light is now controllable from your Matter app.");
     /* Push the local state up so the app's view matches the LED. */
     light.updateAccessory();
@@ -218,21 +241,28 @@ void loop() {
    */
   Hearth.poll();
 
-  bool commissioned = Matter.isDeviceCommissioned();
-
-  if (!commissioned) {
-    /* Print the pairing code every five seconds, so a monitor opened
-     * halfway through still gets it. */
-    if (lastReminderAt == 0 || millis() - lastReminderAt > 5000) {
+  /*
+   * Only until it is commissioned, and only once a second even then.
+   * Matter.isDeviceCommissioned() is not a local flag: every call sends
+   * AT+MTFABRICS? and waits for the answer, so asking on every iteration
+   * puts a round trip on the link thousands of times a second for a fact
+   * that changes once in the device's life. Once it is true it stays true
+   * until the device is removed from the fabric, so this stops asking.
+   */
+  if (!commissioned && millis() - lastCheckAt > 1000) {
+    lastCheckAt = millis();
+    commissioned = Matter.isDeviceCommissioned();
+    if (commissioned) {
+      Serial.println();
+      Serial.println("Commissioned. The light is now controllable from your Matter app.");
+      light.updateAccessory();
+    } else if (lastReminderAt == 0 || millis() - lastReminderAt > 5000) {
+      /* Print the pairing code every five seconds, so a monitor opened
+       * halfway through still gets it. */
       lastReminderAt = millis();
       printCommissioningInfo();
     }
-  } else if (!wasCommissioned) {
-    Serial.println();
-    Serial.println("Commissioned. The light is now controllable from your Matter app.");
-    light.updateAccessory();
   }
-  wasCommissioned = commissioned;
 
   /* The BOOTSEL button toggles the light locally. The controller sees the
    * new state, exactly as if the app had made the change itself. */
