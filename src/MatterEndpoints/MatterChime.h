@@ -6,7 +6,7 @@
  * Matter library ships no Chime class at all (see Hearth.h's umbrella
  * comment). There is nothing to mirror an API from, so the public surface
  * below is this port's own design, built directly against the firmware's
- * C6 wire contract (docs/AT_MT_SPEC.md S3.17/S3.23/S3.24) and the task
+ * C6 wire contract (AT_MT_SPEC.md S3.17/S3.23/S3.24) and the task
  * brief's exact signatures.
  *
  * Device type 0x0146 is chime

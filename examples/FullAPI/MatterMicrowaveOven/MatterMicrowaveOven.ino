@@ -6,7 +6,7 @@
  * exercises it. A Hearth-original class: arduino-esp32's Matter library
  * ships no Microwave Oven class at all (see the class header), so this is
  * this port's own design against the firmware's wire contract
- * (docs/AT_MT_SPEC.md S3.9/S3.17/S3.20.1/S3.21), not a mirror of anything
+ * (AT_MT_SPEC.md S3.9/S3.17/S3.20.1/S3.21), not a mirror of anything
  * upstream. One endpoint carries three clusters at once: MicrowaveOvenMode
  * (94), MicrowaveOvenControl (95), and the plain OperationalState (96) this
  * class inherits from MatterOperationalStateEndpoint.

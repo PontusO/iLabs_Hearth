@@ -6,7 +6,7 @@
  * exercises it. A Hearth-original class: arduino-esp32's Matter library
  * ships no Refrigerator class at all (see the class header), so this is
  * this port's own design against the firmware's wire contract
- * (docs/AT_MT_SPEC.md S3.9/S3.17/S3.20.1/S3.22), not a mirror of anything
+ * (AT_MT_SPEC.md S3.9/S3.17/S3.20.1/S3.22), not a mirror of anything
  * upstream. The first COMPOSED appliance in this library: one fridge parent
  * endpoint (0x0070, RefrigeratorAndTemperatureControlledCabinetMode 82 +
  * RefrigeratorAlarm 87) owning two Temperature Controlled Cabinet child

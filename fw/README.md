@@ -70,6 +70,20 @@ arduino-cli compile -b rp2040:rp2040:challenger_2350_wifi6_ble5 \
 or edit the `#define` in `src/MatterEndPoint.h`. The `--build-property`
 form is verified: it raises the registry and costs 48 bytes of RAM.
 
+**If you take either route, do not leave a composition larger than 24 on the
+C6 when you go back to a stock build.** The composition lives in the C6's NVS
+and survives a reflash and a reboot, and the reconcile that runs at
+`Matter.begin()` reads at most `HEARTH_MAX_ENDPOINTS` lines of the C6's
+`AT+MTEP?` reply. Come back to a 24-endpoint build with 28 endpoints still
+stored and the reply is truncated to its first 24 with no error: if those 24
+match what the sketch declares, the reconcile concludes the composition is
+already correct and the last four endpoints stay live on the fabric, owned by
+no object in the sketch. Nothing warns you. Clear the stored composition
+first, with `Hearth.hearthCommand("AT+MTFRESET");` from a sketch (this also
+erases the fabric, so the device must be commissioned again), or declare the
+smaller composition once from a build that is still at 28, which makes the
+counts differ and the reconcile rebuild properly.
+
 **Do not read "about 20" as a number you can just spend.** Endpoints are
 not interchangeable. Measured on this firmware, a simple type (a light, a
 sensor, a switch) costs about **1,166 bytes** and an energy type (electrical
@@ -380,10 +394,24 @@ firmware version, so it is worth checking directly:
 python3 -c "print(open('fw/images/wifi/hearth-wifi-1.0.0.bin','rb').read()[48:80].split(b'\0')[0].decode())"
 ```
 
-The shipped images answer `0.12.0-9-g2bad13e`: a real commit, with no `-dirty`
-suffix. A `-dirty` suffix would mean the image came from a tree with
+The shipped images answer `0.12.0-11-gdf9d168`: a real commit, with no
+`-dirty` suffix. A `-dirty` suffix would mean the image came from a tree with
 uncommitted changes and cannot be tied to any commit, which is a thing worth
 noticing before shipping rather than after a field failure.
+
+**That string names an older-looking commit than the release, and it is
+meant to.** These are the exact bytes the 1.0.0 bench qualified: `df9d168` is
+a real commit in the 1.0.0 history (`git merge-base --is-ancestor df9d168
+1.0.0` passes) and the nine committed regression baselines record the same
+commit as their `fw_repo_head`, so the evidence and the artifact name one
+build. Nothing in the firmware source changed between that commit and the
+`1.0.0` tag: the diff touches only the firmware `README.md` and those
+baseline files, so rebuilding from the tag yields the same firmware with a
+descriptor reading `1.0.0` and a fresh timestamp, and its hash will **not**
+match `manifest.json`. Either way `AT+CGMR` answers `1.0.0` on all three
+images, verified on hardware. So the older-looking descriptor is the reason
+to trust these binaries rather than to doubt them: shipping a rebuilt image
+would have meant shipping bytes nobody tested.
 
 ## Licences
 

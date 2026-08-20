@@ -7,7 +7,7 @@
  * Oven class at all (see Hearth.h's umbrella comment). There is nothing to
  * mirror an API from, so the public surface below is this port's own
  * design, built directly against the firmware's wire contract
- * (docs/AT_MT_SPEC.md S3.9/S3.17/S3.20.1/S3.21) and the task brief's own
+ * (AT_MT_SPEC.md S3.9/S3.17/S3.20.1/S3.21) and the task brief's own
  * interface sketch.
  *
  * Device type 0x0079 is microwave_oven

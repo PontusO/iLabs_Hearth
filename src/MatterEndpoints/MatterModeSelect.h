@@ -6,7 +6,7 @@
  * class at all (see Hearth.h's umbrella comment). There is nothing to
  * mirror an API from, so the public surface below is this port's own
  * design, built directly against the firmware's C3 wire contract
- * (docs/AT_MT_SPEC.md S3.20) and the task brief's exact signatures.
+ * (AT_MT_SPEC.md S3.20) and the task brief's exact signatures.
  *
  * Device type 0x0027 is mode_select
  * (esp_matter_endpoint.h's ESP_MATTER_MODE_SELECT_DEVICE_TYPE_ID,

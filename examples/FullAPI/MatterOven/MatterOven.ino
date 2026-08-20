@@ -5,7 +5,7 @@
  * the coverage checklist: every public member, and where this sketch
  * exercises it. Hearth-original classes: arduino-esp32's Matter library
  * ships no Oven class at all (see the class headers), so this is this
- * port's own design against the firmware's wire contract (docs/AT_MT_SPEC.md
+ * port's own design against the firmware's wire contract (AT_MT_SPEC.md
  * S3.9/S3.17/S3.20.1/S3.21), not a mirror of anything upstream. The second
  * COMPOSED appliance in this library, and the first with a TYPED child: the
  * oven parent endpoint (0x007B) is BARE by design (Descriptor + Identify,

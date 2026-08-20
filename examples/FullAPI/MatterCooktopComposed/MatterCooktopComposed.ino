@@ -8,8 +8,8 @@
  * demonstrated by examples/FullAPI/MatterCooktop, unchanged; this sketch
  * covers what composition adds. Hearth-original classes: arduino-esp32's
  * Matter library ships neither (see the class headers), so this is this
- * port's own design against the firmware's wire contract (docs/
- * AT_MT_SPEC.md S3.9's 0x0077 note).
+ * port's own design against the firmware's wire contract (AT_MT_SPEC.md
+ * S3.9's 0x0077 note).
  *
  *   CabinetFlavour_t:  NUMBER=0 (TemperatureNumber)  LEVELS=1 (TemperatureLevel)
  *

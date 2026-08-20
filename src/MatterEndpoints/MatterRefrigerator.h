@@ -10,7 +10,7 @@
  * NO arduino-esp32 counterpart: upstream's Matter library ships no
  * Refrigerator class at all (see Hearth.h's umbrella comment). The public
  * surface below is this port's own design, built directly against the
- * firmware's wire contract (docs/AT_MT_SPEC.md S3.9/S3.17/S3.20.1/S3.22)
+ * firmware's wire contract (AT_MT_SPEC.md S3.9/S3.17/S3.20.1/S3.22)
  * and the task brief's interface sketch.
  *
  * Device type 0x0070 is refrigerator (esp_matter_endpoint.h's

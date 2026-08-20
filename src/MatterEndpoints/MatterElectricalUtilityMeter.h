@@ -5,7 +5,7 @@
  * umbrella comment), so the public surface below is this port's own design
  * against the firmware's wire contract (main/mt_meter.cpp, main/mt_at.c's
  * cmd_mtmeterid, main/include/mt_matter.h's mt_meter_identity_t) and the
- * round's design spec section 6 and 7.3. `docs/AT_MT_SPEC.md` does not
+ * round's design spec section 6 and 7.3. `AT_MT_SPEC.md` does not
  * describe AT+MTMETERID yet (Task 14 owns that); every wire fact cited here
  * was verified directly against the firmware source, not transcribed from a
  * document.

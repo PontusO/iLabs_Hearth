@@ -278,8 +278,14 @@ and [the limitations](#limitations).
 The library and the firmware are released together and are tested as a
 pair. The pairing is about honest failure reporting rather than features:
 an older firmware than the row says generally still runs, and misreports
-some failures. **Newer firmware than the row says is always fine**, because
-the AT surface only ever gains commands.
+some failures. **Run the pair a row names, and nothing else is promised.**
+1.0.0 is a feature-completeness milestone, not a stability contract: the
+`AT+MT` wire surface is not frozen by it, and a newer firmware is not
+guaranteed to be a superset of an older one. The surface has already both
+removed and changed things (`+MTCOMMISSION:STARTED`/`:COMPLETE`/`:FAILED`
+were removed in phase C3, and several commands have changed which error
+code they answer with), so a mismatched pair is a combination nobody tested
+rather than a combination known to work.
 
 | Library | Firmware | Notes |
 |---|---|---|
@@ -357,8 +363,18 @@ source:
 
 The full design rationale, including why this diverges from the sibling
 `iLabs_ESP-NOW` host library (which has no such split, because `ESP_NOW`
-carries no trademark), is recorded in `iLabs_AT_Hearth`'s
-`docs/superpowers/specs/2026-07-27-c4-host-library-naming-design.md`.
+carries no trademark), is recorded in
+`superpowers/specs/2026-07-27-c4-host-library-naming-design.md`, in the
+private `iLabs_Hearth_docs` repository.
+
+That repository is where every document this library cites lives:
+`AT_MT_SPEC.md` (the AT wire contract, and the authority for anything this
+README says about the firmware), `ARCHITECTURE.md`, `TESTING.md` and the
+design specs and plans. Comments in `src/` and in the examples cite them by
+name and section, for example `AT_MT_SPEC.md` §3.9, and resolve there rather
+than against any path in this repository or the firmware's. It is private,
+and it is tagged with the same version as each release, so the documents
+matching a given library are a checkout rather than a guess.
 
 ## Wiring
 
@@ -404,8 +420,8 @@ A sketch that wants one can drive `AT+MTBAUD` through
 `Hearth.hearthCommand()` and restart the host UART itself.
 
 Hardware flow control is not available: no C6 board routes RTS/CTS, so
-`AT+MTFLOW` accepts only mode `0`. See §3.14 of `docs/AT_MT_SPEC.md` in the
-firmware repo.
+`AT+MTFLOW` accepts only mode `0`. See `AT_MT_SPEC.md` §3.14, in the private
+`iLabs_Hearth_docs` repository.
 
 `Hearth.begin(stream)` remains as an escape hatch for a bench rig that puts
 something else in the middle. The caller then owns that stream completely:
@@ -449,10 +465,11 @@ and this rule, calls `Matter.begin()` last, after every endpoint's own
 `begin()`.
 
 **Do not call `Matter.begin()` from `loop()`.** An earlier version of this
-README suggested it. It is not harmless: on a composition the C6 rejects
-(an unimplemented device type, or more endpoints than
-`HEARTH_MAX_ENDPOINTS`, which is 24) every call
-runs a clear, the endpoint writes, an apply and a co-processor reboot, so
+README suggested it. It is not harmless: on a composition that is refused
+(an unimplemented device type, which the C6 rejects, or more endpoints than
+`HEARTH_MAX_ENDPOINTS`, which is 24 and is refused by this library's
+registry before the C6 is ever asked: the firmware itself accepts 28) every
+call runs a clear, the endpoint writes, an apply and a co-processor reboot, so
 calling it per iteration means unbounded NVS wear on the C6 and a device
 that never finishes booting. The library now latches a failed reconcile for
 the rest of the boot, so a stray repeat call is bounded rather than
@@ -730,8 +747,8 @@ none.
 ## Supported device types
 
 All twenty of arduino-esp32's `Matter*` endpoint classes exist today,
-matching the firmware's own device type table (`iLabs_AT_Hearth`'s
-`docs/AT_MT_SPEC.md`, "Supported device types"). These twenty classes resolve
+matching the firmware's own device type table (`AT_MT_SPEC.md` §3.9,
+"Supported device types"). These twenty classes resolve
 to nineteen device type IDs, as `MatterColorLight` and `MatterEnhancedColorLight`
 both address the same `0x010D` wire endpoint:
 
@@ -1011,8 +1028,8 @@ two carry real surface design of their own (C4):
 Eight more classes, none with an `arduino-esp32` counterpart (Tasks C7-C8),
 join `MatterDoorLock` and the ten-type swoop in this section rather than
 the parity table above, which stays at 20/20. The firmware's own device
-type table (`iLabs_AT_Hearth`'s `docs/AT_MT_SPEC.md`, "Supported device
-types") listed 38 rows at this point; this batch supplied the last eight of
+type table (`AT_MT_SPEC.md` §3.9, "Supported device types") listed 38 rows
+at this point; this batch supplied the last eight of
 them at the time, taking this section's own class count to nineteen
 (`MatterDoorLock`, the ten-type swoop's ten, and these eight).
 
@@ -1116,9 +1133,9 @@ the controller observes, the same shape as the door lock and the chime.
 
 Two more classes, neither with an `arduino-esp32` counterpart (Tasks 7-8),
 join the sections above rather than the parity table, which stays at 20/20.
-The firmware's own device type table (`iLabs_AT_Hearth`'s
-`docs/AT_MT_SPEC.md`, "Supported device types") now lists 40 rows; this
-batch supplies the last two of them, taking this section's own class count
+The firmware's own device type table (`AT_MT_SPEC.md` §3.9, "Supported
+device types") listed 40 rows at this point; this batch supplied the last
+two of them, taking this section's own class count
 to twenty-one (`MatterDoorLock`, the ten-type swoop's ten, the seven-type
 batch's eight, and these two) and the library's total public `Matter*`
 endpoint class count to forty-one: twenty parity classes plus twenty-one
@@ -1254,8 +1271,7 @@ identical.
 Two measurement-push classes (library 0.8.0, firmware 0.8.0), neither with
 an `arduino-esp32` counterpart, taking the library's total public `Matter*`
 endpoint class count to forty-seven. Both push electrical readings up to
-the fabric over `AT+MTMEAS` (`iLabs_AT_Hearth`'s `docs/AT_MT_SPEC.md`
-S3.25), riding the 64-bit value pipeline this round added: every value is
+the fabric over `AT+MTMEAS` (`AT_MT_SPEC.md` §3.25), riding the 64-bit value pipeline this round added: every value is
 full-width `int64_t`/`uint64_t` end to end, host cache to wire grammar.
 
 - `MatterElectricalSensor` (`0x0510`): `ElectricalPowerMeasurement`
@@ -1783,7 +1799,7 @@ one.
   integers, verified directly against connectedhomeip's zap-generated
   headers rather than against either `esp_matter` revision's namespace
   names, and the firmware independently confirms all three device types on
-  the wire (`docs/AT_MT_SPEC.md`). The underlying
+  the wire (`AT_MT_SPEC.md` §3.9). The underlying
   question this bullet is really about is still open: a host library whose
   class surface is fixed to one `esp_matter` revision, talking to firmware
   pinned to a different one, means a future core or SDK bump can silently
@@ -1793,9 +1809,9 @@ one.
   mechanism (host class names are frozen to arduino-esp32's surface
   regardless of what any `esp_matter` revision calls the underlying
   namespace; the mapping becomes a versioned table), but not the
-  revision-drift question itself. See `iLabs_AT_Hearth`'s
-  `docs/superpowers/specs/2026-07-26-at-mt-full-api-design.md` §6.3 for the
-  full namespace table.
+  revision-drift question itself. See
+  `superpowers/specs/2026-07-26-at-mt-full-api-design.md` §6.3, in the
+  private `iLabs_Hearth_docs` repository, for the full namespace table.
 
 ## Status
 

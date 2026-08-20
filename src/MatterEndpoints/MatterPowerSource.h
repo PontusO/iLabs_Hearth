@@ -6,7 +6,7 @@
  * Source class at all (see Hearth.h's umbrella comment). There is nothing
  * to mirror an API from, so the public surface below is this port's own
  * design, built directly against the firmware's C5 wire contract
- * (docs/AT_MT_SPEC.md S3.9) and the task brief's exact signatures.
+ * (AT_MT_SPEC.md S3.9) and the task brief's exact signatures.
  *
  * Device type 0x0011 is power_source
  * (esp_matter_endpoint.h's ESP_MATTER_POWER_SOURCE_DEVICE_TYPE_ID,

@@ -5,7 +5,7 @@
  * upstream's Matter library ships no water valve class at all (see Hearth.h's
  * umbrella comment). There is nothing to mirror an API from, so the public
  * surface below is this port's own design, built directly against the
- * firmware's C2 wire contract (docs/AT_MT_SPEC.md S3.17/S3.19) and the task
+ * firmware's C2 wire contract (AT_MT_SPEC.md S3.17/S3.19) and the task
  * brief's exact signatures.
  *
  * Device type 0x0042 is water_valve

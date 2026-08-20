@@ -3,7 +3,7 @@
  * endpoint, device type 0x0018. A Hearth original: arduino-esp32's Matter
  * library ships no battery storage class at all (see Hearth.h's umbrella
  * comment), so the public surface below is this port's own design against
- * the firmware's wire contract (docs/AT_MT_SPEC.md
+ * the firmware's wire contract (AT_MT_SPEC.md
  * S3.9/S3.17/S3.25/S3.26) and the round's design spec 4.2.
  *
  * Device type 0x0018 is battery_storage

@@ -6,7 +6,7 @@
  * Like every Hearth-original class this has NO arduino-esp32 counterpart
  * (see Hearth.h's umbrella comment): upstream's Matter library ships no
  * cook surface class at all. The public surface below is this port's own
- * design against the firmware's wire contract (docs/AT_MT_SPEC.md S3.9's
+ * design against the firmware's wire contract (AT_MT_SPEC.md S3.9's
  * 0x0077 note) and the task brief's interface sketch.
  *
  * Device type 0x0077 is cook_surface (esp_matter_endpoint.h's

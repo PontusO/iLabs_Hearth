@@ -9,7 +9,7 @@
  * (both begin() overloads, every setter/getter, attributeChangeCB), with one
  * addition (setSupportedTemperatureLevelLabels(), a Hearth-only extension,
  * documented below) and the internals rebuilt for this port rather than
- * transcribed, per docs/superpowers/specs/2026-08-05-cabinet-templevels-design.md
+ * transcribed, per superpowers/specs/2026-08-05-cabinet-templevels-design.md
  * S2: upstream's bundled esp-matter differs structurally (its own
  * TemperatureControl config/attribute helpers are not what this firmware's
  * pinned esp-matter 21aa3d1 exposes), so only its API is a porting

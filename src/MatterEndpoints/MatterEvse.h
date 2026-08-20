@@ -6,7 +6,7 @@
  * (main/mt_evse.cpp, main/mt_at.c's cmd_mtrow* family, main/include/
  * mt_matter.h's MT_EVSE_F_* table) and the round's design spec sections 2
  * and 5.5. Every wire fact cited here was verified directly against the
- * firmware source, not transcribed from a document. `docs/AT_MT_SPEC.md`
+ * firmware source, not transcribed from a document. `AT_MT_SPEC.md`
  * now describes EnergyEvse extensively (Task 14 shipped it: the AT+MTROW
  * family, the AT+MTMEAS 0x0099 field table, the +MTCMD forward shapes), so
  * it is a second, authoritative source to check against, not the absence

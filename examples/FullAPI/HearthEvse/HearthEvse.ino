@@ -6,7 +6,7 @@
  * exercises it. A Hearth original: arduino-esp32's Matter library ships no
  * EVSE class at all (see the class header), so this is this port's own
  * design against the firmware's wire contract (energy round C2,
- * main/mt_evse.cpp / main/mt_at.c; docs/AT_MT_SPEC.md does not describe
+ * main/mt_evse.cpp / main/mt_at.c; AT_MT_SPEC.md does not describe
  * EnergyEvse yet, Task 14 owns that).
  *
  *   Variant_t:              FULL=0 (SOC feature: every charging target

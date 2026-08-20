@@ -7,7 +7,7 @@
  * meter-identity class at all (see the class header), so this is this
  * port's own design against the firmware's AT+MTMETERID wire contract
  * (energy round C2, main/mt_meter.cpp / main/mt_at.c's cmd_mtmeterid;
- * docs/AT_MT_SPEC.md does not describe it yet, Task 14 owns that).
+ * AT_MT_SPEC.md does not describe it yet, Task 14 owns that).
  *
  *   MatterElectricalUtilityMeter() global object below
  *   begin()                setup(), before Matter.begin(); declares only,

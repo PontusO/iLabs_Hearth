@@ -21,7 +21,7 @@
  * OperationalState-backed appliance class at all (see Hearth.h's umbrella
  * comment). There is nothing to mirror an API from, so the public surface
  * below is this port's own design, built directly against the firmware's
- * C4 wire contract (docs/AT_MT_SPEC.md S3.17/S3.21) and the task brief's
+ * C4 wire contract (AT_MT_SPEC.md S3.17/S3.21) and the task brief's
  * exact signatures.
  *
  * Cluster 0x0060 (96) is OperationalState (connectedhomeip's zap-generated
