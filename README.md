@@ -13,8 +13,12 @@ library ships the firmware images and a flasher in [`fw/`](fw/), so you
 never build the firmware yourself.
 
 **Never used it before? [Start here](#start-here).** It goes from a board
-in a drawer to a light you can switch from your phone, and takes about
-half an hour, most of it waiting for downloads.
+in a drawer to a light you can switch from your phone. The board half is
+about half an hour, most of it waiting for downloads. The other half is
+getting a Matter controller to adopt it with, and that ranges from minutes
+(an Android app) to an evening (building the CLI `chip-tool` from the
+Matter SDK), so [step 4](#4-commission-it) is worth reading before you
+start rather than when you get there.
 
 Already know your way around? [Firmware and library
 versions](#firmware-and-library-versions), [the examples
@@ -33,7 +37,7 @@ reference sections: the [event loop](#driving-the-event-loop), the
 | **Arduino IDE** | 2.x, from arduino.cc. |
 | **The arduino-pico core** | "Raspberry Pi Pico/RP2040/RP2350" by Earle F. Philhower, III. Paste its index URL into **File > Preferences > Additional boards manager URLs**, then install it from **Boards Manager**: `https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json`. This release is verified against core 5.5.1 and 6.0.0. |
 | **Python 3** | Only to flash the co-processor, once per board (step 2). The flasher runs on Linux and macOS; on Windows one of its two stages has to be done by hand, see [`fw/README.md`](fw/README.md). |
-| **A Matter controller** | NXP's `chip-tool` app for Android or iOS is the one verified against this firmware, and the CLI `chip-tool` also works. **Read the note under step 4 before reaching for Apple Home, Google Home or Alexa**, which are expected to refuse an uncertified device. |
+| **A Matter controller** | Not optional and not a free choice: an uncertified device is refused by most consumer hubs. The **NXP Matter Chip-tool** Android app is verified against this firmware and takes minutes to install; the CLI `chip-tool` also works and takes hours to build. Step 4 has the table, the links and the honest costs. Settle this before you start if you can. |
 | **A network** | WiFi in almost every case. Thread works too and needs a border router; step 2 is where you choose. |
 
 You do not need an ESP-IDF toolchain, an esp-matter checkout, or any
@@ -65,26 +69,14 @@ your sketch, and the ESP32-C6 next to it is a co-processor. Matter runs on
 the C6, and it needs the Hearth firmware before any sketch can do
 anything. A board fresh out of its bag is not running it.
 
-The images and the flasher live in this library, in [`fw/`](fw/). Plug the
-board in, then run the flasher from the library's own directory (the
-sketchbook path is whatever **File > Preferences** shows):
-
-```sh
-cd ~/Arduino/libraries/iLabs_Hearth
-python3 fw/flash.py
-```
-
-It offers three variants and **1, WiFi only, is the one to choose unless
-you know you want Thread.** It then reboots the board into a USB-to-serial
-bridge and writes the firmware to the C6 over it, with a progress bar.
-
-One prerequisite, and the flasher refuses to start without it rather than
-half-flashing a board: the **iLabs fork of esptool**. Stock
-`pip install esptool` cannot flash these boards, and no newer release of it
-can either. The C6 has no USB of its own, so the reset lines esptool
-toggles reach it only through the RP2350, and only the fork knows how to
-drive that. Clone it, install its dependencies, and tell the flasher where
-it is:
+The images and the flasher live in this library, in [`fw/`](fw/). The
+flasher has one prerequisite, and it refuses to start without it rather
+than half-flashing a board, so install that first: the **iLabs fork of
+esptool**. Stock `pip install esptool` cannot flash these boards, and no
+newer release of it can either. The C6 has no USB of its own, so the reset
+lines esptool toggles reach it only through the RP2350, and only the fork
+knows how to drive that. Clone it, install its dependencies, and tell the
+flasher where it is:
 
 ```sh
 git clone https://github.com/PontusO/esptool ~/bin/esptool
@@ -92,9 +84,25 @@ pip install -e ~/bin/esptool
 export ILABS_ESPTOOL_PATH=~/bin/esptool
 ```
 
-`python3 fw/flash.py --list` checks that much on its own and prints the
-variant menu without touching the board, which is a good thing to run
-first.
+Now check that much without touching the board. From the library's own
+directory (the sketchbook path is whatever **File > Preferences** shows):
+
+```sh
+cd ~/Arduino/libraries/iLabs_Hearth
+python3 fw/flash.py --list
+```
+
+It should answer `esptool fork OK` and print the three variants. Then plug
+the board in and flash it:
+
+```sh
+python3 fw/flash.py
+```
+
+It offers the same three variants and **1, WiFi only, is the one to choose
+unless you know you want Thread.** It then reboots the board into a
+USB-to-serial bridge and writes the firmware to the C6 over it, with a
+progress bar.
 
 **[`fw/README.md`](fw/README.md) is the full account**: the prerequisites,
 what each variant is for, how many endpoints each one carries, every
@@ -171,29 +179,66 @@ Two consequences worth knowing before you leave a board switched on:
 
 ### 4. Commission it
 
-**Which app, and why it matters.** This firmware is uncertified and uses
-Matter's public development credentials (vendor ID `0xFFF1`, the test
-attestation certificates that ship with the SDK). Apple Home, Google Home
-and Alexa are entitled to refuse a device presenting those, and are
-expected to, either outright or behind an uncertified-accessory warning.
-That is what every Matter project looks like before its vendor pays for
-certification, not a defect in this firmware.
+**You need a Matter controller, and which one is not a free choice.** This
+firmware is uncertified and uses Matter's public development credentials
+(vendor ID `0xFFF1`, the test attestation certificates that ship with the
+SDK). A controller is entitled to refuse a device presenting those, and the
+big consumer hubs are expected to, either outright or behind an
+uncertified-accessory warning. That is what every Matter project looks like
+before its vendor pays for certification, not a defect in this firmware.
 
-**Use NXP's `chip-tool` app** (Android and iOS), which is the commissioner
-this project verifies against, or the CLI `chip-tool` from
-connectedhomeip. A consumer hub refusing the device is not a bug worth
-debugging.
+| Controller | Status | How to get it |
+|---|---|---|
+| **NXP Matter Chip-tool** (Android) | **Verified against this firmware**, 2026-07-28: commissioned a Challenger over BLE, the C6 joined WiFi, and the light was driven from the controller. Android only, no iOS build. | [Google Play](https://play.google.com/store/apps/details?id=com.verik.mattercontrol). Minutes. |
+| **`chip-tool`, the CLI** (Linux, macOS) | **Verified**: every regression baseline in this project was recorded by driving `chip-tool` against a Challenger. | Built from source, see below. Hours. |
+| Apple Home, Google Home, Alexa | **Expected to refuse** the development credentials. Not a bug worth debugging. | n/a |
+| Anything else, including Home Assistant's Matter integration | **Untested here.** Not known to fail, simply no evidence either way. | n/a |
 
-Open the QR code URL in a browser (it renders the code your phone will
-scan), then in your Matter app choose to add a device and scan it. Type
-the manual pairing code instead if the app offers that. Commissioning runs
-over Bluetooth LE and takes a minute or two; the app hands your WiFi
-credentials to the C6 as part of it, so the sketch never sees a password.
+**If you want the CLI `chip-tool`, know what you are agreeing to.** It is
+built from the Matter SDK, which means a multi-gigabyte `connectedhomeip`
+checkout with submodules, a toolchain bootstrap, and a build measured in
+tens of minutes to hours, plus a working BlueZ Bluetooth stack for the BLE
+commissioning. Upstream documents it and this README will not duplicate it:
+[Working with the CHIP
+Tool](https://github.com/project-chip/connectedhomeip/blob/master/docs/development_controllers/chip-tool/chip_tool_guide.md)
+for the tool, and
+[BUILDING.md](https://github.com/project-chip/connectedhomeip/blob/master/docs/guides/BUILDING.md)
+for the prerequisites underneath it. (That guide also mentions an Ubuntu
+snap as an alternative to building; this project has not used it.)
 
-When it finishes, the serial monitor says so, and the switch in your app
-drives the board's LED. The board's **BOOTSEL** button toggles the same
-light from this end and the app follows along, which is the two-way path
-working.
+Two shortcuts worth knowing. **If you have esp-matter installed**, for the
+firmware or for anything else, you already have the SDK: `chip-tool` builds
+out of the `connectedhomeip` tree inside it, no second clone. And **build
+it from the revision your device's stack matches** where you can, which for
+this firmware is what `esp-matter release/v1.5` pins; upstream's own guide
+gives the same advice, because a controller and a device from distant
+revisions can disagree.
+
+**Then commission it.** With the app: open the QR code URL (it renders the
+code your phone will scan), then in your Matter app choose to add a device
+and scan it. Type the manual pairing code instead if the app offers that.
+Commissioning runs over Bluetooth LE and takes a minute or two; the app
+hands your WiFi credentials to the C6 as part of it, so the sketch never
+sees a password.
+
+With the CLI, the pairing command carries the credentials rather than
+scanning them, and they are the fixed development pair from step 3
+(passcode `20202021`, discriminator `3840`). The node id is yours to
+choose:
+
+```sh
+chip-tool pairing ble-wifi 0x1234 "<your-ssid>" "<your-psk>" 20202021 3840
+chip-tool onoff toggle 0x1234 1          # the light, endpoint 1
+```
+
+(On Thread it is `pairing ble-thread 0x1234 hex:<operational-dataset>
+20202021 3840`. Treat that dataset as a credential: it contains the network
+key.)
+
+When it finishes, the serial monitor says so, and the switch in your app or
+your `chip-tool` command drives the board's LED. The board's **BOOTSEL**
+button toggles the same light from this end and the controller follows
+along, which is the two-way path working.
 
 Commissioning happens once. Every later boot goes straight to
 "Commissioned".

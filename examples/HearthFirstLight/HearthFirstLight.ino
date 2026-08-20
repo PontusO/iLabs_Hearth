@@ -33,11 +33,12 @@
  * C6 your WiFi (or Thread) credentials as part of it, so nothing in this
  * sketch ever sees a password. It takes a minute or two.
  *
- * WHICH APP: this firmware is uncertified and uses Matter's public
+ * WHICH CONTROLLER: this firmware is uncertified and uses Matter's public
  * development credentials, which Apple Home, Google Home and Alexa are
- * entitled to refuse and are expected to. NXP's chip-tool app for Android
- * and iOS is the commissioner this project verifies against; the CLI
- * chip-tool works too.
+ * entitled to refuse and are expected to. Two are verified against it: the
+ * "NXP Matter Chip-tool" app on Android (minutes to install, no iOS
+ * build), and the CLI chip-tool from the Matter SDK (hours to build). The
+ * README's step 4 has both links and the honest costs.
  *
  * THE PAIRING WINDOW LASTS 15 MINUTES from boot. Nothing here can tell
  * that it has closed, so the reminder below keeps printing the same code
