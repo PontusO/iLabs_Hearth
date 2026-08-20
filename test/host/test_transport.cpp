@@ -74,6 +74,11 @@ int main() {
   test_transport_query_steady();
   test_transport_query_pending_switch();
   test_transport_query_not_supported();
-  printf("TOTAL: %d pass, %d fail\n", g_pass, g_fail);
+  /* The same banner every other binary in this suite prints. It used to be
+     "TOTAL: %d pass, %d fail", which is why the 1.0.0 review found the suite
+     total reported as 4701 instead of 4716: a sum over the banner format
+     could not see this one binary. One format, and `make count` now aborts
+     on any binary that does not print it. */
+  printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

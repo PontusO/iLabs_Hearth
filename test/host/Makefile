@@ -339,7 +339,33 @@ test_utilitymeter: test_utilitymeter.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth
 run: all
 	@for t in $(TESTS); do ./$$t || exit 1; done
 
+# The suite total, counted by the suite itself rather than by a grep typed
+# from memory. The 1.0.0 final review found both tag messages claiming 4701
+# checks where the real figure is 4716: test_transport printed a summary in
+# a different format, and summing the "===== RESULT:" banner alone could not
+# see it. It reported a smaller number and no error, which is this project's
+# recurring defect (a check whose input can never arrive passes forever).
+#
+# So this target ABORTS on any binary that does not print exactly one
+# recognised banner. A new test file with a hand-rolled summary line fails
+# the count loudly instead of being silently omitted from it.
+count: all
+	@total=0; failed=0; bins=0; \
+	for t in $(TESTS); do \
+	  line=`./$$t | sed -n 's/^===== RESULT: \([0-9][0-9]*\) passed, \([0-9][0-9]*\) failed =====$$/\1 \2/p'`; \
+	  n=`printf '%s\n' "$$line" | wc -l`; \
+	  if [ -z "$$line" ] || [ "$$n" != "1" ]; then \
+	    echo "count: $$t did not print exactly one '===== RESULT: N passed, M failed =====' line"; \
+	    exit 1; \
+	  fi; \
+	  p=`printf '%s\n' "$$line" | cut -d' ' -f1`; \
+	  f=`printf '%s\n' "$$line" | cut -d' ' -f2`; \
+	  total=`expr $$total + $$p`; failed=`expr $$failed + $$f`; bins=`expr $$bins + 1`; \
+	done; \
+	echo "SUITE TOTAL: $$total passed, $$failed failed across $$bins binaries"; \
+	[ "$$failed" = "0" ]
+
 clean:
 	rm -f $(TESTS)
 
-.PHONY: all run clean
+.PHONY: all run count clean
