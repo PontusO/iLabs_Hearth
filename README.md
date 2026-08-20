@@ -116,6 +116,22 @@ In the IDE:
    release BOOTSEL, and upload again.
 4. Open **Tools > Serial Monitor** and set it to **115200 baud**.
 
+**If you work from the command line instead**, the board's FQBN is
+`rp2040:rp2040:challenger_2350_wifi6_ble5`. It is the same string the
+[endpoint ceiling](fw/README.md#how-many-endpoints-fit) section needs, so
+it is worth keeping:
+
+```sh
+cd ~/Arduino/libraries/iLabs_Hearth
+arduino-cli compile -b rp2040:rp2040:challenger_2350_wifi6_ble5 examples/HearthFirstLight
+arduino-cli upload  -b rp2040:rp2040:challenger_2350_wifi6_ble5 -p <port> examples/HearthFirstLight
+arduino-cli monitor -p <port> -c baudrate=115200
+```
+
+`arduino-cli board list` names the port. Prefer its stable
+`/dev/serial/by-id/usb-iLabs_Challenger_...-if00` form over `/dev/ttyACM0`,
+which is only whichever device enumerated first.
+
 You should see:
 
 ```
@@ -128,9 +144,30 @@ Not commissioned yet. Add this device in your Matter app.
   QR code URL:         https://project-chip.github.io/connectedhomeip/qrcode.html?data=MT:Y.K9042C00KA0648G00
 ```
 
-The two codes are your own board's. That is a working device: "not
-commissioned" is the normal state of a Matter accessory nobody has adopted
-yet.
+That is a working device. "Not commissioned" is the normal state of a
+Matter accessory nobody has adopted yet.
+
+**Those two codes will match the ones printed above exactly, and that is
+correct.** They are not a screenshot and not a sign of a bad flash. This
+development build carries the SDK's fixed test credentials, discriminator
+`3840` and setup passcode `20202021` (vendor ID `0xFFF1`), so **every board
+running this firmware prints the same pairing code and the same QR
+payload**. A production Matter device gets a per-device passcode and
+per-device attestation certificates provisioned at manufacture; this one
+deliberately does not, which is the same fact that makes consumer hubs
+refuse it in step 4.
+
+Two consequences worth knowing before you leave a board switched on:
+
+- **The pairing code is not a secret.** It is published in the Matter SDK.
+  Anyone in Bluetooth range can commission a board that is sitting there
+  advertising, for as long as its 15 minute window is open. A board that
+  has been commissioned stops advertising, so the exposure is that window
+  rather than the life of the device.
+- **Two boards cannot be told apart by their code.** If somebody nearby is
+  running this firmware too, your app can offer you their board. Commission
+  one at a time, and check that the device that appeared is the one you
+  just powered up.
 
 ### 4. Commission it
 
@@ -171,6 +208,7 @@ while, press **RESET** and try again with the fresh code.
 | What you see | What it means |
 |---|---|
 | Nothing at all in the serial monitor | The monitor is on the wrong port or the wrong baud rate. It is 115200. |
+| `arduino-cli upload` fails with `No drive to deploy` | Its automatic 1200-baud touch reset did not take, which happens. Reset the board into its bootloader by hand and re-run the upload: hold **BOOTSEL**, tap **RESET**, release, or do the touch yourself with the same open-at-1200-with-DTR-low that `flash.py` uses: `python3 -c "import serial,sys,time; s=serial.Serial(port=None,baudrate=1200); s.port=sys.argv[1]; s.dtr=False; s.open(); time.sleep(0.15); s.close()" <port>` |
 | `Firmware on the co-processor: (no answer, ...)` | The sketch cannot reach the C6. Either it was never flashed (step 2), or the serial bridge from step 2 is still on the RP2350 and the sketch upload did not take. |
 | The version prints, but no pairing code appears | The device is already commissioned. It says so on the line before. Remove it from your Matter app to start over. |
 | `flash.py` refuses to start | It is telling you which prerequisite is missing. [`fw/README.md`](fw/README.md) quotes the refusals verbatim and gives the fix for each. |

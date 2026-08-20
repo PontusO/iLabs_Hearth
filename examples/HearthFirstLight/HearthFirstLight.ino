@@ -18,6 +18,13 @@
  *     Manual pairing code: 34970112332
  *     QR code URL:         https://project-chip.github.io/...
  *
+ * The pairing code and the QR payload are FIXED: this development build
+ * uses the SDK's test credentials (discriminator 3840, setup passcode
+ * 20202021), so every board running this firmware prints exactly the same
+ * two strings. Matching the example in the README is correct rather than a
+ * sign of a bad flash, and it also means the code is not a secret: see the
+ * README's step 3 for what that means while a board sits advertising.
+ *
  * That is the sketch working. It is not commissioned yet, which is the
  * expected state on the first boot: a Matter device has to be adopted by a
  * hub before it belongs to anything. Open your Matter app, choose "add
