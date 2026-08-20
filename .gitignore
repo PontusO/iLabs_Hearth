@@ -69,6 +69,13 @@ build/
 *.bin
 *.uf2
 *.hex
+
+# ...except the firmware the library ships. fw/ exists precisely so a user does
+# not need the two-SDK toolchain, so its images and its bridge sketch are the
+# one place where a committed binary is the point. Without these the rules
+# above drop them from every commit silently.
+!fw/images/**/*.bin
+!fw/bridge/*.uf2
 .DS_Store
 .vscode/
 .arduino-cli
