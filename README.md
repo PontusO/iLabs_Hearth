@@ -144,7 +144,7 @@ You should see:
 
 ```
 Hearth first light
-Firmware on the co-processor: 1.0.0
+Firmware on the co-processor: 1.1.0
 Endpoint declared. Starting Matter...
 
 Not commissioned yet. Add this device in your Matter app.
@@ -243,10 +243,12 @@ along, which is the two-way path working.
 Commissioning happens once. Every later boot goes straight to
 "Commissioned".
 
-**The pairing window is open for 15 minutes after boot**, and the sketch
-cannot tell that it has closed, so it keeps printing the same pairing code
-afterwards. If a pairing attempt fails and the board has been powered for a
-while, press **RESET** and try again with the fresh code.
+**The pairing window is open for 15 minutes after boot**, and this sketch
+does not ask whether it has closed, so it keeps printing the same pairing
+code afterwards. If a pairing attempt fails and the board has been powered
+for a while, press **RESET** and try again with the fresh code. A sketch can
+also reopen the window without a reboot, and ask whether one is open: see
+[Reopening the pairing window](#reopening-the-pairing-window).
 
 ### If something does not work
 
@@ -258,7 +260,7 @@ while, press **RESET** and try again with the fresh code.
 | The version prints, but no pairing code appears | The device is already commissioned. It says so on the line before. Remove it from your Matter app to start over. |
 | `flash.py` refuses to start | It is telling you which prerequisite is missing. [`fw/README.md`](fw/README.md) quotes the refusals verbatim and gives the fix for each. |
 | The app finds the device, then refuses to add it | Almost always the development credentials described in step 4. Use NXP's `chip-tool` app rather than a consumer hub. |
-| Pairing fails on a board that has been on for a while | The 15 minute commissioning window has closed. Press RESET and use the code printed after the reboot. |
+| Pairing fails on a board that has been on for a while | The 15 minute commissioning window has closed. Press RESET and use the code printed after the reboot, or have the sketch call `Matter.openCommissioningWindow()`. |
 | Callbacks fire late, or not at all | `loop()` is not calling into the library often enough. See [Driving the event loop](#driving-the-event-loop). |
 
 ### Where to go next
@@ -289,7 +291,8 @@ rather than a combination known to work.
 
 | Library | Firmware | Notes |
 |---|---|---|
-| 1.0.0 | 1.0.0 | Ships the matching images in `fw/`. |
+| 1.1.0 | 1.1.0 | Adds `Matter.openCommissioningWindow()` and `Matter.deviceState()`. Ships the matching images in `fw/`. |
+| 1.0.0 | 1.0.0 | The feature-completeness milestone. |
 | 0.12.1 | 0.12.0 | EVSE stack margin fix; library-only, no firmware change. |
 | 0.12.0 | 0.12.0 | Energy round C2: EVSE and electrical utility meter. |
 | 0.11.0 | 0.11.0 | Thread role and mesh identity. |
@@ -489,6 +492,50 @@ is exact upstream parity, not a Hearth bug: arduino-esp32 3.3.8 refuses a
 second `begin()` on the same object the same way (`getEndPointId() != 0`
 check, logged and returns `false`), so it is not being changed here, only
 written down. `end(); begin();` is only safe *before* `Matter.begin()`.
+
+## Reopening the pairing window
+
+Two calls on `Matter` that arduino-esp32 does not have. They were added in
+1.1.0 because the AT surface had both from the first release and the library
+never wrapped them.
+
+```cpp
+// Is a window open right now, and how many fabrics hold the device?
+MatterDeviceState state;
+unsigned int fabrics;
+if (Matter.deviceState(&state, &fabrics)) {
+  // MATTER_STATE_UNINITIALIZED: no fabric and no open window
+  // MATTER_STATE_COMMISSIONING: a window is open, the device is advertising
+  // MATTER_STATE_OPERATIONAL:   at least one fabric
+}
+
+// Open a window on demand. 0 asks for the firmware's 300 s default; any
+// other value is clamped to 180..900 s, Matter's own floor and ceiling.
+Matter.openCommissioningWindow();
+Matter.openCommissioningWindow(600);
+```
+
+A factory-fresh board opens a 15 minute window at boot on its own and needs
+neither call. A commissioned board does not reopen one at boot, by design,
+so once its window has closed there are exactly two ways to add another
+fabric: a controller that already holds the device sends it Matter's
+`OpenCommissioningWindow` command, or the host calls
+`openCommissioningWindow()`. The host call is the one that needs no reboot
+and no existing controller, so a "pair" button on a commissioned product is
+this call rather than a reset. It returns `true` when the firmware accepted
+the request; the window's progress then arrives through the commissioning
+events `onEvent()` already delivers.
+
+`deviceState()` is the resynchronisation read. `isDeviceCommissioned()` and
+the event callbacks tell a running sketch what happened since it started; a
+host that rebooted while the co-processor stayed up has missed those
+events, and this is how it learns whether a window is open right now
+without waiting for one to close. It returns `false` when the co-processor
+did not answer, so a lost reply never reads as "uninitialised".
+
+The pairing code is the same for every window on every board (fixed
+development credentials, see step 3 of [Start here](#start-here)), so
+reopening the window changes nothing about which code to type.
 
 ## Driving the event loop
 
@@ -1821,6 +1868,16 @@ sequence without any hardware. Hardware verification: the automatic reset
 path and the transport API were verified during C4 end-to-end (2026-07-28)
 and transport smoke tests (2026-08-03). See `HARDWARE-BRINGUP.md` for
 additional commissioning flows and coverage.
+
+**1.1.0** adds the two `ArduinoMatter` calls the AT surface had and the
+library did not: `openCommissioningWindow()` (`AT+MTCOMMISSION`) and
+`deviceState()` (`AT+MTSTATE?`), see [Reopening the pairing
+window](#reopening-the-pairing-window). Both were on the wire from the
+first release; the library never wrapped them and the 1.0.0 review did not
+notice. Firmware 1.1.0 ships alongside with the matching images in `fw/`;
+its one host-visible change is that `AT+CGMM` now names the co-processor's
+real chip on the nRF port (a C6 still answers `ESP32-C6 Hearth`). The
+device-type surface is unchanged.
 
 **1.0.0** is the first release a newcomer can follow end to end without
 being handed anything privately: the library carries the Hearth firmware

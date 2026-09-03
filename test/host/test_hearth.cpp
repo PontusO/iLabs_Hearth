@@ -215,6 +215,85 @@ static void test_decommission_sends_matter_reset() {
   check("nothing unexpected", ms.unexpected().empty());
 }
 
+/* AT+MTSTATE? (S3.3): the three states parse, and the fabric count is
+ * carried through. Mirrors the isDeviceCommissioned/isWiFiConnected style
+ * of pinning a query against a scripted +MT line. */
+static void test_state_parses_all_three(void) {
+  MockStream ms;
+  Hearth.begin(ms);
+  MatterDeviceState st = MATTER_STATE_UNINITIALIZED;
+  unsigned int fabrics = 99;
+
+  ms.expect("AT+MTSTATE?", "+MTSTATE:0,0\r\nOK\r\n");
+  check("uninitialized query ok", Matter.deviceState(&st, &fabrics));
+  check("state 0 uninitialized", st == MATTER_STATE_UNINITIALIZED);
+  check("0 fabrics", fabrics == 0);
+
+  ms.expect("AT+MTSTATE?", "+MTSTATE:1,0\r\nOK\r\n");
+  check("commissioning query ok", Matter.deviceState(&st, &fabrics));
+  check("state 1 commissioning", st == MATTER_STATE_COMMISSIONING);
+
+  ms.expect("AT+MTSTATE?", "+MTSTATE:2,3\r\nOK\r\n");
+  check("operational query ok", Matter.deviceState(&st, &fabrics));
+  check("state 2 operational", st == MATTER_STATE_OPERATIONAL);
+  check("3 fabrics carried through", fabrics == 3);
+  check("script drained", ms.scriptDrained());
+}
+
+/* A null fabrics pointer is allowed: the state alone is the common case. */
+static void test_state_null_fabrics_ok(void) {
+  MockStream ms;
+  Hearth.begin(ms);
+  MatterDeviceState st = MATTER_STATE_UNINITIALIZED;
+  ms.expect("AT+MTSTATE?", "+MTSTATE:2,1\r\nOK\r\n");
+  check("null fabrics query ok", Matter.deviceState(&st, nullptr));
+  check("state read with null fabrics", st == MATTER_STATE_OPERATIONAL);
+  check("script drained", ms.scriptDrained());
+}
+
+/* Fail-closed: an OK with no +MTSTATE line must return false, not silently
+ * report state 0, the same guard hearthQueryFabricCount() documents. */
+static void test_state_missing_line_fails(void) {
+  MockStream ms;
+  Hearth.begin(ms);
+  MatterDeviceState st = MATTER_STATE_OPERATIONAL;
+  ms.expect("AT+MTSTATE?", "OK\r\n");
+  check("missing +MTSTATE line returns false", !Matter.deviceState(&st, nullptr));
+  check("script drained", ms.scriptDrained());
+}
+
+/* AT+MTCOMMISSION (S3.5): timeout 0 sends the bare exec form; a value in
+ * range sends the set form verbatim; out-of-range values are clamped to the
+ * 180..900 window CHIP enforces before hitting the wire. */
+static void test_commission_window_forms(void) {
+  MockStream ms;
+  Hearth.begin(ms);
+
+  ms.expect("AT+MTCOMMISSION", "OK\r\n");
+  check("default timeout sends bare exec form", Matter.openCommissioningWindow(0));
+
+  ms.expect("AT+MTCOMMISSION=600", "OK\r\n");
+  check("in-range timeout sends set form", Matter.openCommissioningWindow(600));
+
+  ms.expect("AT+MTCOMMISSION=180", "OK\r\n");
+  check("below-floor clamped up to 180", Matter.openCommissioningWindow(30));
+
+  ms.expect("AT+MTCOMMISSION=900", "OK\r\n");
+  check("above-ceiling clamped down to 900", Matter.openCommissioningWindow(1200));
+
+  check("script drained", ms.scriptDrained());
+  check("nothing unexpected", ms.unexpected().empty());
+}
+
+/* An ERROR reply is a failure, not a silent success. */
+static void test_commission_window_error_fails(void) {
+  MockStream ms;
+  Hearth.begin(ms);
+  ms.expect("AT+MTCOMMISSION=600", "+MTERR:1\r\nERROR\r\n");
+  check("ERROR reply returns false", !Matter.openCommissioningWindow(600));
+  check("script drained", ms.scriptDrained());
+}
+
 int main(void) {
   printf("\n===== Hearth link tests =====\n");
   test_version();
@@ -231,6 +310,11 @@ int main(void) {
   test_evt28_malformed_no_payload_still_dropped();
   test_evt27_reaches_link_even_when_matter_unregistered();
   test_decommission_sends_matter_reset();
+  test_state_parses_all_three();
+  test_state_null_fabrics_ok();
+  test_state_missing_line_fails();
+  test_commission_window_forms();
+  test_commission_window_error_fails();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

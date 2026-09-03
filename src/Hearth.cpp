@@ -1028,6 +1028,78 @@ bool hearthQueryFabricCount(long *out) {
   return true;
 }
 
+/* "+MTSTATE:<state>,<fabrics>" (AT_MT_SPEC.md S3.3). Gated on ctx.got the
+ * same way hearthQueryFabricCount() is: an OK with no +MTSTATE: line must
+ * not read as state 0, so a truncated reply fails rather than reporting
+ * "uninitialised". <state> is 0 uninitialised, 1 commissioning window open,
+ * 2 operational; <fabrics> is the same count AT+MTFABRICS? returns, carried
+ * here too so a caller learns both in one round trip. */
+struct HearthStateCtx {
+  long state;
+  long fabrics;
+  bool got;
+};
+
+void hearthOnStateLine(const char *line, void *arg) {
+  HearthStateCtx *ctx = (HearthStateCtx *)arg;
+  if (strncmp(line, "+MTSTATE:", 9) != 0) {
+    return;
+  }
+  const char *comma = strchr(line + 9, ',');
+  if (comma == nullptr) {
+    return;
+  }
+  ctx->state = atol(line + 9);
+  ctx->fabrics = atol(comma + 1);
+  ctx->got = true;
+}
+
+bool hearthQueryState(long *state_out, long *fabrics_out) {
+  HearthStateCtx ctx;
+  ctx.state = 0;
+  ctx.fabrics = 0;
+  ctx.got = false;
+  if (state_out != nullptr) {
+    *state_out = 0;
+  }
+  if (fabrics_out != nullptr) {
+    *fabrics_out = 0;
+  }
+  if (Hearth.hearthCommand("AT+MTSTATE?", hearthOnStateLine, &ctx) != 0 || !ctx.got) {
+    return false;
+  }
+  if (state_out != nullptr) {
+    *state_out = ctx.state;
+  }
+  if (fabrics_out != nullptr) {
+    *fabrics_out = ctx.fabrics;
+  }
+  return true;
+}
+
+/* AT+MTCOMMISSION[=<timeout_s>] (AT_MT_SPEC.md S3.5): open a basic
+ * commissioning window (BLE + DNS-SD) on demand. A factory-fresh device
+ * opens one at boot on its own; this is the only way a host reopens one on
+ * an ALREADY-commissioned device, whose boot does not (CHIP's
+ * configured-device policy). timeout_s 0 sends the bare exec form and the
+ * firmware applies its 300 s default; a non-zero value is clamped to the
+ * spec's 180..900 window CHIP enforces, since a value below 180 would earn
+ * a bare +MTERR:1 and a spurious event on the wire. Returns true on OK. */
+bool hearthOpenCommissioningWindow(unsigned int timeout_s) {
+  char cmd[24];
+  if (timeout_s == 0) {
+    strcpy(cmd, "AT+MTCOMMISSION");
+  } else {
+    if (timeout_s < 180) {
+      timeout_s = 180;
+    } else if (timeout_s > 900) {
+      timeout_s = 900;
+    }
+    snprintf(cmd, sizeof(cmd), "AT+MTCOMMISSION=%u", timeout_s);
+  }
+  return Hearth.hearthCommand(cmd) == 0;
+}
+
 /* "+MTCODES:<qr_payload>,<manual_pairing_code>" (AT_MT_SPEC.md S3.6). Fixed
  * buffers, not String concatenation: real Arduino's String has no operator+
  * guaranteed compatible with this port's minimal host stub (see
@@ -1489,6 +1561,25 @@ bool ArduinoMatter::isDeviceConnected() {
  */
 void ArduinoMatter::decommission() {
   Hearth.hearthCommand("AT+MTRESET");
+}
+
+bool ArduinoMatter::openCommissioningWindow(unsigned int timeout_s) {
+  return hearthOpenCommissioningWindow(timeout_s);
+}
+
+bool ArduinoMatter::deviceState(MatterDeviceState *state, unsigned int *fabrics) {
+  long s = 0;
+  long f = 0;
+  if (!hearthQueryState(&s, &f)) {
+    return false;
+  }
+  if (state != nullptr) {
+    *state = (MatterDeviceState)s;
+  }
+  if (fabrics != nullptr) {
+    *fabrics = (unsigned int)f;
+  }
+  return true;
 }
 
 ArduinoMatter Matter;

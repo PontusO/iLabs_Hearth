@@ -900,6 +900,15 @@ enum matterEvent_t {
  * the device's real one, which does not fit in a one-line inline body. The
  * signatures match upstream exactly; only the implementation differs.
  */
+/* Coarse device state, AT+MTSTATE?'s <state> field (AT_MT_SPEC.md S3.3).
+ * kUninitialized: no fabric and no open window. kCommissioning: a
+ * commissioning window is open. kOperational: at least one fabric. */
+enum MatterDeviceState {
+  MATTER_STATE_UNINITIALIZED = 0,
+  MATTER_STATE_COMMISSIONING = 1,
+  MATTER_STATE_OPERATIONAL   = 2,
+};
+
 class ArduinoMatter {
 public:
   using matterEventCB = std::function<void(matterEvent_t, const chip::DeviceLayer::ChipDeviceEvent *)>;
@@ -924,6 +933,24 @@ public:
   static bool isThreadConnected();
   static bool isDeviceConnected();
   static void decommission();
+
+  /* Open a commissioning window on demand (AT+MTCOMMISSION, S3.5). A
+   * factory-fresh device opens one at boot; this is how a host puts an
+   * ALREADY-commissioned device back into pairing mode, whose boot does
+   * not reopen one. timeout_s 0 uses the firmware's 300 s default; a
+   * non-zero value is clamped to the 180..900 s window CHIP enforces.
+   * Returns true when the firmware accepts the request. This is the
+   * host-driven path; a controller can also add a fabric via
+   * OpenCommissioningWindow without the host's involvement. */
+  static bool openCommissioningWindow(unsigned int timeout_s = 0);
+
+  /* Read the device's coarse state and fabric count in one query
+   * (AT+MTSTATE?, S3.3). Unlike the event-driven isDevice/onEvent surface,
+   * this resynchronises a host that rebooted and missed the commissioning
+   * events: it is the only way to learn "is a window open right now".
+   * Either pointer may be null. Returns false if the firmware did not
+   * answer with a +MTSTATE line. */
+  static bool deviceState(MatterDeviceState *state, unsigned int *fabrics = nullptr);
 };
 
 /* Upstream's own guard, verbatim (arduino-esp32 3.3.8, Matter.h:222). Not

@@ -12,7 +12,7 @@
  * WHAT YOU SHOULD SEE, in the Arduino IDE's Serial Monitor at 115200 baud:
  *
  *   Hearth first light
- *   Firmware on the co-processor: 1.0.0
+ *   Firmware on the co-processor: 1.1.0
  *   Endpoint declared. Starting Matter...
  *   Not commissioned yet. Add this device in your Matter app.
  *     Manual pairing code: 34970112332
@@ -40,10 +40,13 @@
  * build), and the CLI chip-tool from the Matter SDK (hours to build). The
  * README's step 4 has both links and the honest costs.
  *
- * THE PAIRING WINDOW LASTS 15 MINUTES from boot. Nothing here can tell
- * that it has closed, so the reminder below keeps printing the same code
- * afterwards. If pairing fails on a board that has been powered for a
- * while, press RESET and use the code printed after the reboot.
+ * THE PAIRING WINDOW LASTS 15 MINUTES from boot. This sketch does not ask
+ * whether it has closed, so the reminder below keeps printing the same
+ * code afterwards. If pairing fails on a board that has been powered for
+ * a while, press RESET and use the code printed after the reboot. (A
+ * sketch can also reopen the window without a reboot, and ask whether one
+ * is open: Matter.openCommissioningWindow() and Matter.deviceState(), see
+ * the README's "Reopening the pairing window".)
  *
  * When it finishes, the serial monitor prints
  *
