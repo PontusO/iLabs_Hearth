@@ -134,7 +134,11 @@ transports, with the rig committed in the firmware repository as
 `test/mt_endpoint_cap.py`. They were re-checked on the 1.0.0 images at two
 points, one endpoint and twenty, and both came back within 260 bytes of the
 recorded values with the twenty-endpoint reading still above the 24,000
-floor. Heap moves with the SDK, with cluster
+floor. On the 1.1.0 images the same two points read higher, 59,776 to
+59,840 at one endpoint and 35,176 to 35,308 at twenty (about 11 KB
+returned by a firmware change to the row-transfer buffers), so the table
+is conservative in the safe direction and has not been re-drawn from those
+readings. Heap moves with the SDK, with cluster
 configuration and with anything that changes what gets linked, so after an
 SDK bump or an `sdkconfig.defaults*` edit the cap is re-measured rather
 than argued about. The firmware repository's own README carries the full
@@ -303,7 +307,7 @@ the firmware version and then `OK`:
 
 ```
 AT+CGMR
-1.0.0
+1.1.0
 OK
 ```
 
@@ -344,7 +348,7 @@ confirms the flash and starts the next step at the same time. The library
 README's [Start here](../README.md#start-here) walks through it.
 
 `Hearth.firmwareVersion()` uses `AT+MTVER?`, which carries the same version as
-`AT+CGMR` in a prefixed form (`+MTVER:1.0.0`) that a parser can tell apart from
+`AT+CGMR` in a prefixed form (`+MTVER:1.1.0`) that a parser can tell apart from
 an unsolicited line.
 
 ## The manifest
@@ -391,27 +395,28 @@ output from the tree it was built in. It is separate from the AT-visible
 firmware version, so it is worth checking directly:
 
 ```sh
-python3 -c "print(open('fw/images/wifi/hearth-wifi-1.0.0.bin','rb').read()[48:80].split(b'\0')[0].decode())"
+python3 -c "print(open('fw/images/wifi/hearth-wifi-1.1.0.bin','rb').read()[48:80].split(b'\0')[0].decode())"
 ```
 
-The shipped images answer `0.12.0-11-gdf9d168`: a real commit, with no
+The shipped images answer `1.0.0-158-g0e2d222`: a real commit, with no
 `-dirty` suffix. A `-dirty` suffix would mean the image came from a tree with
 uncommitted changes and cannot be tied to any commit, which is a thing worth
 noticing before shipping rather than after a field failure.
 
 **That string names an older-looking commit than the release, and it is
-meant to.** These are the exact bytes the 1.0.0 bench qualified: `df9d168` is
-a real commit in the 1.0.0 history (`git merge-base --is-ancestor df9d168
-1.0.0` passes) and the nine committed regression baselines record the same
+meant to.** These are the exact bytes the 1.1.0 bench qualified: `0e2d222`
+is a real commit in the 1.1.0 history (`git merge-base --is-ancestor 0e2d222
+1.1.0` passes) and the nine committed regression baselines record the same
 commit as their `fw_repo_head`, so the evidence and the artifact name one
 build. Nothing in the firmware source changed between that commit and the
-`1.0.0` tag: the diff touches only the firmware `README.md` and those
-baseline files, so rebuilding from the tag yields the same firmware with a
-descriptor reading `1.0.0` and a fresh timestamp, and its hash will **not**
-match `manifest.json`. Either way `AT+CGMR` answers `1.0.0` on all three
-images, verified on hardware. So the older-looking descriptor is the reason
-to trust these binaries rather than to doubt them: shipping a rebuilt image
-would have meant shipping bytes nobody tested.
+`1.1.0` tag: the diff touches only documentation and those baseline files,
+so rebuilding from the tag yields the same firmware with a descriptor
+reading `1.1.0` and a fresh timestamp, and its hash will **not** match
+`manifest.json`. Either way `AT+CGMR` answers `1.1.0` on all three images,
+verified on hardware. So the older-looking descriptor is the reason to trust
+these binaries rather than to doubt them: shipping a rebuilt image would
+have meant shipping bytes nobody tested. (The 1.0.0 images carried
+`0.12.0-11-gdf9d168` for the same reason.)
 
 ## Licences
 

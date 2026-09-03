@@ -11,12 +11,12 @@
     "combined": {
       "files": {
         "bootloader.bin": {
-          "sha256": "a6b335721418937188baa300689b89fe7aa06512fa26e0e881bf2920b96b6ca1",
+          "sha256": "11108ae8ecede2b246a4040f8d76f0770b5dd162861c9a8d3dcdbc22d66b095e",
           "size": 22368
         },
-        "hearth-combined-1.0.0.bin": {
-          "sha256": "9daf77aec503c2a855ece46676dd907d16b7f179848f07bc87ba38de2e6ea821",
-          "size": 2122384
+        "hearth-combined-1.1.0.bin": {
+          "sha256": "3328f4a3d23bedbec3c7c8a41b4d649b360b681438b6993b3b4bbaad9f888d3b",
+          "size": 2123728
         },
         "partition-table.bin": {
           "sha256": "52b29e14b3542268bac5af8d260c74bbf53845554f4fd2708caf0295f0aef9f8",
@@ -27,12 +27,12 @@
     "thread": {
       "files": {
         "bootloader.bin": {
-          "sha256": "fa859c840520ad24a2ec7323c56bdb923db86d6715023eb71e33c3a2872db101",
+          "sha256": "b932bfb4795f46a47debd675a5ef0390e12e4286109145ca4ef04c1ea3d01ed6",
           "size": 22368
         },
-        "hearth-thread-1.0.0.bin": {
-          "sha256": "3a0a855e9b4e8b6c990959c5adb0fcfc84765fff07e6411ba88dfbdab15040f2",
-          "size": 1727792
+        "hearth-thread-1.1.0.bin": {
+          "sha256": "4d218ee141e18dd75729e38434733891da1dc7da16d6b4bcaabfb6e4587f6d90",
+          "size": 1729184
         },
         "partition-table.bin": {
           "sha256": "52b29e14b3542268bac5af8d260c74bbf53845554f4fd2708caf0295f0aef9f8",
@@ -43,12 +43,12 @@
     "wifi": {
       "files": {
         "bootloader.bin": {
-          "sha256": "850db8055c8931f8990d657a05eec031d7184c0e23bb0c19a85097724a5f9abc",
+          "sha256": "ef2858d89ec8248db8f477ca91d46ad255705cab44ccb36f713db5438644d53f",
           "size": 22368
         },
-        "hearth-wifi-1.0.0.bin": {
-          "sha256": "8c3bbc1e647b82a1340ce12d3ba35d78626d4b89e80cfbd0a8133db34b45cc6a",
-          "size": 1826320
+        "hearth-wifi-1.1.0.bin": {
+          "sha256": "dc53fac5e57269228969ec05f1fca62a12dcf848c0282d7cc889b900319e30eb",
+          "size": 1827728
         },
         "partition-table.bin": {
           "sha256": "52b29e14b3542268bac5af8d260c74bbf53845554f4fd2708caf0295f0aef9f8",
@@ -57,5 +57,5 @@
       }
     }
   },
-  "version": "1.0.0"
+  "version": "1.1.0"
 }
