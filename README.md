@@ -314,6 +314,7 @@ renamed, renumbered or reordered.
 | Example | What it is |
 |---|---|
 | **`HearthFirstLight`** | **Start here.** One on/off light, heavily commented for a first read: what `Matter.begin()` does, why the first boot needs commissioning, what the serial monitor should say. |
+| `HearthPairingButton` | Hearth original: a BOOT-button press reopens the commissioning window on an already-commissioned device, and the LED shows live commissioning state. Exercises the two calls upstream does not have, `Matter.openCommissioningWindow()` and `Matter.deviceState()` (1.1.0). |
 | `MatterOnOffLight`, `MatterDimmableLight`, `MatterTemperatureSensor`, and 16 more at the examples root | One device type each, copied byte-identical from `arduino-esp32`. Copy from these when you want a specific device type. |
 | `MatterDoorLockAdjudicated`, `HearthSensorsAndAppliances` | Hearth originals: several classes composed into something closer to a real device, with an interactive serial menu. |
 | `FullAPI/` (54 sketches) | The deep end: one sketch per endpoint class (plus one for the Thread role surface, which belongs to no class), exercising every public member it has, with the equivalent `chip-tool` command printed for each observable effect. Reference material, not a starting point. |
@@ -536,6 +537,11 @@ did not answer, so a lost reply never reads as "uninitialised".
 The pairing code is the same for every window on every board (fixed
 development credentials, see step 3 of [Start here](#start-here)), so
 reopening the window changes nothing about which code to type.
+
+The `HearthPairingButton` example wires all of this to a board: a short BOOT
+press calls `openCommissioningWindow()`, a five-second hold calls
+`decommission()`, and the onboard LED blinks while a window is open and goes
+solid once the device is on a fabric, driven by polling `deviceState()`.
 
 ## Driving the event loop
 
