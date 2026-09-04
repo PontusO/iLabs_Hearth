@@ -76,7 +76,8 @@ uint32_t buttonPressedAt = 0;
 const uint32_t statePollMs = 2000;
 uint32_t lastPollAt = 0;
 MatterDeviceState liveState = MATTER_STATE_UNINITIALIZED;  // last good read, drives the LED
-MatterDeviceState printedState = (MatterDeviceState)0xFF;  // force a first print
+MatterDeviceState printedState = MATTER_STATE_UNINITIALIZED;  // last value printed
+bool havePrinted = false;                                 // force a first print
 unsigned int printedFabrics = 0xFFFF;
 
 // LED blink, active only while a window is open.
@@ -149,7 +150,8 @@ void loop() {
     unsigned int fabrics = 0;
     if (Matter.deviceState(&s, &fabrics)) {
       liveState = s;
-      if (s != printedState || fabrics != printedFabrics) {
+      if (!havePrinted || s != printedState || fabrics != printedFabrics) {
+        havePrinted = true;
         printedState = s;
         printedFabrics = fabrics;
         Serial.printf("State: %s; fabrics: %u\r\n", stateName(s), fabrics);

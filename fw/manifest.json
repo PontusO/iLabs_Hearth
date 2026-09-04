@@ -14,9 +14,9 @@
           "sha256": "11108ae8ecede2b246a4040f8d76f0770b5dd162861c9a8d3dcdbc22d66b095e",
           "size": 22368
         },
-        "hearth-combined-1.1.0.bin": {
-          "sha256": "3328f4a3d23bedbec3c7c8a41b4d649b360b681438b6993b3b4bbaad9f888d3b",
-          "size": 2123728
+        "hearth-combined-1.2.0.bin": {
+          "sha256": "3bb3e088467d31ad248ced78abf7736be4c067286d1a3c4eb305b89decf43322",
+          "size": 2123600
         },
         "partition-table.bin": {
           "sha256": "52b29e14b3542268bac5af8d260c74bbf53845554f4fd2708caf0295f0aef9f8",
@@ -30,9 +30,9 @@
           "sha256": "b932bfb4795f46a47debd675a5ef0390e12e4286109145ca4ef04c1ea3d01ed6",
           "size": 22368
         },
-        "hearth-thread-1.1.0.bin": {
-          "sha256": "4d218ee141e18dd75729e38434733891da1dc7da16d6b4bcaabfb6e4587f6d90",
-          "size": 1729184
+        "hearth-thread-1.2.0.bin": {
+          "sha256": "767928e282157f5484ab9cfccd67e51e7045a493f9fa4c27340b25b0db132430",
+          "size": 1728912
         },
         "partition-table.bin": {
           "sha256": "52b29e14b3542268bac5af8d260c74bbf53845554f4fd2708caf0295f0aef9f8",
@@ -46,9 +46,9 @@
           "sha256": "ef2858d89ec8248db8f477ca91d46ad255705cab44ccb36f713db5438644d53f",
           "size": 22368
         },
-        "hearth-wifi-1.1.0.bin": {
-          "sha256": "dc53fac5e57269228969ec05f1fca62a12dcf848c0282d7cc889b900319e30eb",
-          "size": 1827728
+        "hearth-wifi-1.2.0.bin": {
+          "sha256": "486e244c708ede1ac1f342c0ed7244dc654878560662dd9d84273e054e6e466b",
+          "size": 1827648
         },
         "partition-table.bin": {
           "sha256": "52b29e14b3542268bac5af8d260c74bbf53845554f4fd2708caf0295f0aef9f8",
@@ -57,5 +57,5 @@
       }
     }
   },
-  "version": "1.1.0"
+  "version": "1.2.0"
 }
