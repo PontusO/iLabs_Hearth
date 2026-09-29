@@ -19,6 +19,7 @@
 #include "Hearth.h"
 #include "HearthUpdate.h"
 #include "HearthFsMem.h"
+#include "UpdateHarness.h"
 
 static int g_pass = 0, g_fail = 0;
 static void check(const char *name, bool cond) {
@@ -275,78 +276,11 @@ static void test_default_disabled(void) {
  * test_composition_parent.cpp, which does the same around its Matter.begin()
  * calls.
  */
-static bool loadFixture(const char *path, std::string &out) {
-  /* Try the path as-is first (CWD is test/host under make run), then with
-   * the test/host prefix (CWD is the repo root under the direct binary
-   * invocation). */
-  FILE *f = fopen(path, "rb");
-  if (!f) {
-    std::string prefixed = std::string("test/host/") + path;
-    f = fopen(prefixed.c_str(), "rb");
-  }
-  if (!f) {
-    return false;
-  }
-  char buf[4096];
-  size_t n;
-  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
-    out.append(buf, n);
-  }
-  fclose(f);
-  return true;
-}
-
-static void scriptBegin(MockStream &s) {
-  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
-  s.expect("AT+CGMM", "ESP32-C6 Hearth\r\nOK\r\n");
-  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
-  s.expect("AT+MTOTA?", "+MTOTA:0,IDLE,0,wifi\r\nOK\r\n");
-  s.expect("AT+MTOTA=1", "OK\r\n");
-}
-
 /* The baud hook and its record, forward-declared for the first-half tests;
  * defined with the second-half hooks below. */
 static int g_baudCalls = 0;
 static uint32_t g_lastBaud = 0;
 static void baudHook(uint32_t b);
-
-/* One +MTOTABLK: line: the seq, the block-local offset and the hex for the
- * bytes at that offset, upper-case. The line carries at most 96 bytes; the
- * last line of a short block carries the rest. The terminal OK the
- * co-processor sends after the last line is appended by the caller when ok
- * is true. */
-static std::string blkLine(uint32_t seq, uint32_t off, uint32_t len,
-                           const std::string &data, uint32_t dataOff, bool ok) {
-  static const char *hexd = "0123456789ABCDEF";
-  std::string s = "+MTOTABLK:";
-  char tmp[24];
-  snprintf(tmp, sizeof(tmp), "%u,%u,", (unsigned)seq, (unsigned)off);
-  s += tmp;
-  for (uint32_t i = 0; i < len; i++) {
-    uint8_t b = (uint8_t)data[dataOff + i];
-    s += hexd[b >> 4];
-    s += hexd[b & 0xF];
-  }
-  s += "\r\n";
-  if (ok) {
-    s += "OK\r\n";
-  }
-  return s;
-}
-
-/* The full answer for one AT+MTOTAGET: ceil(len/96) lines, the last
- * shorter for a short block, the OK on the last one. */
-static std::string blkAnswer(uint32_t seq, uint32_t len,
-                             const std::string &data, uint32_t dataOff) {
-  std::string resp;
-  for (uint32_t off = 0; off < len; off += 96) {
-    uint32_t n = len - off;
-    if (n > 96) n = 96;
-    bool last = (off + n >= len);
-    resp += blkLine(seq, off, n, data, dataOff + off, last);
-  }
-  return resp;
-}
 
 /* Case 5, the download half: the whole fixture, block by block, ends in the
  * staged file byte for byte and _downloadComplete set, with no
@@ -684,42 +618,6 @@ static void baudHook(uint32_t b) { g_baudCalls++; g_lastBaud = b; }
  * the last block (no DOWNLOADED): the staged write is still open and the
  * state still DOWNLOADING, which is the state a transfer in the middle of
  * its consent window is in. */
-static void runDownload(MockStream &s, HearthClass &hearth, const std::string &fx,
-                        const std::string &verdict, bool beginWrite = true) {
-  s.expect("AT+MTBAUD=921600", "OK\r\n");
-  s.injectURC("+MTOTA:AVAILABLE,66561");
-  s.injectURC("+MTOTA:DOWNLOADING,0");
-  g_yieldAdvanceMs = 50;
-  hearth.poll();
-  g_yieldAdvanceMs = 0;
-  size_t pos = 0;
-  uint32_t seq = 0;
-  while (pos < fx.size()) {
-    size_t blen = fx.size() - pos;
-    if (blen > 1024) blen = 1024;
-    s.expect("AT+MTOTAGET=" + std::to_string((unsigned)seq),
-             blkAnswer(seq, (uint32_t)blen, fx, pos));
-    s.expect("AT+MTOTAACK=" + std::to_string((unsigned)seq), "OK\r\n");
-    s.injectURC("+MTOTA:BLOCK," + std::to_string((unsigned)seq) + ","
-                + std::to_string((unsigned)blen));
-    g_yieldAdvanceMs = 50;
-    hearth.poll();
-    g_yieldAdvanceMs = 0;
-    pos += blen;
-    seq++;
-  }
-  if (!beginWrite) {
-    return;  /* the download stops here, mid-transfer */
-  }
-  s.expect("AT+MTBAUD=115200", "OK\r\n");
-  if (!verdict.empty()) {
-    s.expect(verdict, "OK\r\n");
-  }
-  s.injectURC("+MTOTA:DOWNLOADED");
-  g_yieldAdvanceMs = 50;
-  hearth.poll();
-  g_yieldAdvanceMs = 0;
-}
 
 /* Case 5, the rest: after the download the good.ota bundle verifies, the
  * apply decision selects the fw part (1.3.0 differs from the cached 1.2.0)
