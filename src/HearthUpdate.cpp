@@ -700,7 +700,7 @@ uint32_t modelFsNeed(const char *model) {
  * The apply of the Hearth (co-processor) part (plan Task 6a, spec 7.3 and
  * 7.5). hearthDrain() runs it once, for the +MTOTA:APPLY the URC route
  * parsed. It works from the staged file and the state record, not from
- * download-time memory alone: Task 6b's resume after a power loss reopens
+ * download-time memory alone: Task 6c's resume after a power loss reopens
  * the same stage and calls hearthApplyFw() with the state it loaded.
  *
  * The order (the test pins every command):
@@ -780,139 +780,165 @@ void HearthUpdate::hearthApply() {
   hearthCmd(cmd, 0, 0);
 
   if (hearthApplyFw(st) == 0) {
-    /* Success: the new image is confirmed running (AT+MTVER? matched the
-     * part's version). Retain it for a future rollback (the rotation
-     * deletes the old retained image first, DE625), turn the requestor
-     * back on (its mode is not persisted, spec 5.2, so it is off after
-     * the co-processor's reboot) and cache the new running version. */
-    const HearthBundlePart &p = info.parts[part];
-    _stage.retainFwPart(*staged, info.containerOffset + p.offset, p.length, p.target, p.version);
-    delete staged;
-    hearthCmd("AT+MTOTA=1", 0, 0);
-    snprintf(_hearthVersion, sizeof(_hearthVersion), "%s", p.version);
-    snprintf(_status.hearthVersion, sizeof(_status.hearthVersion), "%s", p.version);
-
-    if (st.hostPart == 0xFF) {
-      /* No host part selected: the fw-only finish. The manifest takes the
-       * bundle's product version and string; the host version is kept
-       * from the old manifest, "" when there was none. */
-      HearthManifest m;
-      if (_haveManifest) {
-        m = _manifest;
-      } else {
-        memset(&m, 0, sizeof(m));
-      }
-      m.productVersion = info.productVersion;
-      snprintf(m.productVersionString, sizeof(m.productVersionString), "%s", info.productVersionString);
-      _stage.saveManifest(m);
-      _manifest = m;
-      _haveManifest = true;
-      _stage.stagedRemove();
-      _stage.clearState();
-      _effectiveVersion = info.productVersion;
-      _status.state = HEARTH_UPDATE_IDLE;
-      _status.error = HEARTH_UPDATE_OK;
-      _status.reason = 0;
-      _status.effectiveVersion = info.productVersion;
-      if (_statusCB) {
-        _statusCB(_status);
-      }
-    } else {
-      /* A host part is selected: the host applies second (spec 7). */
-      hearthApplyHost();
-    }
+    hearthFwSucceeded(info, part, *staged, st);
   } else {
-    /* Three failed attempts (spec 7.3): the retained image, if one fits
-     * this model, is one more flash. */
-    char rtarget[33], rversion[33];
-    uint32_t rlen = 0;
-    bool haveRetained = _stage.retainedFwInfo(rtarget, rversion, rlen);
-    bool didRollback = false;
-    if (haveRetained && strcmp(rtarget, _model) == 0) {
-      /* The old version is re-declared BEFORE the rollback flash (the
-       * ruling): between the declaration and a successful boot the
-       * co-processor claims a version it is not yet running. */
-      char rcmd[HEARTH_LINE_MAX];
-      snprintf(rcmd, sizeof(rcmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)_declaredVersion,
-               _declaredVersionString);
-      hearthCmd(rcmd, 0, 0);
-      HearthFile *ret = _stage.retainedFwOpen();
-      if (ret) {
-        HearthFlasher *fl = _flasher ? _flasher : HearthFlasher::forModel(_model);
-        if (fl) {
-          HearthFileSource rsrc(*ret);
-          HearthCoprocPins pins;
-          pins.reset = _cfg.resetPin;
-          pins.resetActiveLow = _cfg.resetActiveLow;
-          pins.strap = _cfg.strapPin;
-          pins.strapActiveLow = _cfg.strapActiveLow;
-          /* The retained image carries no digest (it is the bytes of an
-           * image that already ran, not a bundle part): a zero digest, the
-           * same convention the flashers apply to a range with no bundle
-           * part behind it. */
-          uint8_t zeros[32];
-          memset(zeros, 0, sizeof(zeros));
-          fl->flash(*((HearthClass *)_owner)->link().stream(), pins, rsrc, 0, rlen, zeros);
-#if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
-          /* The flasher left the port at its own rate; re-clock it. */
-          HEARTH_SERIAL_PORT.begin(HEARTH_LINK_BAUD);
-#endif
-          ((HearthClass *)_owner)->hearthArmExpectedReboot();
-          if (((HearthClass *)_owner)->link().waitReady(HEARTH_READY_TIMEOUT_MS)) {
-            VerQuery rvq;
-            rvq.got = false;
-            rvq.version[0] = 0;
-            hearthCmd("AT+MTVER?", onVerLine2, &rvq);
-            if (rvq.got) {
-              /* Cache whatever it answers as the running version. */
-              snprintf(_hearthVersion, sizeof(_hearthVersion), "%s", rvq.version);
-              snprintf(_status.hearthVersion, sizeof(_status.hearthVersion), "%s", rvq.version);
-            }
-            didRollback = true;
-          } else {
-            ((HearthClass *)_owner)->hearthDisarmExpectedReboot();
-          }
-        }
-        delete ret;
-      }
-    }
-    if (!didRollback) {
-      /* No retained image to restore: the old version is re-declared so
-       * the requestor comes back knowing what it is running. */
-      char rcmd[HEARTH_LINE_MAX];
-      snprintf(rcmd, sizeof(rcmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)_declaredVersion,
-               _declaredVersionString);
-      hearthCmd(rcmd, 0, 0);
-    }
-
-    /* Either way the requestor is back on, the state file is gone (a
-     * failed apply must not resume) and the staged bundle is KEPT, for a
-     * manual retry. */
-    delete staged;
-    hearthCmd("AT+MTOTA=1", 0, 0);
-    _stage.clearState();
-    _status.state = HEARTH_UPDATE_FAILED;
-    _status.error = HEARTH_UPDATE_ERR_FLASH;
-    _status.reason = 0;
-    if (_statusCB) {
-      _statusCB(_status);
-    }
+    hearthFwFailed();
   }
 }
 
 /*
- * One flash attempt of the part named by st (6a): the state is saved with
+ * The success tail of the Hearth-part apply (6a's, moved out of
+ * hearthApply() by 6c so the resume shares it, ruling 6). The new image is
+ * confirmed running (AT+MTVER? matched the part's version): retain it for a
+ * future rollback (the rotation deletes the old retained image first,
+ * DE625), turn the requestor back on (its mode is not persisted, spec 5.2,
+ * so it is off after the co-processor's reboot) and cache the new running
+ * version, then finish fw-only (the manifest, the staged bundle and the
+ * state gone, IDLE with the bundle's product version) or go on to the host
+ * part (spec 7: the host applies second). The staged file is deleted here,
+ * by this function; the caller must not delete it.
+ */
+void HearthUpdate::hearthFwSucceeded(const HearthBundleInfo &info, int part, HearthFile &staged,
+                                     const HearthUpdateState &st) {
+  const HearthBundlePart &p = info.parts[part];
+  _stage.retainFwPart(staged, info.containerOffset + p.offset, p.length, p.target, p.version);
+  delete &staged;
+  hearthCmd("AT+MTOTA=1", 0, 0);
+  snprintf(_hearthVersion, sizeof(_hearthVersion), "%s", p.version);
+  snprintf(_status.hearthVersion, sizeof(_status.hearthVersion), "%s", p.version);
+
+  if (st.hostPart == 0xFF) {
+    /* No host part selected: the fw-only finish. The manifest takes the
+     * bundle's product version and string; the host version is kept
+     * from the old manifest, "" when there was none. */
+    HearthManifest m;
+    if (_haveManifest) {
+      m = _manifest;
+    } else {
+      memset(&m, 0, sizeof(m));
+    }
+    m.productVersion = info.productVersion;
+    snprintf(m.productVersionString, sizeof(m.productVersionString), "%s", info.productVersionString);
+    _stage.saveManifest(m);
+    _manifest = m;
+    _haveManifest = true;
+    _stage.stagedRemove();
+    _stage.clearState();
+    _effectiveVersion = info.productVersion;
+    _status.state = HEARTH_UPDATE_IDLE;
+    _status.error = HEARTH_UPDATE_OK;
+    _status.reason = 0;
+    _status.effectiveVersion = info.productVersion;
+    if (_statusCB) {
+      _statusCB(_status);
+    }
+  } else {
+    /* A host part is selected: the host applies second (spec 7). */
+    hearthApplyHost();
+  }
+}
+
+/*
+ * The failure tail of the Hearth-part apply (6a's, moved out of
+ * hearthApply() by 6c so the resume shares it, ruling 6). Three failed
+ * attempts (spec 7.3): the retained image, if one fits this model, is one
+ * more flash.
+ */
+void HearthUpdate::hearthFwFailed() {
+  char rtarget[33], rversion[33];
+  uint32_t rlen = 0;
+  bool haveRetained = _stage.retainedFwInfo(rtarget, rversion, rlen);
+  bool didRollback = false;
+  if (haveRetained && strcmp(rtarget, _model) == 0) {
+    /* The old version is re-declared BEFORE the rollback flash (the
+     * ruling): between the declaration and a successful boot the
+     * co-processor claims a version it is not yet running. */
+    char rcmd[HEARTH_LINE_MAX];
+    snprintf(rcmd, sizeof(rcmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)_declaredVersion,
+             _declaredVersionString);
+    hearthCmd(rcmd, 0, 0);
+    HearthFile *ret = _stage.retainedFwOpen();
+    if (ret) {
+      HearthFlasher *fl = _flasher ? _flasher : HearthFlasher::forModel(_model);
+      if (fl) {
+        HearthFileSource rsrc(*ret);
+        HearthCoprocPins pins;
+        pins.reset = _cfg.resetPin;
+        pins.resetActiveLow = _cfg.resetActiveLow;
+        pins.strap = _cfg.strapPin;
+        pins.strapActiveLow = _cfg.strapActiveLow;
+        /* The retained image carries no digest (it is the bytes of an
+         * image that already ran, not a bundle part): a zero digest, the
+         * same convention the flashers apply to a range with no bundle
+         * part behind it. */
+        uint8_t zeros[32];
+        memset(zeros, 0, sizeof(zeros));
+        fl->flash(*((HearthClass *)_owner)->link().stream(), pins, rsrc, 0, rlen, zeros);
+#if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
+        /* The flasher left the port at its own rate; re-clock it. */
+        HEARTH_SERIAL_PORT.begin(HEARTH_LINK_BAUD);
+#endif
+        ((HearthClass *)_owner)->hearthArmExpectedReboot();
+        if (((HearthClass *)_owner)->link().waitReady(HEARTH_READY_TIMEOUT_MS)) {
+          VerQuery rvq;
+          rvq.got = false;
+          rvq.version[0] = 0;
+          hearthCmd("AT+MTVER?", onVerLine2, &rvq);
+          if (rvq.got) {
+            /* Cache whatever it answers as the running version. */
+            snprintf(_hearthVersion, sizeof(_hearthVersion), "%s", rvq.version);
+            snprintf(_status.hearthVersion, sizeof(_status.hearthVersion), "%s", rvq.version);
+          }
+          didRollback = true;
+        } else {
+          ((HearthClass *)_owner)->hearthDisarmExpectedReboot();
+        }
+      }
+      delete ret;
+    }
+  }
+  if (!didRollback) {
+    /* No retained image to restore: the old version is re-declared so
+     * the requestor comes back knowing what it is running. */
+    char rcmd[HEARTH_LINE_MAX];
+    snprintf(rcmd, sizeof(rcmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)_declaredVersion,
+             _declaredVersionString);
+    hearthCmd(rcmd, 0, 0);
+  }
+
+  /* Either way the requestor is back on, the state file is gone (a
+   * failed apply must not resume) and the staged bundle is KEPT, for a
+   * manual retry. */
+  hearthCmd("AT+MTOTA=1", 0, 0);
+  _stage.clearState();
+  _status.state = HEARTH_UPDATE_FAILED;
+  _status.error = HEARTH_UPDATE_ERR_FLASH;
+  _status.reason = 0;
+  if (_statusCB) {
+    _statusCB(_status);
+  }
+}
+
+/*
+ * The flash attempts of the part named by st (6a): the state is saved with
  * the attempt number, the flasher runs on the link's stream, the port is
  * re-clocked to the link baud (the flashers leave it at their own rate),
  * the expected reboot is armed and the link waits for +MTREADY, and
  * AT+MTVER? must answer the part's version. The return: 0 on success, 1
  * when the attempt failed (the caller tries again).
+ *
+ * The attempt count starts at firstAttempt (6c's resume parameter): a
+ * power loss in the middle of an attempt counts the interrupted attempt,
+ * so the resume enters with st.attempts + 1 and the total across any
+ * number of power cycles stays bounded at three. A caller that enters
+ * with firstAttempt greater than 3 does no flash at all and fails at
+ * once (the failure tail is the caller's).
  */
-int HearthUpdate::hearthApplyFw(HearthUpdateState &st) {
+int HearthUpdate::hearthApplyFw(HearthUpdateState &st, int firstAttempt) {
   HearthClass *owner = (HearthClass *)_owner;
   HearthFlasher *fl = _flasher ? _flasher : HearthFlasher::forModel(_model);
   /* Reopen the staged bundle on every call: the flasher reads the image
-   * bytes through the source, and a resume (6b) enters this function with
+   * bytes through the source, and a resume (6c) enters this function with
    * no file open yet. */
   HearthFile *staged = _stage.stagedOpenRead();
   if (!staged || !fl) {
@@ -947,7 +973,7 @@ int HearthUpdate::hearthApplyFw(HearthUpdateState &st) {
   pins.strap = _cfg.strapPin;
   pins.strapActiveLow = _cfg.strapActiveLow;
 
-  for (int attempt = 1; attempt <= 3; attempt++) {
+  for (int attempt = firstAttempt; attempt <= 3; attempt++) {
     st.attempts = (uint8_t)attempt;
     _stage.saveState(st);
     int rc = fl->flash(*owner->link().stream(), pins, src, off, p.length, p.sha256);
@@ -1328,7 +1354,9 @@ void HearthUpdate::end() {
  *   7. AT+MTOTA=1 (the requestor on; +MTERR:8 means the image has no
  *      requestor: UNAVAILABLE, not an error, no further command).
  * Then, when a state file says a phase was in progress, the resume path
- * (Task 6) takes over; for this half that hand-over is not written yet.
+ * (Task 6) takes over: a state with phase FW (6c) resumes the Hearth-part
+ * flash, and the state's phase HOST and HOST_CONFIRM run their first-boot
+ * branches after the normal sequence reaches IDLE.
  */
 bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, const HearthUpdateConfig &cfg) {
   /* The tests inject their fs with hearthAttach(); on the device the
@@ -1368,17 +1396,136 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
    * commands (plan Task 6b): the host part was staged and the sketch
    * rebooted into it, and this boot confirms it (HOST) or gives up
    * (HOST_CONFIRM, the previous sketch is running again after a failed
-   * first boot). Phase FW is 6c's resume: it is left alone here and
-   * begin() behaves as it did before. */
+   * first boot). Phase FW is 6c's resume, handled after the manifest is
+   * loaded and the state read and BEFORE the declaration and the link
+   * commands (ruling 1): the co-processor may be in its recovery
+   * bootloader with a half-written application, and a resume that waited
+   * for the link first would never run then. */
   HearthUpdateState st;
   bool haveState = _stage.loadState(st);
 
+  /* The 6c resume: the host lost power in the middle of flashing the
+   * co-processor. It is not an apply request: the consent hook is not
+   * called (ruling 8). The effective version is computed here (the
+   * manifest was loaded above), because the failure tail re-declares it
+   * and the success path recomputes it after the new manifest is written.
+   * The result is picked up by the recompute below. */
   uint32_t eff = productVersion;
   const char *effStr = versionString ? versionString : "";
   if (_haveManifest && _manifest.productVersion > eff) {
     eff = _manifest.productVersion;
     effStr = _manifest.productVersionString;
   }
+  bool fwResumedFailed = false;
+
+  if (haveState && st.phase == HEARTH_PHASE_FW) {
+    if (!_stage.stagedExists()) {
+      /* The staged bundle is gone (ruling 2): nothing to resume. Clear
+       * the state and go on as if there had been no state file. */
+      _stage.clearState();
+      haveState = false;
+    } else {
+      /* The model comes from the staged bundle: AT+CGMM has not run yet,
+       * and the verify already required the part's target to equal the
+       * co-processor's model, so HearthFlasher::forModel(_model) and the
+       * retained-image target check work unchanged (ruling 3). */
+      HearthFile *staged = _stage.stagedOpenRead();
+      HearthFileSource src(*staged);
+      HearthBundleInfo info;
+      HearthBundleError e = staged ? HearthBundle::open(src, _cfg.publicKey, info)
+                                   : HEARTH_BUNDLE_ERR_STORAGE;
+      if (!staged || e != HEARTH_BUNDLE_OK || st.fwPart >= (int)info.partCount) {
+        /* The bundle cannot be read (or the state names no part in it):
+         * there is nothing to flash. Treat it as the missing staged
+         * bundle: the state is cleared and begin() goes on as normal. */
+        delete staged;
+        _stage.clearState();
+        haveState = false;
+      } else {
+        snprintf(_model, sizeof(_model), "%s", info.parts[st.fwPart].target);
+        delete staged;
+        /* The version to re-declare on failure (ruling 3): the effective
+         * version begin() computed from the baseline and the manifest. */
+        _declaredVersion = eff;
+        snprintf(_declaredVersionString, sizeof(_declaredVersionString), "%s", effStr);
+        /* The declaration before the flash: one try, its answer ignored
+         * (a co-processor in its bootloader does not answer; spec 7.5's
+         * rule still holds whenever it can hear, ruling 5). It is skipped
+         * when going straight to the failure tail (ruling 4). */
+        char rcmd[HEARTH_LINE_MAX];
+        if (st.attempts >= 3) {
+          /* Three attempts already spent (ruling 4): no flash at all,
+           * straight to the failure tail. */
+          hearthFwFailed();
+          /* The failure tail ran (FAILED with
+           * HEARTH_UPDATE_ERR_FLASH, the state cleared, the staged bundle
+           * kept). begin() still runs its normal sequence (declaring the
+           * OLD effective version) so the link and the requestor come up,
+           * but it must not overwrite the FAILED state and error with
+           * IDLE at its end (ruling 7). */
+          haveState = false;
+          fwResumedFailed = true;
+        } else {
+          snprintf(rcmd, sizeof(rcmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)st.targetVersion,
+                   st.targetVersionString);
+          hearthCmd(rcmd, 0, 0);
+          /* The interrupted attempt counts: the resume starts where the
+           * state file left off (ruling 4). */
+          int rc = hearthApplyFw(st, (int)st.attempts + 1);
+          if (rc == 0) {
+            /* Success: the new image is confirmed running. The success tail
+             * retains it, turns the requestor back on, writes the manifest
+             * (fw-only) or stages the host part (6b), and deletes the
+             * staged file. The _fwPart and _hostPart members must be set
+             * first: hearthApplyHost() reads them to decide its path. */
+            _fwPart = st.fwPart;
+            _hostPart = st.hostPart;
+            HearthFile *staged2 = _stage.stagedOpenRead();
+            if (staged2) {
+              hearthFwSucceeded(info, st.fwPart, *staged2, st);
+            }
+            if (st.hostPart == 0xFF) {
+              /* Success, fw-only: the success tail has written the new
+               * manifest. Recompute the effective version from the updated
+               * manifest before the declaration, so the normal sequence
+               * declares the NEW version (ruling 7). */
+              uint32_t eff2 = productVersion;
+              const char *effStr2 = versionString ? versionString : "";
+              if (_haveManifest && _manifest.productVersion > eff2) {
+                eff2 = _manifest.productVersion;
+                effStr2 = _manifest.productVersionString;
+              }
+              eff = eff2;
+              effStr = effStr2;
+              _effectiveVersion = eff;
+              _declaredVersion = eff;
+              snprintf(_declaredVersionString, sizeof(_declaredVersionString), "%s", effStr);
+            } else {
+              /* Success with a host part selected: the success tail called
+               * hearthApplyHost(), which reboots the host (ruling 7). On
+               * the device it does not return; on the host test the
+               * reboot hook does, and begin() returns at once, with the
+               * state the host apply left (phase HOST saved). */
+              return true;
+            }
+          } else {
+            /* Failure: the failure tail re-declares the old version,
+             * flashes the retained image if one fits, turns the requestor
+             * back on, clears the state, and reports FAILED with
+             * HEARTH_UPDATE_ERR_FLASH (the staged bundle is kept).
+             * begin() still runs its normal sequence (declaring the OLD
+             * effective version) so the link and the requestor come up,
+             * but it must not overwrite the FAILED state and error with
+             * IDLE at its end (ruling 7). */
+            hearthFwFailed();
+            haveState = false;
+            fwResumedFailed = true;
+          }
+        }
+      }
+    }
+  }
+
   _effectiveVersion = eff;
   /* The version begin() is about to declare, kept for the rollback path
    * (spec 7.5 re-declares it before a failed apply gives up). */
@@ -1508,14 +1655,20 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
     return false;
   }
 
-  _status.state = HEARTH_UPDATE_IDLE;
-  _status.effectiveVersion = eff;
+  if (!fwResumedFailed) {
+    /* The 6c resume's failure tail leaves the state FAILED with
+     * HEARTH_UPDATE_ERR_FLASH (ruling 7): the normal sequence came up so
+     * the link and the requestor do, but the FAILED outcome must stay
+     * readable, so the IDLE it would set here is skipped. */
+    _status.state = HEARTH_UPDATE_IDLE;
+    _status.effectiveVersion = eff;
+  }
   if (_statusCB) {
     _statusCB(_status);
   }
   /* The first-boot confirm (plan Task 6b): the declaration already ran
    * (above), the normal sequence just reached IDLE, and now the phase's
-   * own work runs. Phase FW is 6c's resume: it is left alone here. */
+   * own work runs. */
   if (haveState && st.phase == HEARTH_PHASE_HOST) {
     return hearthFirstBootHost(st);
   }

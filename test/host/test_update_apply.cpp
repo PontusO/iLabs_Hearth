@@ -858,6 +858,468 @@ static void test_no_hooks(void) {
   check("the error is ERR_HOST (no hooks)", hearth.update.status().error == HEARTH_UPDATE_ERR_HOST);
 }
 
+/*
+ * Task 6c: the resume of a Hearth-part flash after a power loss. The host
+ * lost power in the middle of the flash: the state file says phase FW with
+ * the attempts spent so far, the staged bundle is still on the
+ * filesystem, and the co-processor may be in its recovery bootloader with
+ * a half-written application (it may not answer at all). The starting
+ * state is built directly on a fresh HearthFsMem before begin(): the state
+ * file, a manifest when the case has one, and the staged bundle written as
+ * /hearth/staged.ota from fixtures/good.ota (6b's case 7 shows exactly
+ * this). begin() then runs, and its phase-FW branch (before the
+ * declaration and the link commands) resumes the flash.
+ */
+
+/* Write the staged bundle from the fixture's bytes. */
+static bool seedStaged(HearthFsMem &fs, const std::string &fx) {
+  HearthFile *f = fs.open("/hearth/staged.ota", "w");
+  if (!f) {
+    return false;
+  }
+  size_t n = f->write((const uint8_t *)fx.data(), fx.size());
+  delete f;
+  return n == fx.size();
+}
+
+/* Save the phase-FW state record on the given fs. */
+static bool seedFwState(HearthFsMem &fs, uint8_t attempts, uint32_t target,
+                        const char *targetStr, uint8_t fwPart, uint8_t hostPart) {
+  HearthUpdateStage stg;
+  if (!stg.begin(fs)) {
+    return false;
+  }
+  HearthUpdateState st;
+  memset(&st, 0, sizeof(st));
+  st.phase = HEARTH_PHASE_FW;
+  st.attempts = attempts;
+  st.targetVersion = target;
+  snprintf(st.targetVersionString, sizeof(st.targetVersionString), "%s", targetStr);
+  st.fwPart = fwPart;
+  st.hostPart = hostPart;
+  bool r = stg.saveState(st);
+  return r;
+}
+
+/* Case 1 (6c): the resume, the link up, fw-only. State {FW, attempts 1,
+ * target 66560 "1.4.0", fwPart 0, hostPart 0xFF}, the manifest {66304,
+ * "1.3.0", host "1.4.0"} and the staged bundle. The resume declares the
+ * state's target, the interrupted attempt counts (attempt 2 is the
+ * resume's first flash), and after the success tail the normal sequence
+ * declares the NEW effective version. */
+static void test_resume_link_up(void) {
+  std::string fx;
+  check("the fixture loads (resume up)", loadFixture("fixtures/good.ota", fx));
+  HearthFsMem fs;
+  check("the staged bundle is seeded (resume up)", seedStaged(fs, fx));
+  {
+    HearthUpdateStage stg;
+    stg.begin(fs);
+    HearthManifest m;
+    m.productVersion = 66304;
+    snprintf(m.productVersionString, sizeof(m.productVersionString), "%s", "1.3.0");
+    snprintf(m.hostVersion, sizeof(m.hostVersion), "%s", "1.4.0");
+    check("the manifest is saved (resume up)", stg.saveManifest(m));
+  }
+  check("the FW state is seeded (resume up)",
+        seedFwState(fs, 1, 66560, "1.4.0", 0, 0xFF));
+  {
+    HearthUpdateState dbg;
+    if (HearthUpdateStage().begin(fs) && HearthUpdateStage().loadState(dbg)) {
+    } else {
+    }
+  }
+
+  MockStream s;
+  HearthClass hearth;
+  FlasherFake fake;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  hearth.update.hearthSetFlasher(&fake);
+  HearthUpdateConfig cfg;
+  cfg.resetPin = 15;
+  cfg.resetActiveLow = true;
+  cfg.strapPin = 14;
+  cfg.strapActiveLow = true;
+
+  PartLine pl;
+  check("the part|good|0 line loads (resume up)", loadPartLine("good", 0, pl));
+  {
+    HearthUpdateState dbg;
+    if (hearth.update.stage().loadState(dbg)) {
+    }
+  }
+  /* The resume's declaration, the flash's own commands, and begin()'s own
+   * sequence (which declares the NEW effective version, 66560 "1.4.0",
+   * from the manifest the success tail wrote). */
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.3.0\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  scriptBeginFor(s, "AT+MTSWVER=66560,\"1.4.0\"", "ESP32-C6 Hearth", "1.3.0", "wifi");
+  fake.onFlash = [&](int i) {
+    if (i == 0) {
+      check("the resume declaration had gone out before the flash (resume up)",
+            s.nextExpected() == "AT+MTVER?");
+      HearthUpdateState st2;
+      check("the state loads with phase FW, attempts 2, inside the flash (resume up)",
+            hearth.update.stage().loadState(st2)
+            && st2.phase == HEARTH_PHASE_FW
+            && st2.attempts == 2);
+      s.injectURC("+MTREADY");
+    }
+  };
+  g_yieldAdvanceMs = 50;
+  check("the resume's begin returns true", hearth.update.begin(0x10300, "1.3.0", cfg));
+  g_yieldAdvanceMs = 0;
+
+  const std::vector<FlasherFake::Call> &calls = fake.calls();
+  check("exactly one flash call (resume up)", calls.size() == 1);
+  if (calls.size() == 1) {
+    const FlasherFake::Call &c = calls[0];
+    check("the off matches apply_parts.txt part|good|0 (resume up)", c.off == pl.off);
+    check("the len matches apply_parts.txt part|good|0 (resume up)", c.len == pl.len);
+    check("the sha256 matches apply_parts.txt part|good|0 (resume up)", memcmp(c.sha256, pl.sha, 32) == 0);
+    std::vector<uint8_t> want(fx.begin() + pl.off, fx.begin() + pl.off + pl.len);
+    check("the image read back equals the fixture's bytes (resume up)", c.image == want);
+  }
+  HearthManifest m2;
+  check("the manifest is 66560 / 1.4.0 / host 1.4.0 (resume up)",
+        hearth.update.stage().loadManifest(m2)
+        && m2.productVersion == 66560
+        && strcmp(m2.productVersionString, "1.4.0") == 0
+        && strcmp(m2.hostVersion, "1.4.0") == 0);
+  char rt[33], rv[33];
+  uint32_t rl = 0;
+  check("the retained image is the new part (resume up)",
+        hearth.update.stage().retainedFwInfo(rt, rv, rl)
+        && strcmp(rt, "ESP32-C6 Hearth") == 0 && strcmp(rv, "1.3.0") == 0 && rl == 1000);
+  check("the state is gone (resume up)", !hearth.update.stage().haveState());
+  check("the staged bundle is gone (resume up)", !hearth.update.stage().stagedExists());
+  check("the status is IDLE (resume up)", hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("the error is OK (resume up)", hearth.update.status().error == HEARTH_UPDATE_OK);
+  check("the effectiveVersion is 66560 (resume up)", hearth.update.status().effectiveVersion == 66560);
+  check("hearthVersion is the new running version (resume up)",
+        strcmp(hearth.update.status().hearthVersion, "1.3.0") == 0);
+  check("the script is drained (resume up)", s.scriptDrained());
+  check("nothing unexpected on the wire (resume up)", s.unexpected().empty());
+}
+
+/* Case 2 (6c): the resume, the co-processor silent until the flash. As
+ * case 1, but the script does not answer the resume's declaration (the
+ * co-processor is in its recovery bootloader): the declaration goes to
+ * unexpected(), no reply comes (the command timeout runs out), and the
+ * flash runs anyway. */
+static void test_resume_silent_until_flash(void) {
+  std::string fx;
+  check("the fixture loads (resume silent)", loadFixture("fixtures/good.ota", fx));
+  HearthFsMem fs;
+  check("the staged bundle is seeded (resume silent)", seedStaged(fs, fx));
+  {
+    HearthUpdateStage stg;
+    stg.begin(fs);
+    HearthManifest m;
+    m.productVersion = 66304;
+    snprintf(m.productVersionString, sizeof(m.productVersionString), "%s", "1.3.0");
+    snprintf(m.hostVersion, sizeof(m.hostVersion), "%s", "1.4.0");
+    check("the manifest is saved (resume silent)", stg.saveManifest(m));
+  }
+  check("the FW state is seeded (resume silent)",
+        seedFwState(fs, 1, 66560, "1.4.0", 0, 0xFF));
+
+  MockStream s;
+  HearthClass hearth;
+  FlasherFake fake;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  hearth.update.hearthSetFlasher(&fake);
+  HearthUpdateConfig cfg;
+  cfg.resetPin = 15;
+  cfg.resetActiveLow = true;
+  cfg.strapPin = 14;
+  cfg.strapActiveLow = true;
+
+  PartLine pl;
+  check("the part|good|0 line loads (resume silent)", loadPartLine("good", 0, pl));
+  /* The script starts at AT+MTVER?: the resume's declaration is not in
+   * it, and an unmatched command gets no reply and does not consume the
+   * script. */
+  s.expect("AT+MTVER?", "+MTVER:1.3.0\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  scriptBeginFor(s, "AT+MTSWVER=66560,\"1.4.0\"", "ESP32-C6 Hearth", "1.3.0", "wifi");
+  fake.onFlash = [&](int i) {
+    if (i == 0) {
+      s.injectURC("+MTREADY");
+    }
+  };
+  g_yieldAdvanceMs = 50;
+  check("the silent resume's begin returns true", hearth.update.begin(0x10300, "1.3.0", cfg));
+  g_yieldAdvanceMs = 0;
+
+  const std::vector<FlasherFake::Call> &calls = fake.calls();
+  check("exactly one flash call (resume silent)", calls.size() == 1);
+  if (calls.size() == 1) {
+    const FlasherFake::Call &c = calls[0];
+    check("the off matches apply_parts.txt part|good|0 (resume silent)", c.off == pl.off);
+    check("the len matches apply_parts.txt part|good|0 (resume silent)", c.len == pl.len);
+    check("the sha256 matches apply_parts.txt part|good|0 (resume silent)", memcmp(c.sha256, pl.sha, 32) == 0);
+  }
+  check("unexpected() holds exactly one entry (resume silent)", s.unexpected().size() == 1);
+  if (s.unexpected().size() == 1) {
+    check("the one unexpected entry is the resume declaration (resume silent)",
+          s.unexpected()[0] == "AT+MTSWVER=66560,\"1.4.0\"");
+  }
+  check("the state is gone (resume silent)", !hearth.update.stage().haveState());
+  check("the staged bundle is gone (resume silent)", !hearth.update.stage().stagedExists());
+  check("the status is IDLE (resume silent)", hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("the effectiveVersion is 66560 (resume silent)",
+        hearth.update.status().effectiveVersion == 66560);
+  check("the script is drained (resume silent)", s.scriptDrained());
+}
+
+/* Case 3 (6c): the resume after three attempts. The state says three
+ * attempts were already spent: no declaration, no flash at all, straight
+ * to the failure tail (the old version re-declared, the requestor on, the
+ * state cleared, the staged bundle kept), and begin() ends with the FAILED
+ * status and the link up. */
+static void test_resume_three_attempts(void) {
+  std::string fx;
+  check("the fixture loads (resume 3)", loadFixture("fixtures/good.ota", fx));
+  HearthFsMem fs;
+  check("the staged bundle is seeded (resume 3)", seedStaged(fs, fx));
+  {
+    HearthUpdateStage stg;
+    stg.begin(fs);
+    HearthManifest m;
+    m.productVersion = 66304;
+    snprintf(m.productVersionString, sizeof(m.productVersionString), "%s", "1.3.0");
+    snprintf(m.hostVersion, sizeof(m.hostVersion), "%s", "1.4.0");
+    check("the manifest is saved (resume 3)", stg.saveManifest(m));
+  }
+  check("the FW state is seeded with three attempts (resume 3)",
+        seedFwState(fs, 3, 66560, "1.4.0", 0, 0xFF));
+
+  MockStream s;
+  HearthClass hearth;
+  FlasherFake fake;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  hearth.update.hearthSetFlasher(&fake);
+  HearthUpdateConfig cfg;
+  cfg.resetPin = 15;
+  cfg.resetActiveLow = true;
+  cfg.strapPin = 14;
+  cfg.strapActiveLow = true;
+
+  /* The failure tail (the old version re-declared, no rollback image
+   * here) and begin()'s own sequence (the effective version, still 66304
+   * "1.3.0", with the running version 1.2.0). */
+  s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  scriptBeginFor(s, "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "1.2.0", "wifi");
+  g_yieldAdvanceMs = 50;
+  check("the 3-attempts resume's begin returns true", hearth.update.begin(0x10300, "1.3.0", cfg));
+  g_yieldAdvanceMs = 0;
+
+  check("zero flash calls (resume 3)", fake.calls().size() == 0);
+  check("the state is gone (resume 3)", !hearth.update.stage().haveState());
+  check("the staged bundle is kept (resume 3)", hearth.update.stage().stagedExists());
+  check("the status is FAILED (resume 3)", hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  check("the error is ERR_FLASH (resume 3)",
+        hearth.update.status().error == HEARTH_UPDATE_ERR_FLASH);
+  check("the script is drained (resume 3)", s.scriptDrained());
+  check("nothing unexpected on the wire (resume 3)", s.unexpected().empty());
+}
+
+/* Case 4 (6c): the resume with the remaining attempts failing. State
+ * {FW, attempts 1, ...} and a retained image of 500 known bytes for
+ * "ESP32-C6 Hearth" "1.2.0": the resume flashes attempts 2 and 3 (both
+ * answer 1.2.0, not the part's version), then the failure tail re-declares
+ * the old version, flashes the retained image, and gives up with FAILED
+ * and the staged bundle kept. */
+static void test_resume_remaining_fail_rollback(void) {
+  std::string fx;
+  check("the fixture loads (resume roll)", loadFixture("fixtures/good.ota", fx));
+  HearthFsMem fs;
+  check("the staged bundle is seeded (resume roll)", seedStaged(fs, fx));
+  {
+    HearthUpdateStage stg;
+    stg.begin(fs);
+    HearthManifest m;
+    m.productVersion = 66304;
+    snprintf(m.productVersionString, sizeof(m.productVersionString), "%s", "1.3.0");
+    snprintf(m.hostVersion, sizeof(m.hostVersion), "%s", "1.4.0");
+    check("the manifest is saved (resume roll)", stg.saveManifest(m));
+  }
+  check("the FW state is seeded (resume roll)", seedFwState(fs, 1, 66560, "1.4.0", 0, 0xFF));
+  /* A retained image of 500 known bytes, through the fs (6a's case 5
+   * shows how). */
+  std::vector<uint8_t> retBytes(500);
+  for (int i = 0; i < 500; i++) {
+    retBytes[i] = (uint8_t)(i * 7 + 3);
+  }
+  HearthUpdateStage stg2;
+  check("stage begin for the retained seed (resume roll)", stg2.begin(fs));
+  {
+    HearthFile *f = fs.open("/hearth/fw-scratch.bin", "w");
+    check("the scratch file opens (resume roll)", f != 0);
+    if (f) {
+      check("the 500 bytes are written (resume roll)",
+            f->write(retBytes.data(), retBytes.size()) == retBytes.size());
+      delete f;
+    }
+    f = fs.open("/hearth/fw-scratch.bin", "r");
+    check("the scratch file reopens (resume roll)", f != 0);
+    if (f) {
+      check("the retained image is written (resume roll)",
+            stg2.retainFwPart(*f, 0, 500, "ESP32-C6 Hearth", "1.2.0"));
+      delete f;
+    }
+  }
+
+  MockStream s;
+  HearthClass hearth;
+  FlasherFake fake;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  hearth.update.hearthSetFlasher(&fake);
+  HearthUpdateConfig cfg;
+  cfg.resetPin = 15;
+  cfg.resetActiveLow = true;
+  cfg.strapPin = 14;
+  cfg.strapActiveLow = true;
+
+  /* The resume's declaration, the two remaining attempts (both answer
+   * 1.2.0), the failure tail (old version re-declared, the rollback
+   * flash, its AT+MTVER?) and begin()'s own sequence. */
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  scriptBeginFor(s, "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "1.2.0", "wifi");
+  fake.onFlash = [&](int i) {
+    (void)i;
+    s.injectURC("+MTREADY");
+  };
+  g_yieldAdvanceMs = 50;
+  check("the roll resume's begin returns true", hearth.update.begin(0x10300, "1.3.0", cfg));
+  g_yieldAdvanceMs = 0;
+
+  const std::vector<FlasherFake::Call> &calls = fake.calls();
+  check("exactly three flash calls (resume roll)", calls.size() == 3);
+  if (calls.size() == 3) {
+    check("the third flash's image equals the 500 retained bytes (resume roll)",
+          calls[2].image == retBytes);
+  }
+  check("the staged bundle is kept (resume roll)", hearth.update.stage().stagedExists());
+  check("the state is gone (resume roll)", !hearth.update.stage().haveState());
+  check("the status is FAILED (resume roll)", hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  check("the error is ERR_FLASH (resume roll)",
+        hearth.update.status().error == HEARTH_UPDATE_ERR_FLASH);
+  check("the script is drained (resume roll)", s.scriptDrained());
+  check("nothing unexpected on the wire (resume roll)", s.unexpected().empty());
+}
+
+/* Case 5 (6c): the resume with a host part. No manifest; the state says
+ * the host part was selected (hostPart 1). The resume flashes (one
+ * attempt, success), the success tail stages the host part through the
+ * hook and reboots; on the host test the reboot hook returns, so begin()
+ * returns at once with the state the host apply left (phase HOST). */
+static void test_resume_with_host_part(void) {
+  std::string fx;
+  check("the fixture loads (resume host)", loadFixture("fixtures/good.ota", fx));
+  HearthFsMem fs;
+  check("the staged bundle is seeded (resume host)", seedStaged(fs, fx));
+  check("the FW state is seeded with hostPart 1 (resume host)",
+        seedFwState(fs, 1, 66560, "1.4.0", 0, 1));
+
+  MockStream s;
+  HearthClass hearth;
+  FlasherFake fake;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  hearth.update.hearthSetFlasher(&fake);
+  hostSetup(s, hearth);
+  HearthUpdateConfig cfg;
+  cfg.resetPin = 15;
+  cfg.resetActiveLow = true;
+  cfg.strapPin = 14;
+  cfg.strapActiveLow = true;
+
+  PartLine pl1;
+  check("the part|good|1 line loads (resume host)", loadPartLine("good", 1, pl1));
+  /* The resume's declaration, the flash, and the requestor on from the
+   * success tail; nothing after (the reboot hook returns, begin() does). */
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.3.0\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  fake.onFlash = [&](int i) {
+    if (i == 0) {
+      s.injectURC("+MTREADY");
+    }
+  };
+  g_yieldAdvanceMs = 50;
+  check("the host resume's begin returns true", hearth.update.begin(0x10300, "1.3.0", cfg));
+  g_yieldAdvanceMs = 0;
+
+  check("exactly one flash call (resume host)", fake.calls().size() == 1);
+  check("one stageImage call (resume host)", g_host.stage.size() == 1);
+  if (g_host.stage.size() == 1) {
+    const StageRec &r = g_host.stage[0];
+    check("the stageImage off matches part|good|1 (resume host)", r.off == pl1.off);
+    check("the stageImage len matches part|good|1 (resume host)", r.len == pl1.len);
+  }
+  check("one reboot (resume host)", g_host.reboots == 1);
+  HearthUpdateState st2;
+  check("the state loads phase HOST (resume host)",
+        hearth.update.stage().loadState(st2) && st2.phase == HEARTH_PHASE_HOST);
+  check("the script is drained (resume host)", s.scriptDrained());
+  check("nothing unexpected on the wire (resume host)", s.unexpected().empty());
+}
+
+/* Case 6 (6c): the FW state with no staged bundle. There is nothing to
+ * resume: the state is cleared and begin() runs its normal sequence as if
+ * there had been no state file. */
+static void test_resume_no_staged(void) {
+  HearthFsMem fs;
+  {
+    HearthUpdateStage stg;
+    stg.begin(fs);
+    HearthManifest m;
+    m.productVersion = 66304;
+    snprintf(m.productVersionString, sizeof(m.productVersionString), "%s", "1.3.0");
+    snprintf(m.hostVersion, sizeof(m.hostVersion), "%s", "1.4.0");
+    check("the manifest is saved (resume none)", stg.saveManifest(m));
+  }
+  check("the FW state is seeded (resume none)", seedFwState(fs, 1, 66560, "1.4.0", 0, 0xFF));
+
+  MockStream s;
+  HearthClass hearth;
+  FlasherFake fake;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  hearth.update.hearthSetFlasher(&fake);
+  HearthUpdateConfig cfg;
+  cfg.resetPin = 15;
+  cfg.resetActiveLow = true;
+  cfg.strapPin = 14;
+  cfg.strapActiveLow = true;
+
+  /* begin()'s own sequence (the effective version 66304 "1.3.0" from the
+   * manifest, the running version 1.2.0). No resume command at all. */
+  scriptBeginFor(s, "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "1.2.0", "wifi");
+  g_yieldAdvanceMs = 50;
+  check("the no-staged resume's begin returns true", hearth.update.begin(0x10300, "1.3.0", cfg));
+  g_yieldAdvanceMs = 0;
+
+  check("zero flash calls (resume none)", fake.calls().size() == 0);
+  check("the state is gone (resume none)", !hearth.update.stage().haveState());
+  check("the status is IDLE (resume none)", hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("the script is drained (resume none)", s.scriptDrained());
+  check("nothing unexpected on the wire (resume none)", s.unexpected().empty());
+}
+
 int main(void) {
   printf("\n===== HearthUpdate apply (task 6a) tests =====\n");
   test_order_and_arguments();
@@ -875,6 +1337,13 @@ int main(void) {
   test_host_confirm_link_down();
   test_host_confirm_link_up();
   test_no_hooks();
+  printf("\n===== HearthUpdate apply (task 6c) tests =====\n");
+  test_resume_link_up();
+  test_resume_silent_until_flash();
+  test_resume_three_attempts();
+  test_resume_remaining_fail_rollback();
+  test_resume_with_host_part();
+  test_resume_no_staged();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

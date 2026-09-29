@@ -177,11 +177,18 @@ private:
   void hearthSetBaud(uint32_t baud);  /* 4b2: AT+MTBAUD=<baud> plus the test hook */
   void hearthAbandon();     /* 4b2: AT+MTOTA=0 then AT+MTOTA=1, remove the staged bundle, IDLE */
   /* 6a: the apply of the Hearth (co-processor) part, run by hearthDrain()
-   * once and for all on the pending +MTOTA:APPLY. Task 6b's resume calls
+   * once and for all on the pending +MTOTA:APPLY. Task 6c's resume calls
    * hearthApplyFw() directly with the state it loaded. */
   void hearthApply();
-  int hearthApplyFw(HearthUpdateState &st);  /* 6a: the flash attempts, 0 success, 1 three failures */
+  /* 6a, first-attempt parameter added by 6c: the flash attempts from
+   * firstAttempt to 3 (a resume continues where the state file left off,
+   * it does not restart the count). 0 success, 1 three failures. */
+  int hearthApplyFw(HearthUpdateState &st, int firstAttempt = 1);
   void hearthApplyHost();  /* 6b: the host part; stage it through PicoOTA and reboot */
+  /* 6c: the success and failure tails of the Hearth-part apply, shared by
+   * hearthApply() (6a) and the resume after a power loss (6c). */
+  void hearthFwSucceeded(const HearthBundleInfo &info, int part, HearthFile &staged, const HearthUpdateState &st);
+  void hearthFwFailed();
   /* 6b: the first-boot paths in begin(), after the state file is loaded.
    * The host part was staged and the sketch rebooted into it; now confirm
    * (HOST, the manifest is written here) or give up (HOST_CONFIRM, the
