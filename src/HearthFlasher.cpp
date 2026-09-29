@@ -13,10 +13,6 @@
 
 #include <string.h>
 
-#ifdef ARDUINO
-#include <Arduino.h>
-#endif
-
 /*
  * Task 5a registers the SMP client for the two nRF model strings. The
  * XMODEM flasher (MGM240P, Task 5b) and the ESP loader (ESP32-C6, Task
@@ -29,7 +25,11 @@ HearthFlasher *HearthFlasher::forModel(const char *model) {
     return nullptr;
   }
   if (strcmp(model, "nRF54L15 Hearth") == 0 || strcmp(model, "nRF54LM20A Hearth") == 0) {
-    return new HearthFlasherSmp();
+    /* Library-owned static: the caller never deletes (the header says so).
+     * A fresh allocation per call would leave the update's apply path with
+     * a heap object nothing frees. */
+    static HearthFlasherSmp smp;
+    return &smp;
   }
   /* Task 5b: "MGM240P Hearth" -> the XMODEM client. Task 5c: "ESP32-C6 Hearth" -> the ESP loader. */
   return nullptr;

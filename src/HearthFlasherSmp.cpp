@@ -37,6 +37,7 @@
  * sends it, byte for byte).
  */
 #include "HearthFlasherSmp.h"
+#include "HearthFlasherSmpInternal.h"   /* the layer functions the host test drives directly */
 #include "HearthBundle.h"   /* HearthByteSource */
 
 #include <string.h>
@@ -55,15 +56,13 @@
 #define HEARTH_SMP_ID_UPLOAD           1   /* IMGMGR_NMGR_ID_UPLOAD (group 1) */
 #define HEARTH_SMP_RC_OK               0   /* MGMT_ERR_OK */
 
-/* ---- framing constants (boot_serial.c:125, smp.py) ---- */
-#define HEARTH_SMP_FRAME_MTU           124 /* BOOT_SERIAL_FRAME_MTU base64 chars per line */
+/* ---- framing constants (boot_serial.c:125, smp.py) ----
+ * The line framing constants (HEARTH_SMP_FRAME_MTU, HEARTH_SMP_PKT_*,
+ * HEARTH_SMP_PACKET_MAX) are defined in HearthFlasherSmpInternal.h,
+ * where the decoder class is defined; only the header-only ones stay
+ * here. */
 #define HEARTH_SMP_HDR_LEN             8   /* sizeof(struct nmgr_hdr) */
-#define HEARTH_SMP_PKT_START_1         0x06
-#define HEARTH_SMP_PKT_START_2         0x09
-#define HEARTH_SMP_PKT_CONT_1          0x04
-#define HEARTH_SMP_PKT_CONT_2          0x14
 #define HEARTH_SMP_CHUNK               512 /* flash.py CHUNK, under CONFIG_BOOT_SERIAL_MAX_RECEIVE_SIZE 1024 */
-#define HEARTH_SMP_PACKET_MAX          (1024 + 8 + 2) /* totlen + header + payload + crc: CONFIG_BOOT_SERIAL_MAX_RECEIVE_SIZE 1024 + nmgr_hdr 8 + crc 2 */
 #define HEARTH_SMP_IMAGE_MAGIC         0x96F3B83DU /* bootutil/image.h:51, ih_magic little-endian on disk */
 #define HEARTH_SMP_IMAGE_HDR           32    /* image_header is 32 bytes (bootutil/image.h:57) */
 
@@ -85,7 +84,7 @@
 
 /* ---- crc16-xmodem (poly 0x1021, init 0, no reflection, no xor-out) ---- */
 
-static uint16_t smpCrc16(const uint8_t *data, size_t n) {
+uint16_t smpCrc16(const uint8_t *data, size_t n) {
   uint16_t crc = 0;
   for (size_t i = 0; i < n; i++) {
     crc ^= (uint16_t)((uint16_t)data[i] << 8);
@@ -328,7 +327,7 @@ static bool smpCborItem(const uint8_t *buf, size_t n, size_t &pos, SmpCborVal &v
  * a map, definite or indefinite; anything that is not a map, or a map
  * whose entries are not the shapes above, is a protocol error.
  */
-static bool smpDecodeResponse(const uint8_t *payload, size_t n, int32_t &rc, bool &hasOff, uint32_t &off) {
+bool smpDecodeResponse(const uint8_t *payload, size_t n, int32_t &rc, bool &hasOff, uint32_t &off) {
   size_t pos = 0;
   SmpCborVal map;
   if (!smpCborItem(payload, n, pos, map, 0) || map.type != 6) return false;
@@ -433,9 +432,10 @@ static int smpBase64Decode(const char *s, size_t n, uint8_t *out) {
  * crc16(frame) as u16 BE, base64 as a whole, split into runs of at most
  * HEARTH_SMP_FRAME_MTU characters, the first run prefixed 0x06 0x09 and
  * the continuations 0x04 0x14, each ending with a newline. This is
- * smp.py's serial_encode() byte for byte.
+ * smp.py's serial_encode() byte for byte. The packet buffer must fit
+ * totlen(2) + frame + crc(2), at most HEARTH_SMP_PACKET_MAX.
  */
-static void smpWriteFrameLines(Stream &uart, const uint8_t *frame, size_t frameLen) {
+void smpWriteFrameLines(Stream &uart, const uint8_t *frame, size_t frameLen) {
   /* totlen(2) + frame + crc(2): the +2 is the crc itself */
   uint8_t raw[HEARTH_SMP_PACKET_MAX];
   if (frameLen + 4 > sizeof(raw)) return;
@@ -478,147 +478,149 @@ static void smpWriteFrameLines(Stream &uart, const uint8_t *frame, size_t frameL
  * totlen || frame || crc == 0, the self-checking property of a
  * non-reflected CRC with the check bytes appended in wire order).
  */
-class SmpSerialDecoder {
-public:
-  SmpSerialDecoder() { reset(); }
 
+SmpSerialDecoder::SmpSerialDecoder() { reset(); }
+
+/*
+ * Feed raw bytes; the decoded frame (header + payload) lands in out
+ * (at most outCap bytes) and its length is returned, or 0 for nothing
+ * complete yet. The bytes after the newline that completed the frame
+ * are NOT consumed: they are kept in this decoder's pending buffer
+ * and re-examined on the next feed, so a batch read holding several
+ * responses at once (the mock delivers them eagerly, and a real port
+ * can buffer just as well) loses none of them.
+ */
+size_t SmpSerialDecoder::feed(const uint8_t *data, size_t n, uint8_t *out, size_t outCap) {
   /*
-   * Feed raw bytes; the decoded frame (header + payload) lands in out
-   * (at most HEARTH_SMP_PACKET_MAX - 4 bytes) and its length is
-   * returned, or 0 for nothing complete yet. *consumed is set to the
-   * number of bytes actually consumed from data: when a frame is
-   * returned it is the index just past the newline that completed the
-   * frame, so the caller feeds the remainder on its next call. This
-   * matters because a batch read from the UART can hold several
-   * responses at once (the mock delivers them eagerly, and a real port
-   * can buffer just as well): returning only the first frame without
-   * reporting how much was used would drop the rest.
+   * Pending bytes from the previous call (the tail of the batch after
+   * the line that call examined last) come first, then the new bytes.
+   * A batch read from the UART can hold several responses at once (the
+   * mock delivers them eagerly, and a real port can buffer just as
+   * well), and the caller takes one frame per read cycle, so the tail
+   * after the last examined line must survive until it is consumed.
+   *
+   * Two passes: the first re-examines the pending bytes, the second
+   * the new bytes. Every line is examined exactly once and its bytes
+   * are consumed whether or not it completes a frame: only the bytes
+   * after the last examined line are carried over, so a rejected line
+   * (bad marker, bad CRC, a stale reply with a foreign sequence number)
+   * can never be re-examined and never block the bytes behind it.
    */
-  size_t feed(const uint8_t *data, size_t n, uint8_t *out) {
-    /*
-     * Pending bytes from the previous call (the tail of the batch after
-     * the frame that call returned) come first, then the new bytes. A
-     * batch read from the UART can hold several responses at once (the
-     * mock delivers them eagerly, and a real port can buffer just as
-     * well), and the caller takes one frame per read cycle, so the tail
-     * after a returned frame must survive until it is consumed.
-     *
-     * Two passes: the first processes the pending bytes (which were
-     * already vetted on the call that set them), the second processes
-     * the new bytes. A frame completed in either pass stores the
-     * remainder of that pass's source in the pending buffer.
-     */
-    if (pendLen) {
-      size_t i = 0;
-      for (; i < pendLen; i++) {
-        uint8_t c = pend[i];
-        if (c == '\n') {
-          if (feedLine(out)) {
-            lineLen = 0;
-            size_t rest = pendLen - (i + 1);
-            if (rest) {
-              pendLen = rest > sizeof(pend) ? sizeof(pend) : rest;
-              memmove(pend, pend + i + 1, pendLen);
-            } else {
-              pendLen = 0;
-            }
-            return outLen;
-          }
-          lineLen = 0;
-          continue;
-        }
-        if (lineLen < sizeof(line)) line[lineLen++] = c;
-      }
-      pendLen = 0;
-    }
-    for (size_t i = 0; i < n; i++) {
-      uint8_t c = data[i];
+  if (pendLen) {
+    size_t i = 0;
+    for (; i < pendLen; i++) {
+      uint8_t c = pend[i];
       if (c == '\n') {
-        if (feedLine(out)) {
+        if (feedLine(out, outCap)) {
           lineLen = 0;
-          size_t rest = n - (i + 1);
+          size_t rest = pendLen - (i + 1);
           if (rest) {
             pendLen = rest > sizeof(pend) ? sizeof(pend) : rest;
-            memcpy(pend, data + i + 1, pendLen);
+            memmove(pend, pend + i + 1, pendLen);
+          } else {
+            pendLen = 0;
           }
           return outLen;
         }
         lineLen = 0;
-        continue;
+        continue;   /* the line is consumed, even though it was rejected */
       }
       if (lineLen < sizeof(line)) line[lineLen++] = c;
-      /* an overlong line: drop it (the marker check rejects it anyway) */
     }
-    return 0;
-  }
-
-  /*
-   * Drop everything in flight: the partial line, the partial packet
-   * accumulation, and the pending tail. Called between recovery entry
-   * attempts, where a stale reply left over from an abandoned attempt
-   * must not be mistaken for the next attempt's answer (flash.py
-   * clears its input buffer and starts a fresh decoder for exactly this
-   * reason).
-   */
-  void reset() {
-    lineLen = 0;
-    accLen = 0;
-    pendLen = 0;
-  }
-
-private:
-  bool feedLine(uint8_t *out) {
-    if (lineLen < 2) return false;
-    uint8_t m1 = line[0], m2 = line[1];
-    if (m1 == HEARTH_SMP_PKT_START_1 && m2 == HEARTH_SMP_PKT_START_2) {
-      accLen = 0;
-    } else if (m1 == HEARTH_SMP_PKT_CONT_1 && m2 == HEARTH_SMP_PKT_CONT_2) {
-      if (accLen == 0) return false;   /* continuation with no start seen: drop it */
+    /* No line completed in the pending pass: carry the trailing
+     * partial line (if any) over to the new bytes. */
+    size_t rest = pendLen - i;
+    if (rest) {
+      pendLen = rest > sizeof(pend) ? sizeof(pend) : rest;
+      memmove(pend, pend + i, pendLen);
     } else {
-      return false;                     /* not an SMP line: ignore */
+      pendLen = 0;
     }
-    size_t run = lineLen - 2;
-    if (run > sizeof(acc) - accLen) return false;   /* over the packet budget: drop it */
-    int d = smpBase64Decode((const char *)line + 2, run, acc + accLen);
-    if (d < 0) {
-      accLen = 0;
-      return false;
-    }
-    accLen += (size_t)d;
-    if (accLen <= 2) return false;      /* still waiting for the totlen to fill */
-    uint32_t totlen = ((uint32_t)acc[0] << 8) | acc[1];
-    if (accLen - 2 != totlen) return false;   /* not complete yet (or a mismatch): keep waiting */
-    /* The CRC covers frame + crc (NOT the totlen prefix): the residue
-     * over header+payload+the-transmitted-crc-bytes must be 0, which is
-     * the self-checking property of a non-reflected CRC with the check
-     * bytes appended in wire order (boot_serial.c:1479-1489). */
-    if (smpCrc16(acc + 2, (size_t)totlen) != 0) {
-      accLen = 0;
-      return false;
-    }
-    if (totlen <= 2) {
-      accLen = 0;
-      return false;
-    }
-    size_t frameLen = (size_t)totlen - 2;
-    if (frameLen > sizeof(acc) - 4) {
-      accLen = 0;
-      return false;
-    }
-    memcpy(out, acc + 2, frameLen);
-    outLen = frameLen;
-    accLen = 0;
-    return true;
   }
+  size_t consumed = 0;
+  for (size_t i = 0; i < n; i++) {
+    uint8_t c = data[i];
+    if (c == '\n') {
+      if (feedLine(out, outCap)) {
+        lineLen = 0;
+        size_t rest = n - (i + 1);
+        if (rest) {
+          pendLen = rest > sizeof(pend) ? sizeof(pend) : rest;
+          memcpy(pend, data + i + 1, pendLen);
+        }
+        return outLen;
+      }
+      lineLen = 0;
+      consumed = i + 1;   /* the rejected line is consumed */
+      continue;
+    }
+    if (lineLen < sizeof(line)) line[lineLen++] = c;
+    /* an overlong line: drop it (the marker check rejects it anyway) */
+  }
+  /* No line completed in the new pass: carry the trailing partial line
+   * over so it is not lost (the same protection the original code had
+   * only for the bytes after a returned frame). */
+  if (n > consumed) {
+    size_t rest = n - consumed;
+    pendLen = rest > sizeof(pend) ? sizeof(pend) : rest;
+    memcpy(pend, data + consumed, pendLen);
+  }
+  return 0;
+}
 
-  uint8_t line[2 + HEARTH_SMP_FRAME_MTU + 8];
-  size_t lineLen;
-  uint8_t acc[HEARTH_SMP_PACKET_MAX];
-  size_t accLen;
-  uint8_t pend[HEARTH_SMP_PACKET_MAX];
-  size_t pendLen;
-  size_t outLen;
-};
+/*
+ * Drop everything in flight: the partial line, the partial packet
+ * accumulation, and the pending tail. Called between recovery entry
+ * attempts, where a stale reply left over from an abandoned attempt
+ * must not be mistaken for the next attempt's answer (flash.py
+ * clears its input buffer and starts a fresh decoder for exactly this
+ * reason).
+ */
+void SmpSerialDecoder::reset() {
+  lineLen = 0;
+  accLen = 0;
+  pendLen = 0;
+}
+
+bool SmpSerialDecoder::feedLine(uint8_t *out, size_t outCap) {
+  if (lineLen < 2) return false;
+  uint8_t m1 = line[0], m2 = line[1];
+  if (m1 == HEARTH_SMP_PKT_START_1 && m2 == HEARTH_SMP_PKT_START_2) {
+    accLen = 0;
+  } else if (m1 == HEARTH_SMP_PKT_CONT_1 && m2 == HEARTH_SMP_PKT_CONT_2) {
+    if (accLen == 0) return false;   /* continuation with no start seen: drop it */
+  } else {
+    return false;                     /* not an SMP line: ignore */
+  }
+  size_t run = lineLen - 2;
+  if (run > sizeof(acc) - accLen) return false;   /* over the packet budget: drop it */
+  int d = smpBase64Decode((const char *)line + 2, run, acc + accLen);
+  if (d < 0) {
+    accLen = 0;
+    return false;
+  }
+  accLen += (size_t)d;
+  if (accLen <= 2) return false;      /* still waiting for the totlen to fill */
+  uint32_t totlen = ((uint32_t)acc[0] << 8) | acc[1];
+  if (accLen - 2 != totlen) return false;   /* not complete yet (or a mismatch): keep waiting */
+  if (smpCrc16(acc + 2, (size_t)totlen) != 0) {
+    accLen = 0;
+    return false;
+  }
+  if (totlen <= 2) {
+    accLen = 0;
+    return false;
+  }
+  size_t frameLen = (size_t)totlen - 2;
+  if (frameLen > sizeof(acc) - 4 || frameLen > outCap) {
+    accLen = 0;
+    return false;
+  }
+  memcpy(out, acc + 2, frameLen);
+  outLen = frameLen;
+  accLen = 0;
+  return true;
+}
 
 /* ---- the SMP request/response exchange over the UART ---- */
 
@@ -658,8 +660,7 @@ struct SmpFrame {
  * claims a longer payload than the packet carries is dropped, not an
  * error.
  */
-static bool smpReadFrame(Stream &uart, SmpSerialDecoder &dec, uint32_t timeoutMs, uint8_t expectedSeq, SmpFrame &out) {
-  uint8_t frame[HEARTH_SMP_PACKET_MAX];
+static bool smpReadFrame(Stream &uart, SmpSerialDecoder &dec, uint32_t timeoutMs, uint8_t expectedSeq, SmpFrame &out, uint8_t *frameBuf) {
   uint32_t deadline = millis() + timeoutMs;
   for (;;) {
     /* Read in batches and feed them whole, the way the reference
@@ -688,17 +689,17 @@ static bool smpReadFrame(Stream &uart, SmpSerialDecoder &dec, uint32_t timeoutMs
        * pending bytes from a previous batch (the tail after the frame
        * that batch returned), and those may complete a frame without
        * any new bytes from the wire. */
-      size_t got = dec.feed(n > 0 ? batch : nullptr, (size_t)n, frame);
+      size_t got = dec.feed(n > 0 ? batch : nullptr, (size_t)n, frameBuf, HEARTH_SMP_PACKET_MAX);
       if (got) {
         if (got < HEARTH_SMP_HDR_LEN) continue;   /* shorter than a header: drop */
         SmpFrame f;
-        f.op = frame[0];
-        f.flags = frame[1];
-        f.len = ((uint16_t)frame[2] << 8) | frame[3];
-        f.group = ((uint16_t)frame[4] << 8) | frame[5];
-        f.seq = frame[6];
-        f.id = frame[7];
-        f.payload = frame + HEARTH_SMP_HDR_LEN;
+        f.op = frameBuf[0];
+        f.flags = frameBuf[1];
+        f.len = ((uint16_t)frameBuf[2] << 8) | frameBuf[3];
+        f.group = ((uint16_t)frameBuf[4] << 8) | frameBuf[5];
+        f.seq = frameBuf[6];
+        f.id = frameBuf[7];
+        f.payload = frameBuf + HEARTH_SMP_HDR_LEN;
         if ((uint32_t)HEARTH_SMP_HDR_LEN + f.len > got) continue;   /* truncated payload: drop */
         if (f.seq != expectedSeq) continue;                         /* stale reply: keep waiting */
         out = f;
@@ -721,7 +722,7 @@ static bool smpReadFrame(Stream &uart, SmpSerialDecoder &dec, uint32_t timeoutMs
  * the same way as the timeouts.
  */
 static int smpUpload(Stream &uart, SmpSerialDecoder &dec, SmpSeq &seq, HearthByteSource &src,
-                     uint32_t off0, uint32_t len, const uint8_t sha256[32]) {
+                     uint32_t off0, uint32_t len, const uint8_t sha256[32], uint8_t *frameBuf) {
   uint32_t total = len;
   uint32_t off = off0;
   int consecutiveTimeouts = 0;
@@ -748,7 +749,7 @@ static int smpUpload(Stream &uart, SmpSerialDecoder &dec, SmpSeq &seq, HearthByt
     smpWriteFrameLines(uart, frame, HEARTH_SMP_HDR_LEN + payloadLen);
 
     SmpFrame rep;
-    if (!smpReadFrame(uart, dec, HEARTH_SMP_CHUNK_TIMEOUT_MS, frameSeq, rep)) {
+    if (!smpReadFrame(uart, dec, HEARTH_SMP_CHUNK_TIMEOUT_MS, frameSeq, rep, frameBuf)) {
       consecutiveTimeouts++;
       if (consecutiveTimeouts > HEARTH_SMP_MAX_CONSEC_TIMEOUTS) {
         return HEARTH_FLASH_ERR_PROTOCOL;   /* upload stalled: timeouts at a fixed offset */
@@ -785,7 +786,7 @@ static int smpUpload(Stream &uart, SmpSerialDecoder &dec, SmpSeq &seq, HearthByt
  * so a stale reply from an abandoned attempt cannot be mistaken for
  * this one.
  */
-static int smpEnterRecovery(Stream &uart, const HearthCoprocPins &pins, SmpSerialDecoder &dec, SmpSeq &seq) {
+static int smpEnterRecovery(Stream &uart, const HearthCoprocPins &pins, SmpSerialDecoder &dec, SmpSeq &seq, uint8_t *frameBuf) {
   for (int attempt = 0; attempt < HEARTH_SMP_ENTRY_ATTEMPTS; attempt++) {
     hearthCoprocStrap(pins, true);
     delay(HEARTH_SMP_ENTER_SETTLE_MS);
@@ -805,9 +806,8 @@ static int smpEnterRecovery(Stream &uart, const HearthCoprocPins &pins, SmpSeria
       frame[6] = seq.next();
       frame[7] = HEARTH_SMP_ID_ECHO;
       smpWriteFrameLines(uart, frame, HEARTH_SMP_HDR_LEN + payloadLen);
-
       SmpFrame rep;
-      if (smpReadFrame(uart, dec, HEARTH_SMP_ECHO_TIMEOUT_MS, frame[6], rep)) {
+      if (smpReadFrame(uart, dec, HEARTH_SMP_ECHO_TIMEOUT_MS, frame[6], rep, frameBuf)) {
         return HEARTH_FLASH_OK;   /* any decodable, seq-matched reply: the link is up */
       }
     }
@@ -853,12 +853,13 @@ int HearthFlasherSmp::flash(Stream &uart, const HearthCoprocPins &pins, HearthBy
 
   SmpSerialDecoder dec;
   SmpSeq seq;
-  if (smpEnterRecovery(uart, pins, dec, seq) != HEARTH_FLASH_OK) {
+  uint8_t frameBuf[HEARTH_SMP_PACKET_MAX];
+  if (smpEnterRecovery(uart, pins, dec, seq, frameBuf) != HEARTH_FLASH_OK) {
     hearthCoprocStrap(pins, false);
     return HEARTH_FLASH_ERR_ENTER;
   }
 
-  int err = smpUpload(uart, dec, seq, src, off, len, sha256);
+  int err = smpUpload(uart, dec, seq, src, off, len, sha256, frameBuf);
 
   smpExitRecovery(pins);
   return err;

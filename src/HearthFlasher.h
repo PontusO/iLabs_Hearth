@@ -19,11 +19,18 @@
  * active-low flags). A pin of -1 means the board variant defines no such
  * line and the sketch supplies none: a flasher that cannot drive the
  * lines refuses with HEARTH_FLASH_ERR_ENTER rather than guessing.
+ *
+ * The stream type comes from the platform: on target the core's Stream
+ * (arduino-pico's is arduino::Stream, made visible by the core's own
+ * using directive), on the host test the shim's (test/host/Arduino.h
+ * redirects <Arduino.h> to the shim, the same pattern HearthLink.h
+ * uses). A forward declaration at global scope would declare a different
+ * class than the core's, so the type is taken from <Arduino.h>.
  */
 #pragma once
+#include <Arduino.h>
 #include <stdint.h>
 
-class Stream;
 class HearthByteSource;   /* HearthBundle.h */
 
 /*
@@ -59,7 +66,10 @@ public:
    * Which implementation serves this AT+CGMM model string, or nullptr
    * when no flasher knows the part (the update then reports the flash
    * error to the co-processor and the state file keeps the bundle for a
-   * manual retry).
+   * manual retry). The result is a pointer to a library-owned,
+   * function-local static instance: never delete it, and treat the
+   * object as mutable state the caller must not race with (the whole
+   * library is single-threaded, so that holds).
    */
   static HearthFlasher *forModel(const char *model);
 };
