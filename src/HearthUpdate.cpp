@@ -1,19 +1,19 @@
 /*
- * HearthUpdate.cpp: the link route, begin() and the URC parsing (plan
- * Task 4, first half). The download loop, the states' actions, the verdict,
- * the consent and the baud switch are the second half (Task 4b);
- * hearthDrain() exists and is called from HearthClass::poll() but returns
- * for now, and the bundle verdict is the part 4b fills in.
+ * HearthUpdate.cpp: the link route, begin(), the URC parsing and the
+ * pull-and-acknowledge download loop (plan Task 4, through the first half
+ * of 4b). The verification, the verdict, the consent and the apply are the
+ * second half (Task 4b2): on +MTOTA:DOWNLOADED hearthDrain() ends the
+ * staged write and stops.
  */
 /*
- * HearthGlobal.h, not Hearth.h (see Hearth.cpp's own comment there): this
- * file calls through the Hearth object, so it must see the declaration the
- * library's own translation units agree on, the one with the update member.
- * Hearth.h and HearthGlobal.h declare the same class two different ways
- * (with and without the member) only until the include paths line up;
- * compiling this file from Hearth.h would change its notion of the class's
- * size and layout from Hearth.cpp's, the ODR violation that misroutes a
- * call through the wrong member offset.
+ * HearthGlobal.h, not Hearth.h (see HearthGlobal.h's own comment):
+ * Hearth.h declares `extern HearthClass Hearth;` behind
+ * NO_GLOBAL_INSTANCES / NO_GLOBAL_HEARTH, and those macros travel as
+ * build-wide -D flags, so the library's own translation units would be
+ * compiled with the declaration suppressed in a build that opts out.
+ * HearthGlobal.h carries the same declaration unguarded, so every library
+ * file that can reach the global Hearth sees it no matter how the build
+ * was configured.
  */
 #include "HearthGlobal.h"
 #include "HearthUpdate.h"
@@ -31,6 +31,9 @@ HearthUpdate::HearthUpdate()
     _pendingLen(0),
     _havePendingBlock(false),
     _lastState(HEARTH_UPDATE_DISABLED),
+    _downloadComplete(false),
+    _stagedWriteOpen(false),
+    _draining(false),
     _applyRequestCB(0),
     _statusCB(0) {
   _status.state = HEARTH_UPDATE_DISABLED;
@@ -98,13 +101,18 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
   state[n] = 0;
 
   if (strcmp(state, "BLOCK") == 0) {
-    /* The pending-block announcement: +MTOTA:BLOCK,<seq>,<len>. */
+    /* The pending-block announcement: +MTOTA:BLOCK,<seq>,<len>. A BLOCK
+     * line always means a transfer is in progress, so the state is set to
+     * DOWNLOADING (the co-processor may send the BLOCK before the
+     * DOWNLOADING state line, or the state may still be IDLE from a
+     * previous transfer). */
     char *end;
     uint32_t seq = (uint32_t)strtoul(comma + 1, &end, 10);
     uint32_t len = (uint32_t)strtoul(end + 1, 0, 10);
     _pendingSeq = seq;
     _pendingLen = len;
     _havePendingBlock = true;
+    _status.state = HEARTH_UPDATE_DOWNLOADING;
     return;
   }
 
@@ -132,6 +140,9 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
     _status.state = HEARTH_UPDATE_VERIFYING;
     _status.percent = 100;
     _havePendingBlock = false;
+    /* The drain ends the staged write and sets _downloadComplete on this
+     * state; it runs outside the link's dispatch, where this callback
+     * cannot (the hearthDrain* pattern, this header's own comment). */
   } else if (strcmp(state, "APPLY") == 0) {
     /* The requestor asked to apply; 4b/6 answers it with the flasher. */
     _status.state = HEARTH_UPDATE_APPLYING_FW;
@@ -165,19 +176,246 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
 }
 
 /*
- * Called from HearthClass::poll() after the link's own drains. The second
- * half (Task 4b) fills in the pull loop, the verdict and the apply; for
- * this half it returns.
+ * Called from HearthClass::poll() after the link's own drains, and again
+ * at the end of every hearthCommand() this object sends, which is why the
+ * _draining guard below exists. The pull-and-acknowledge loop (Task 4b1):
+ * a pending block pulls and acknowledges itself, and +MTOTA:DOWNLOADED
+ * ends the staged write and sets _downloadComplete, which Task 4b2 turns
+ * into the verification, the verdict, the consent and the
+ * AT+MTOTASTAGED.
  */
 void HearthUpdate::hearthDrain() {
-  /* Task 4b: pull the pending block (AT+MTOTAGET/ACK), verify and give the
-   * verdict on DOWNLOADED, run the apply on APPLY. */
+  if (_draining) {
+    return;
+  }
+  DrainGuard guard(_draining);
+  if (_status.state == HEARTH_UPDATE_DISABLED || _status.state == HEARTH_UPDATE_UNAVAILABLE) {
+    return;
+  }
+  if (_havePendingBlock) {
+    hearthPullBlock();
+    return;
+  }
+  if (_status.state == HEARTH_UPDATE_VERIFYING && !_downloadComplete) {
+    /* +MTOTA:DOWNLOADED was parsed (the state is VERIFYING) but the
+     * staged write has not ended yet: end it now and set the flag.
+     * Task 4b2 picks up from here: verify the staged bundle, give the
+     * verdict, run the consent, send AT+MTOTASTAGED. */
+    _stage.stagedEndWrite();
+    _stagedWriteOpen = false;
+    _downloadComplete = true;
+    return;
+  }
+  if (_status.state == HEARTH_UPDATE_VERIFYING && _downloadComplete) {
+    /* Task 4b2: verify the staged bundle, give the verdict, run the
+     * consent, send AT+MTOTASTAGED. */
+  }
+}
+
+/* The block-pull collector, for AT+MTOTAGET=<seq>. The answer is one
+ * +MTOTABLK:<seq>,<off>,<hex> line per at most 96 bytes (ceil(len/96)
+ * lines, the last shorter for a short block, the hex upper-case) and then
+ * the terminal OK. Each line is validated before it is copied: the prefix,
+ * the block's own seq, the offset exactly where the previous line ended,
+ * and the hex length exactly the announced span of the block at that
+ * offset. The first failure marks the pull failed, and every later line,
+ * the included line, is ignored: the partial data is discarded by the
+ * caller and nothing is acknowledged. */
+struct BlkPull {
+  uint8_t buf[1024];
+  uint32_t seq;
+  uint32_t len;
+  uint32_t filled;
+  bool failed;
+};
+void onBlkLine(const char *line, void *arg) {
+  BlkPull *p = (BlkPull *)arg;
+  if (strncmp(line, "+MTOTABLK:", 10) != 0) {
+    /* +MTERR: lines never reach this callback: HearthLink::command
+     * intercepts them and returns the code (12) to the caller, which is
+     * where the mid-pull drop is handled. */
+    return;
+  }
+  if (p->failed) {
+    return;
+  }
+  const char *cs = line + 10;
+  const char *c1 = strchr(cs, ',');
+  if (!c1) {
+    p->failed = true;
+    return;
+  }
+  char *end;
+  unsigned long s = strtoul(cs, &end, 10);
+  if (end != c1 || s != p->seq) {
+    p->failed = true;
+    return;
+  }
+  const char *c2 = strchr(c1 + 1, ',');
+  if (!c2) {
+    p->failed = true;
+    return;
+  }
+  unsigned long off = strtoul(c1 + 1, &end, 10);
+  if (end != c2 || off != p->filled) {
+    p->failed = true;
+    return;
+  }
+  const char *hex = c2 + 1;
+  size_t hn = strlen(hex);
+  uint32_t want = p->len - (uint32_t)off;
+  if (want > 96) {
+    want = 96;
+  }
+  if (hn != (size_t)want * 2) {
+    p->failed = true;
+    return;
+  }
+  for (size_t i = 0; i < want; i++) {
+    unsigned int v;
+    if (sscanf(hex + 2 * i, "%2x", &v) != 1) {
+      p->failed = true;
+      return;
+    }
+    p->buf[off + i] = (uint8_t)v;
+  }
+  p->filled = (uint32_t)off + want;
+}
+
+/*
+ * Pull the pending block and acknowledge it. The stage gets its .tmp file
+ * before the first block of a transfer: on a parse error or a timeout the
+ * transfer aborts (AT+MTOTA=0) and the partial staged file is removed, so
+ * a dead transfer never leaves a file a later transfer could mistake for
+ * its own.
+ *
+ * The retry rules (plan Task 4b):
+ *  - a parse error re-pulls once: the pull is sent again, and the answer
+ *    that parses is used;
+ *  - the second parse failure aborts the transfer (AT+MTOTA=0), the
+ *    state is FAILED with HEARTH_UPDATE_ERR_LINK;
+ *  - a TIMEOUT is not re-pulled. The block must be acknowledged within 5 s
+ *    and a second full pull does not fit that at 115200, so a timed-out
+ *    pull aborts at once;
+ *  - a +MTERR:12 after partial lines (the co-processor dropped the
+ *    transfer mid-pull) discards the partial block and nothing is
+ *    acknowledged: the state is left for the ERROR,<detail> and IDLE
+ *    lines that follow.
+ *
+ * A successful pull ends in the staged append and the AT+MTOTAACK, which
+ * the co-processor answers before the next +MTOTA:BLOCK.
+ */
+void HearthUpdate::hearthPullBlock() {
+  uint32_t seq = _pendingSeq;
+  uint32_t len = _pendingLen;
+  if (len == 0 || len > 1024) {
+    /* A block the buffer cannot hold: nothing to pull, abort the
+     * transfer. (The co-processor announces 1024-byte blocks at most.) */
+    hearthAbortPull();
+    return;
+  }
+  /* Before the first block of a transfer the stage opens its write. */
+  if (!_stagedWriteOpen) {
+    if (!_stage.stagedBeginWrite()) {
+      hearthAbortPull();
+      return;
+    }
+    _stagedWriteOpen = true;
+  }
+  BlkPull pull;
+  memset(&pull, 0, sizeof(pull));
+  pull.seq = seq;
+  pull.len = len;
+  char cmd[HEARTH_LINE_MAX];
+  int rc;
+  int attempt;
+  for (attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) {
+      memset(&pull, 0, sizeof(pull));
+      pull.seq = seq;
+      pull.len = len;
+    }
+    snprintf(cmd, sizeof(cmd), "AT+MTOTAGET=%lu", (unsigned long)seq);
+    rc = hearthCmd(cmd, onBlkLine, &pull);
+    if (rc == 12) {
+      /* +MTERR:12 after partial lines: the co-processor dropped the
+       * transfer mid-pull. Nothing is acknowledged and the state is left
+       * for the ERROR,<detail> and IDLE lines that follow. The partial
+       * staged write is ended (the .tmp is removed, not renamed) so a
+       * dead transfer never leaves a file a later transfer could append
+       * to. */
+      _havePendingBlock = false;
+      /* End the staged write (closes the .tmp) and remove the staged
+       * file if it was renamed by a previous endWrite. The .tmp itself
+       * is removed by stagedEndWrite since no append succeeded. */
+      _stage.stagedEndWrite();
+      _stage.stagedRemove();
+      _stagedWriteOpen = false;
+      return;
+    }
+    if (rc == 0 && !pull.failed && pull.filled == len) {
+      /* The whole block landed in order: append it and acknowledge. */
+      break;
+    }
+    if (rc != 0) {
+      /* A timeout or a link failure: never re-pulled, abort at once. */
+      hearthAbortPull();
+      return;
+    }
+    /* pull.failed, or a short answer without an error: a garbled line, an
+     * out-of-sequence offset, a hex length that does not match the
+     * announced block. The loop re-pulls once; the second failure aborts
+     * below. */
+  }
+  _havePendingBlock = false;
+  if (attempt >= 2) {
+    /* Two parse failures in a row: the transfer is aborting. */
+    hearthAbortPull();
+    return;
+  }
+  if (!_stage.stagedAppend(pull.buf, pull.filled)) {
+    hearthAbortPull();
+    return;
+  }
+  snprintf(cmd, sizeof(cmd), "AT+MTOTAACK=%lu", (unsigned long)seq);
+  if (hearthCmd(cmd, 0, 0) != 0) {
+    hearthAbortPull();
+    return;
+  }
+  /* Acknowledged. The co-processor answers the ACK and then sends either
+   * the next +MTOTA:BLOCK or +MTOTA:DOWNLOADED; the next drain handles it. */
+}
+
+/*
+ * End a failed transfer: the AT+MTOTA=0 that tells the co-processor to
+ * abort, the partial staged file removed (a dead transfer must not leave a
+ * file a later transfer could append to), and the state FAILED with
+ * HEARTH_UPDATE_ERR_LINK.
+ */
+void HearthUpdate::hearthAbortPull() {
+  _havePendingBlock = false;
+  _downloadComplete = false;
+  _stagedWriteOpen = false;
+  hearthCmd("AT+MTOTA=0", 0, 0);
+  _stage.stagedEndWrite();
+  _stage.stagedRemove();
+  _status.state = HEARTH_UPDATE_FAILED;
+  _status.error = HEARTH_UPDATE_ERR_LINK;
+  if (_statusCB) {
+    _statusCB(_status);
+  }
+}
+
+bool HearthUpdate::hearthDownloadComplete() const {
+  return _downloadComplete;
 }
 
 void HearthUpdate::end() {
   _status.state = HEARTH_UPDATE_DISABLED;
   _status.percent = 0;
   _havePendingBlock = false;
+  _downloadComplete = false;
+  _stagedWriteOpen = false;
 }
 
 /*
@@ -268,6 +506,15 @@ void onVerLine2(const char *line, void *arg) {
   q->got = true;
 }
 
+/* The block-pull collector, for AT+MTOTAGET=<seq>. The answer is one
+ * +MTOTABLK:<seq>,<off>,<hex> line per at most 96 bytes (ceil(len/96)
+ * lines, the last shorter for a short block, the hex upper-case) and then
+ * the terminal OK. Each line is validated before it is copied: the prefix,
+ * the block's own seq, the offset exactly where the previous line ended,
+ * and the hex length exactly the announced span of the block at that
+ * offset. The first failure marks the pull failed, and every later line,
+ * the included line, is ignored: the partial data is discarded by the
+ * caller and nothing is acknowledged. */
 /* The model's filesystem need in bytes (DE625, the per-port figures the
  * plan's Global Constraints name). 0: a model the list does not know. */
 uint32_t modelFsNeed(const char *model) {

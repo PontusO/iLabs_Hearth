@@ -127,8 +127,19 @@ public:
    * local HearthClass and begins its own update talks to the link the
    * test scripted, not the global's unstarted one. */
   void hearthSetOwner(void *owner);
+  bool hearthDownloadComplete() const;  /* 4b1: the staged write was ended on +MTOTA:DOWNLOADED */
 
 private:
+  /* The re-entry guard for hearthDrain(): set on construction, cleared by
+   * the destructor on every exit path, including an early return from a
+   * nested hearthCommand() call in the middle of the pull. */
+  struct DrainGuard {
+    bool &flag;
+    explicit DrainGuard(bool &f) : flag(f) { flag = true; }
+    ~DrainGuard() { flag = false; }
+  };
+  void hearthPullBlock();   /* AT+MTOTAGET/ACK for _pendingSeq, with the retry rules */
+  void hearthAbortPull();   /* AT+MTOTA=0, remove the partial staged file, FAILED/ERR_LINK */
   int hearthCmd(const char *cmd, HearthLink::LineCb onLine, void *arg);
   void *_owner;
   HearthFs *_fs;
@@ -152,6 +163,25 @@ private:
   uint32_t _pendingLen;
   bool _havePendingBlock;
   HearthUpdateStateEnum _lastState;
+
+  bool _downloadComplete;
+  /* True while the stage's staged.ota.tmp is open for the current
+   * transfer. Set by the first pull (stagedBeginWrite), cleared by
+   * stagedEndWrite on DOWNLOADED or by the abort path. */
+  bool _stagedWriteOpen;
+  /* Set on entry to hearthDrain(), cleared by the DrainGuard on every exit
+   * path. hearthCommand() runs hearthDrain() at the end of its own call, so
+   * without this the pull loop (which sends hearthCommand()s) would drain
+   * itself and recurse; a nested drain finds the flag set and returns at
+   * once, having sent nothing. */
+  bool _draining;
+  /* The block pull's own deadline, the plan's fixed 1500 ms. A pull that
+   * runs out of time is not re-pulled: the 5 s acknowledgement deadline
+   * cannot absorb a second full pull at 115200, so the transfer aborts at
+   * once instead. */
+  static const uint32_t kPullTimeoutMs = 1500;
+  /* One +MTOTABLK: answer carries at most this many bytes of the block. */
+  static const uint32_t kBlkLineBytes = 96;
 
   bool (*_applyRequestCB)();
   void (*_statusCB)(const HearthUpdateStatus &);
