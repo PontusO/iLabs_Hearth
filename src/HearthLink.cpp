@@ -35,11 +35,23 @@ void HearthLink::begin(Stream &serial) {
  * mask read-modify-write it exists to perform never got past its own
  * first read. Matching the colon is exact and sufficient: the URC always
  * carries one immediately after "+MTEVT" and the mask reply never does.
+ *
+ * "+MTOTA:" (7 chars, WITH the colon) is the second URC prefix that also
+ * names a query result (the +MTATTR one above is the first): the AT+MTOTA?
+ * answer is +MTOTA:<mode>,<state>,<percent>,<variant> and its first field
+ * is the mode digit (0, 1 or 2), while a state URC's first field is an
+ * upper-case token (IDLE, BLOCK, ...). The digit test on the eighth
+ * character is what tells them apart, and the colon keeps the +MTOTABLK:
+ * command responses (AT+MTOTAGET's chunk lines) out of the URC set on top
+ * of that. Routing every +MTOTA: line as a URC would swallow the query's
+ * answer, the +MTEVT defect class this file's isAsyncURC() comment
+ * records. (Plan Task 4, spec 3.31.)
  */
 bool HearthLink::isAsyncURC(const char *line) {
   return strncmp(line, "+MTEVT:", 7) == 0 || strncmp(line, "+MTATTR", 7) == 0
       || strncmp(line, "+MTIDENT", 8) == 0 || strncmp(line, "+MTREADY", 8) == 0
-      || strncmp(line, "+MTCMD", 6) == 0;
+      || strncmp(line, "+MTCMD", 6) == 0
+      || (strncmp(line, "+MTOTA:", 7) == 0 && !isdigit((unsigned char)line[7]));
 }
 
 /*

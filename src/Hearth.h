@@ -212,6 +212,15 @@
 #include "MatterEndpoints/MatterElectricalUtilityMeter.h"
 
 /*
+ * The FOTA object (plan Task 4). Its own header includes the stage and the
+ * bundle headers, both of which include only system headers and
+ * HearthFs.h, so there is no cycle back into this file (checked: neither
+ * names HearthClass). One-way include, the same rule as every endpoint
+ * header above.
+ */
+#include "HearthUpdate.h"
+
+/*
  * The board variant is the single source of truth for the link: which UART
  * reaches the co-processor and which pins drive its reset and boot-mode
  * lines. A sketch never names a serial port, exactly as in the sibling
@@ -604,6 +613,9 @@ public:
    * ERROR, -2 timeout / link not started).
    */
   int hearthCommand(const char *cmd, HearthLink::LineCb onLine = nullptr, void *arg = nullptr);
+  /* The per-command wait form: the same call with the timeout the update's
+   * block pull needs (plan Task 4). 0 keeps the default. */
+  int hearthCommand(const char *cmd, HearthLink::LineCb onLine, void *arg, uint32_t timeout_ms);
 
   /* Record an error code for a caller that fails before reaching the wire,
    * e.g. an attribute value type the AT protocol cannot carry. */
@@ -659,7 +671,25 @@ public:
    */
   void hearthReportProtocolError();
 
+  /*
+   * The FOTA surface (plan Task 4): the object behind the `update` member
+   * below. begin() brings it up (FOTA is off until then: a constructed
+   * update sends nothing and answers no URC), and the +MTOTA: URC route in
+   * hearthOnURCLine() hands it every state line. See HearthUpdate.h for the
+   * state, error and wire details.
+   */
+  HearthUpdate update;
+
 private:
+  /*
+   * The update's wire work (plan Task 4): the pending-block pull, the
+   * verdict and the apply, run from poll() and hearthCommand() after their
+   * own _link call has returned, the same "after the busy gate is released"
+   * ordering as hearthDrainCmdRespQueue() and friends. The update itself
+   * never calls the link from inside a URC callback; this is how it
+   * reaches the wire.
+   */
+  void hearthDrainUpdate();
   void hearthEnsureLink();
   void hearthRaiseEvent(hearthEvent_t e);
   void hearthCheckExpectedRebootExpiry();

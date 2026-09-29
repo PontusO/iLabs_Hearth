@@ -25,7 +25,9 @@ HearthClass::HearthClass()
     _deferCurrentCmdResp(false),
     _threadRole(HEARTH_THREAD_UNSPECIFIED),
     _onThreadRoleChangeCB(nullptr),
-    _evtResubscribeNeeded(false) {}
+    _evtResubscribeNeeded(false) {
+  update.hearthSetOwner(this);
+}
 
 void HearthClass::begin(Stream &serial, unsigned long baud) {
   (void)baud;  // see the header: a caller-supplied Stream has no begin() of its own to call with it;
@@ -215,6 +217,11 @@ void HearthClass::poll() {
    * onThreadRoleChange() (or a +MTREADY this same _link.poll() just
    * dispatched) armed it. See hearthDrainEvtResubscribe()'s own comment. */
   hearthDrainEvtResubscribe();
+  /* Plan Task 4: then the FOTA object's wire work (the pending-block pull,
+   * the verdict, the apply), the hearthDrain* pattern: the URC route only
+   * parsed it, the drain is where it reaches the link. No-op while the
+   * update is disabled or has nothing pending. */
+  hearthDrainUpdate();
 }
 
 void HearthClass::hearthOnVerLine(const char *line, void *arg) {
@@ -283,11 +290,39 @@ int HearthClass::hearthCommand(const char *cmd, HearthLink::LineCb onLine, void 
    * also saves/restores _lastError, so a background mask sync can never
    * clobber what this call itself is about to return via lastError(). */
   hearthDrainEvtResubscribe();
+  /* Plan Task 4: then the FOTA object's wire work, the hearthDrain*
+   * pattern: the URC route only parsed the state lines, the drain is where
+   * the update reaches the link. No-op while it is disabled. */
+  hearthDrainUpdate();
   return rc;
 }
 
 void HearthClass::hearthSetError(int code) {
   _lastError = code;
+}
+
+void HearthClass::hearthDrainUpdate() {
+  update.hearthDrain();
+}
+
+/*
+ * The per-command wait form (plan Task 4): the update's block pull passes
+ * its own timeout, everything else is the three-argument form. The
+ * difference is _link.command() taking the timeout, so this does not call
+ * the three-argument form (it would drop the timeout): it repeats the call
+ * with the timeout in the same drain order. 0 keeps the default, as there.
+ */
+int HearthClass::hearthCommand(const char *cmd, HearthLink::LineCb onLine, void *arg, uint32_t timeout_ms) {
+  hearthEnsureLink();
+  poll();
+  int rc = _link.command(cmd, onLine, arg, timeout_ms);
+  hearthCheckExpectedRebootExpiry();
+  _lastError = (rc > 0) ? rc : 0;
+  hearthDrainCmdRespQueue();
+  hearthDrainDeferredWork();
+  hearthDrainEvtResubscribe();
+  hearthDrainUpdate();
+  return rc;
 }
 
 void HearthClass::hearthArmExpectedReboot(uint32_t timeout_ms) {
@@ -887,6 +922,22 @@ void HearthClass::hearthDrainDeferredWork() {
  */
 void HearthClass::hearthOnURCLine(const char *line, void *arg) {
   HearthClass *self = (HearthClass *)arg;
+  /*
+   * +MTOTA: is the one URC prefix that also names a query result: the
+   * AT+MTOTA? answer is +MTOTA:<mode>,<state>,<percent>,<variant> and its
+   * first field is the mode digit (0, 1 or 2); a genuine state URC's first
+   * field is an upper-case token (IDLE, BLOCK, ...). The digit test keeps
+   * the answer out of the URC set (it goes to the command's own onLine
+   * instead), the colon keeps the +MTOTABLK: command responses out.
+   * hearthOnOtaLine() only parses and sets fields, so it is safe here,
+   * inside the link's own dispatch, where a wire write of its own would be
+   * refused HEARTH_CMD_REENTRANT (spec 3.31, the +MTEVT defect class this
+   * file's isAsyncURC() comment records).
+   */
+  if (strncmp(line, "+MTOTA:", 7) == 0 && !isdigit((unsigned char)line[7])) {
+    self->update.hearthOnOtaLine(line + 7);
+    return;
+  }
   if (strncmp(line, "+MTREADY", 8) == 0) {
     if (self->_onThreadRoleChangeCB) {
       self->_evtResubscribeNeeded = true;

@@ -17,6 +17,11 @@ Hearth	KEYWORD1
 ArduinoMatter	KEYWORD1
 HearthClass	KEYWORD1
 
+# The FOTA object (plan Task 4), a HearthClass member: Hearth.update.
+HearthUpdate	KEYWORD1
+HearthUpdateConfig	KEYWORD1
+HearthUpdateStatus	KEYWORD1
+
 # Transport and the six public classes above HearthClass/ArduinoMatter.
 HearthLink	KEYWORD1
 MatterEndPoint	KEYWORD1
@@ -292,6 +297,12 @@ hearthSetReconcileFailed	KEYWORD2
 link	KEYWORD2
 hearthReportProtocolError	KEYWORD2
 hearthResetCoprocessor	KEYWORD2
+
+# HearthUpdate (plan Task 4): the FOTA surface on Hearth.update.
+update	KEYWORD2
+onApplyRequest	KEYWORD2
+checkNow	KEYWORD2
+available	KEYWORD2
 
 # Task 4 (Thread role API, 0.11.0): AT+MTTHREAD? and +MTEVT:28.
 # hearthThreadRoleName is a free function (a display helper), not a method.
@@ -997,6 +1008,12 @@ PT_INVALID	LITERAL1
 # NO_GLOBAL_INSTANCES / NO_GLOBAL_MATTER).
 HEARTH_CMD_REENTRANT	LITERAL1
 NO_GLOBAL_HEARTH	LITERAL1
+
+# The FOTA object's DE625 error (plan Task 4): the filesystem is smaller
+# than the running co-processor's need. HearthCoprocPins, the pin bundle a
+# flasher takes, joins this list with Task 5's flasher header.
+HEARTH_UPDATE_ERR_NO_SPACE	LITERAL1
+HearthCoprocPins	LITERAL1
 
 # ArduinoMatter::deviceState()'s coarse state enum (AT+MTSTATE?).
 MATTER_STATE_UNINITIALIZED	LITERAL1
