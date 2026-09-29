@@ -66,6 +66,7 @@ build/
 /test/host/test_evse
 /test/host/test_utilitymeter
 /test/host/test_bundle
+/test/host/test_update_stage
 /test/host/uECC.o
 /test/host/sha256.o
 
