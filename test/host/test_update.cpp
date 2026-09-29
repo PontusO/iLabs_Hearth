@@ -362,7 +362,9 @@ static void test_download_loop(void) {
   size_t pos = 0;
   uint32_t seq = 0;
   /* The co-processor's state lines: AVAILABLE with the offered version,
-   * then DOWNLOADING at 0 percent before the first block. */
+   * then DOWNLOADING at 0 percent before the first block. The drain on
+   * AVAILABLE also sends the download-baud switch (4b2 case 10). */
+  s.expect("AT+MTBAUD=921600", "OK\r\n");
   s.injectURC("+MTOTA:AVAILABLE,66561");
   s.injectURC("+MTOTA:DOWNLOADING,0");
   hearth.poll();
@@ -392,6 +394,11 @@ static void test_download_loop(void) {
         !fs.exists(stagedPath));
   check("no download-complete flag yet", !hearth.update.hearthDownloadComplete());
 
+  /* The drain on DOWNLOADED (4b2) restores the link baud, verifies the
+   * bundle and gives the verdict. With no consent hook installed the
+   * verdict is accepted: AT+MTOTASTAGED=1, state WAIT_APPLY. */
+  s.expect("AT+MTBAUD=115200", "OK\r\n");
+  s.expect("AT+MTOTASTAGED=1", "OK\r\n");
   s.injectURC("+MTOTA:DOWNLOADED");
   hearth.poll();
   check("the staged file exists after the drain of DOWNLOADED", fs.exists(stagedPath));
@@ -400,10 +407,12 @@ static void test_download_loop(void) {
         fs.files.count(stagedPath) == 1
         && fs.files[stagedPath].size() == fx.size()
         && memcmp(fs.files[stagedPath].data(), fx.data(), fx.size()) == 0);
-  check("the state is VERIFYING after DOWNLOADED",
-        hearth.update.status().state == HEARTH_UPDATE_VERIFYING);
-  check("no AT+MTOTASTAGED yet (4b2 sends it)", s.unexpected().empty());
-  check("nothing else went on the wire", s.scriptDrained());
+  check("the verdict was AT+MTOTASTAGED=1 (the bundle verified)",
+        s.scriptDrained() && s.unexpected().empty());
+  check("the state is WAIT_APPLY after the verdict",
+        hearth.update.status().state == HEARTH_UPDATE_WAIT_APPLY);
+  check("the link baud was restored on DOWNLOADED",
+        s.scriptDrained());
 }
 
 /* Case 6, first half: a garbled chunk line (one hex digit replaced) makes
@@ -622,8 +631,559 @@ static void test_drain_reentry_sends_nothing(void) {
         hearth.update.status().state == HEARTH_UPDATE_DOWNLOADING);
 }
 
+/*
+ * The second half (plan Task 4b2): the verification and the verdict, the
+ * co-processor states' actions, the consent and the baud switch. These run
+ * the full download loop against the fixtures the way the first half does,
+ * then feed +MTOTA:DOWNLOADED and assert what the drain does next: the
+ * bundle is verified (HearthBundle::open over the staged file, the target and
+ * variant against the cached AT+CGMM and AT+MTOTA?, verifyPart for each
+ * selected part), the verdict goes out as AT+MTOTASTAGED, the consent hook
+ * runs, and the baud switches.
+ */
+
+/* The consent and baud hooks, recorded by the tests. */
+static int g_consentCalls = 0;
+static bool g_consentResult = true;
+static bool consentHook() { g_consentCalls++; return g_consentResult; }
+
+static int g_baudCalls = 0;
+static uint32_t g_lastBaud = 0;
+static void baudHook(uint32_t b) { g_baudCalls++; g_lastBaud = b; }
+
+/* Run the full download of `fx` against the scripted co-processor and end on
+ * +MTOTA:DOWNLOADED, so the staged file is the fixture and the state is
+ * VERIFYING with _downloadComplete set, and the verdict command `verdict`
+ * (AT+MTOTASTAGED=1 or =0,<reason>) is scripted and sent on the same drain.
+ * The drain on AVAILABLE sends AT+MTBAUD=<download baud> and the drain on
+ * DOWNLOADED sends AT+MTBAUD=<default> before the verdict, so those are
+ * scripted in order here. */
+static void runDownload(MockStream &s, HearthClass &hearth, const std::string &fx,
+                        const std::string &verdict) {
+  s.expect("AT+MTBAUD=921600", "OK\r\n");
+  s.injectURC("+MTOTA:AVAILABLE,66561");
+  s.injectURC("+MTOTA:DOWNLOADING,0");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  size_t pos = 0;
+  uint32_t seq = 0;
+  while (pos < fx.size()) {
+    size_t blen = fx.size() - pos;
+    if (blen > 1024) blen = 1024;
+    s.expect("AT+MTOTAGET=" + std::to_string((unsigned)seq),
+             blkAnswer(seq, (uint32_t)blen, fx, pos));
+    s.expect("AT+MTOTAACK=" + std::to_string((unsigned)seq), "OK\r\n");
+    s.injectURC("+MTOTA:BLOCK," + std::to_string((unsigned)seq) + ","
+                + std::to_string((unsigned)blen));
+    g_yieldAdvanceMs = 50;
+    hearth.poll();
+    g_yieldAdvanceMs = 0;
+    pos += blen;
+    seq++;
+  }
+  s.expect("AT+MTBAUD=115200", "OK\r\n");
+  if (!verdict.empty()) {
+    s.expect(verdict, "OK\r\n");
+  }
+  s.injectURC("+MTOTA:DOWNLOADED");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+}
+
+/* Case 5, the rest: after the download the good.ota bundle verifies, the
+ * apply decision selects the fw part (1.3.0 differs from the cached 1.2.0)
+ * and the host part (1.4.0 differs from the manifest none), the consent hook
+ * is called, AT+MTOTASTAGED=1 is sent and the state is WAIT_APPLY. */
+static void test_verdict_accepted(void) {
+  std::string fx;
+  check("the good.ota fixture loads (accepted)", loadFixture("fixtures/good.ota", fx));
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (accepted)", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+
+  g_consentCalls = 0;
+  g_consentResult = true;
+  hearth.update.onApplyRequest(consentHook);
+  g_baudCalls = 0;
+  g_lastBaud = 0;
+  hearth.update.hearthSetBaudChanger(baudHook);
+
+  runDownload(s, hearth, fx, "AT+MTOTASTAGED=1");
+
+  check("the bundle verified and the verdict was AT+MTOTASTAGED=1",
+        s.scriptDrained() && s.unexpected().empty());
+  check("the state is WAIT_APPLY",
+        hearth.update.status().state == HEARTH_UPDATE_WAIT_APPLY);
+  check("the consent hook was called", g_consentCalls == 1);
+  check("no error on the accepted verdict",
+        hearth.update.status().error == HEARTH_UPDATE_OK);
+}
+
+/* Case 7, the signature refusal: a bundle signed with another key refuses
+ * with AT+MTOTASTAGED=0,1 (HEARTH_BUNDLE_ERR_SIGNATURE), the staged bundle is
+ * removed, the state is FAILED with HEARTH_UPDATE_ERR_BUNDLE and .reason 1. */
+static void test_verdict_bad_signature(void) {
+  std::string fx;
+  check("the other-key.ota fixture loads", loadFixture("fixtures/other-key.ota", fx));
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (bad sig)", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+  runDownload(s, hearth, fx, "AT+MTOTASTAGED=0,1");
+
+  check("the verdict was AT+MTOTASTAGED=0,1",
+        s.scriptDrained() && s.unexpected().empty());
+  check("the state is FAILED on a bad signature",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  check("the error is HEARTH_UPDATE_ERR_BUNDLE",
+        hearth.update.status().error == HEARTH_UPDATE_ERR_BUNDLE);
+  check("the reason is 1 (signature)",
+        hearth.update.status().reason == HEARTH_BUNDLE_ERR_SIGNATURE);
+  check("the staged bundle was removed",
+        !fs.exists("/hearth/staged.ota"));
+}
+
+/* Case 7, the target refusal: a bundle whose Hearth part targets nRF54L15
+ * Hearth on the C6 refuses with AT+MTOTASTAGED=0,3 (ERR_TARGET). */
+static void test_verdict_bad_target(void) {
+  std::string fx;
+  check("the nrf-only.ota fixture loads", loadFixture("fixtures/nrf-only.ota", fx));
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (bad target)", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+  runDownload(s, hearth, fx, "AT+MTOTASTAGED=0,3");
+
+  check("the verdict was AT+MTOTASTAGED=0,3",
+        s.scriptDrained() && s.unexpected().empty());
+  check("the state is FAILED on a bad target",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  check("the error is HEARTH_UPDATE_ERR_BUNDLE",
+        hearth.update.status().error == HEARTH_UPDATE_ERR_BUNDLE);
+  check("the reason is 3 (target)",
+        hearth.update.status().reason == HEARTH_BUNDLE_ERR_TARGET);
+  check("the staged bundle was removed",
+        !fs.exists("/hearth/staged.ota"));
+}
+
+/* Case 7, the downgrade refusal and the allowDowngrade accept: a bundle with
+ * a product version below the effective one refuses with =0,4 (ERR_VERSION);
+ * with allowDowngrade the same bundle is accepted. */
+static void test_verdict_downgrade(void) {
+  std::string fx;
+  check("the downgrade.ota fixture loads", loadFixture("fixtures/downgrade.ota", fx));
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (downgrade)", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+  g_consentResult = true;
+  hearth.update.onApplyRequest(consentHook);
+
+  runDownload(s, hearth, fx, "AT+MTOTASTAGED=0,4");
+
+  check("the downgrade was refused with AT+MTOTASTAGED=0,4",
+        s.scriptDrained() && s.unexpected().empty());
+  check("the state is FAILED on the downgrade",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  check("the reason is 4 (version)",
+        hearth.update.status().reason == HEARTH_BUNDLE_ERR_VERSION);
+
+  /* The same bundle with allowDowngrade is accepted. */
+  MockStream s2;
+  scriptBegin(s2);
+  HearthClass h2;
+  HearthFsMem f2;
+  h2.begin(s2);
+  h2.update.hearthAttach(f2);
+  HearthUpdateConfig cfg;
+  cfg.allowDowngrade = true;
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (allowDowngrade)",
+        h2.update.begin(0x10400, "1.4.0", cfg));
+  g_yieldAdvanceMs = 0;
+  g_consentResult = true;
+  h2.update.onApplyRequest(consentHook);
+  runDownload(s2, h2, fx, "AT+MTOTASTAGED=1");
+  check("allowDowngrade accepts the same bundle with AT+MTOTASTAGED=1",
+        s2.scriptDrained() && s2.unexpected().empty()
+        && h2.update.status().state == HEARTH_UPDATE_WAIT_APPLY);
+}
+
+/* Case 7, the tampered-part refusal: a good.ota byte flipped in the fw part
+ * refuses with AT+MTOTASTAGED=0,2 (ERR_DIGEST). The tamper is applied to the
+ * fixture in the test (the brief allows building the variant in the test). */
+static void test_verdict_tampered(void) {
+  std::string fx;
+  check("the good.ota fixture loads (tampered)", loadFixture("fixtures/good.ota", fx));
+  /* Flip one byte inside the fw part (part 0, offset 352 in the container,
+   * which is inside the part's data range). The container starts at 82 in
+   * the file, so the part data starts at 82+352. */
+  size_t tamperAt = 82 + 352 + 10;
+  if (tamperAt >= fx.size()) tamperAt = fx.size() / 2;
+  fx[tamperAt] = (char)(fx[tamperAt] ^ 0xFF);
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (tampered)", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+  runDownload(s, hearth, fx, "AT+MTOTASTAGED=0,2");
+
+  check("the tampered part was refused with AT+MTOTASTAGED=0,2",
+        s.scriptDrained() && s.unexpected().empty());
+  check("the state is FAILED on the tampered part",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  check("the reason is 2 (digest)",
+        hearth.update.status().reason == HEARTH_BUNDLE_ERR_DIGEST);
+  check("the staged bundle was removed",
+        !fs.exists("/hearth/staged.ota"));
+}
+
+/* Case 6d: a variant of unknown from AT+MTOTA? selects no Hearth part at all
+ * (a bundle carrying only a Hearth part answers =0,3, the target does not
+ * match the unknown variant), while a host part still applies. */
+static void test_variant_unknown(void) {
+  std::string fx;
+  check("the nrf-only.ota fixture loads (unknown variant)", loadFixture("fixtures/nrf-only.ota", fx));
+  MockStream s;
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+CGMM", "ESP32-C6 Hearth\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  /* The variant is unknown. */
+  s.expect("AT+MTOTA?", "+MTOTA:0,IDLE,0,unknown\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (unknown variant)", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+  runDownload(s, hearth, fx, "AT+MTOTASTAGED=0,3");
+  check("an unknown variant refuses a Hearth-only bundle with =0,3",
+        s.scriptDrained() && s.unexpected().empty()
+        && hearth.update.status().reason == HEARTH_BUNDLE_ERR_TARGET);
+}
+
+/* Case 6b: the co-processor states' actions. */
+static void test_coproc_states(void) {
+  /* ERROR,<detail> then IDLE: FAILED with ERR_COPROC and the detail, then
+   * IDLE, and the error stays readable until the next transfer starts. */
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (states)", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+
+  g_statusCalls = 0;
+  hearth.update.onStatus(onStatus);
+  s.injectURC("+MTOTA:ERROR,session");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("ERROR,session is FAILED with ERR_COPROC",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED
+        && hearth.update.status().error == HEARTH_UPDATE_ERR_COPROC);
+  check("the detail is session",
+        strcmp(hearth.update.status().detail, "session") == 0);
+
+  s.injectURC("+MTOTA:IDLE");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("the state is IDLE after the IDLE line",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("the error stays readable until the next transfer starts",
+        hearth.update.status().error == HEARTH_UPDATE_ERR_COPROC
+        && strcmp(hearth.update.status().detail, "session") == 0);
+
+  /* DEFERRED,<s>: IDLE with deferredSeconds. */
+  s.injectURC("+MTOTA:DEFERRED,120");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("DEFERRED,120 is IDLE with deferredSeconds 120",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE
+        && hearth.update.status().deferredSeconds == 120);
+
+  /* DISCONTINUED: IDLE. */
+  s.injectURC("+MTOTA:DISCONTINUED");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("DISCONTINUED is IDLE",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+
+  /* QUERYING: leaves the state IDLE and fires onStatus. */
+  int before = g_statusCalls;
+  s.injectURC("+MTOTA:QUERYING");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("QUERYING leaves the state IDLE",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("QUERYING fired onStatus", g_statusCalls == before + 1);
+}
+
+/* Case 8: consent refused, then accepted. */
+static void test_consent_refused_then_accepted(void) {
+  std::string fx;
+  check("the good.ota fixture loads (consent)", loadFixture("fixtures/good.ota", fx));
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (consent)", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+
+  g_consentCalls = 0;
+  g_consentResult = false;  /* refuse first */
+  hearth.update.onApplyRequest(consentHook);
+  /* No verdict is sent on the first drain (the hook refuses), so the
+   * verdict is empty here; the accepted drain's AT+MTOTASTAGED=1 is
+   * scripted after runDownload, for the next poll. */
+  runDownload(s, hearth, fx, "");
+  s.expect("AT+MTOTASTAGED=1", "OK\r\n");  /* for the second, accepted, drain */
+  check("the consent hook was refused: no AT+MTOTASTAGED yet",
+        hearth.update.status().state == HEARTH_UPDATE_VERIFYING
+        && g_consentCalls == 1);
+  check("the staged bundle stays while consent is pending",
+        fs.exists("/hearth/staged.ota"));
+
+  g_consentResult = true;  /* accept on the next drain */
+  g_yieldAdvanceMs = 50;
+  hearth.update.hearthDrain();
+  g_yieldAdvanceMs = 0;
+  check("the next drain after the hook returns true sends AT+MTOTASTAGED=1",
+        s.scriptDrained() && s.unexpected().empty()
+        && hearth.update.status().state == HEARTH_UPDATE_WAIT_APPLY);
+}
+
+/* Case 8, the abandoned half: a refusal past the consent window (the test
+ * sets it to 0 and advances the clock) makes the update send AT+MTOTA=0 then
+ * AT+MTOTA=1, which ends the attempt and frees the co-processor's block
+ * buffer at once instead of after its six-hour watchdog (spec 11.1), and the
+ * state is IDLE. */
+static void test_consent_abandoned_past_window(void) {
+  std::string fx;
+  check("the good.ota fixture loads (abandon)", loadFixture("fixtures/good.ota", fx));
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  HearthUpdateConfig cfg;
+  cfg.consentWindowMs = 0;  /* any refusal is immediately past the window */
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (abandon)", hearth.update.begin(0x10400, "1.4.0", cfg));
+  g_yieldAdvanceMs = 0;
+
+  g_consentCalls = 0;
+  g_consentResult = false;  /* always refuse */
+  hearth.update.onApplyRequest(consentHook);
+  /* The first drain refuses (no verdict sent); the abandonment's
+   * AT+MTOTA=0/AT+MTOTA=1 go out on the next drain. */
+  runDownload(s, hearth, fx, "");
+  s.expect("AT+MTOTA=0", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  /* The first drain refuses; the next drain finds the refusal past the
+   * (zero) window and abandons. */
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("the abandonment sent AT+MTOTA=0 then AT+MTOTA=1",
+        s.scriptDrained() && s.unexpected().empty());
+  check("the state is IDLE after the abandonment",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("the staged bundle was removed on the abandonment",
+        !fs.exists("/hearth/staged.ota"));
+}
+
+/* Case 10: the baud switch. With a test hook installed, AT+MTBAUD=<download
+ * baud> is sent on AVAILABLE, the hook is called, and AT+MTBAUD=<default>
+ * plus the hook are called again on DOWNLOADED and on FAILED. With no hook
+ * installed (the host build, HEARTH_SERIAL_PORT undefined) the switch is the
+ * AT+MTBAUD only. */
+static void test_baud_switch(void) {
+  std::string fx;
+  check("the good.ota fixture loads (baud)", loadFixture("fixtures/good.ota", fx));
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (baud)", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+
+  g_consentResult = true;
+  hearth.update.onApplyRequest(consentHook);
+  g_baudCalls = 0;
+  g_lastBaud = 0;
+  hearth.update.hearthSetBaudChanger(baudHook);
+
+  /* The switch to the download baud on AVAILABLE. */
+  s.expect("AT+MTBAUD=921600", "OK\r\n");
+  s.injectURC("+MTOTA:AVAILABLE,66561");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("AT+MTBAUD=921600 was sent on AVAILABLE",
+        s.unexpected().empty());
+  check("the baud hook was called with the download baud",
+        g_baudCalls == 1 && g_lastBaud == 921600);
+
+  /* The rest of the download, then DOWNLOADED restores the default. */
+  s.expect("AT+MTOTAGET=0", blkAnswer(0, 1024, fx, 0));
+  s.expect("AT+MTOTAACK=0", "OK\r\n");
+  s.injectURC("+MTOTA:BLOCK,0,1024");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  s.expect("AT+MTOTAGET=1", blkAnswer(1, 1024, fx, 1024));
+  s.expect("AT+MTOTAACK=1", "OK\r\n");
+  s.injectURC("+MTOTA:BLOCK,1,1024");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  s.expect("AT+MTOTAGET=2", blkAnswer(2, (uint32_t)(fx.size() - 2048), fx, 2048));
+  s.expect("AT+MTOTAACK=2", "OK\r\n");
+  s.injectURC("+MTOTA:BLOCK,2," + std::to_string((unsigned)(fx.size() - 2048)));
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+
+  /* The switch back on DOWNLOADED. */
+  s.expect("AT+MTBAUD=115200", "OK\r\n");
+  s.expect("AT+MTOTASTAGED=1", "OK\r\n");
+  s.injectURC("+MTOTA:DOWNLOADED");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("AT+MTBAUD=115200 was sent on DOWNLOADED",
+        s.scriptDrained() && s.unexpected().empty());
+  check("the baud hook was called again with the default baud",
+        g_baudCalls == 2 && g_lastBaud == 115200);
+
+  /* The switch back on FAILED (a bad-signature refusal). */
+  std::string fx2;
+  check("the other-key.ota fixture loads (baud failed)",
+        loadFixture("fixtures/other-key.ota", fx2));
+  s.expect("AT+MTBAUD=921600", "OK\r\n");
+  s.injectURC("+MTOTA:AVAILABLE,66562");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  size_t pos = 0;
+  uint32_t seq = 0;
+  while (pos < fx2.size()) {
+    size_t blen = fx2.size() - pos;
+    if (blen > 1024) blen = 1024;
+    s.expect("AT+MTOTAGET=" + std::to_string((unsigned)seq),
+             blkAnswer(seq, (uint32_t)blen, fx2, pos));
+    s.expect("AT+MTOTAACK=" + std::to_string((unsigned)seq), "OK\r\n");
+    s.injectURC("+MTOTA:BLOCK," + std::to_string((unsigned)seq) + ","
+                + std::to_string((unsigned)blen));
+    g_yieldAdvanceMs = 50;
+    hearth.poll();
+    g_yieldAdvanceMs = 0;
+    pos += blen;
+    seq++;
+  }
+  s.expect("AT+MTBAUD=115200", "OK\r\n");
+  s.expect("AT+MTOTASTAGED=0,1", "OK\r\n");
+  s.injectURC("+MTOTA:DOWNLOADED");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("the baud hook was called again on the FAILED verdict",
+        g_baudCalls == 4 && g_lastBaud == 115200);
+  check("the state is FAILED after the refusal",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED);
+}
+
+/* The folded-from-4b1-review trap (c): one hex digit of a +MTOTABLK line is
+ * corrupted (not the offset), driving the parse-failure branch: one re-pull,
+ * then the second corrupt answer aborts. */
+static void test_pull_hexdigit_corrupt_aborts(void) {
+  std::string fx;
+  check("the good.ota fixture loads (hexdigit)", loadFixture("fixtures/good.ota", fx));
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (hexdigit)", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+
+  std::string good = blkAnswer(0, 1024, fx, 0);
+  std::string bad = good;
+  /* Corrupt one hex digit (not the offset) to a non-hex character, so the
+   * sscanf("%2x") parse of that byte fails and the pull marks the answer
+   * failed. A flipped-but-still-hex digit would parse fine, so the
+   * corruption must leave the hex set. */
+  size_t idx = bad.find("MTOTABLK:0,0,");
+  check("the first block line is where the helper put it",
+        idx != std::string::npos);
+  if (idx != std::string::npos) {
+    size_t hexStart = idx + strlen("MTOTABLK:0,0,");
+    bad[hexStart] = 'Z';  /* not a hex digit */
+  }
+  s.expect("AT+MTOTAGET=0", bad);
+  s.expect("AT+MTOTAGET=0", bad);
+  s.expect("AT+MTOTA=0", "OK\r\n");
+  s.injectURC("+MTOTA:BLOCK,0,1024");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("the hex-digit corruption was re-pulled once and then aborted",
+        s.scriptDrained() && s.unexpected().empty());
+  check("the state is FAILED after the second corrupt answer",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED
+        && hearth.update.status().error == HEARTH_UPDATE_ERR_LINK);
+  check("the partial staged file is removed",
+        !fs.exists("/hearth/staged.ota"));
+}
+
 int main(void) {
-  printf("\n===== HearthUpdate (task 4a + 4b1) tests =====\n");
+  printf("\n===== HearthUpdate (task 4a + 4b1 + 4b2) tests =====\n");
   test_begin_no_fs();
   test_begin_ok();
   test_begin_unavailable();
@@ -639,6 +1199,17 @@ int main(void) {
   test_pull_timeout_aborts_at_once();
   test_pull_mterr_discards_partial();
   test_drain_reentry_sends_nothing();
+  test_verdict_accepted();
+  test_verdict_bad_signature();
+  test_verdict_bad_target();
+  test_verdict_downgrade();
+  test_verdict_tampered();
+  test_variant_unknown();
+  test_coproc_states();
+  test_consent_refused_then_accepted();
+  test_consent_abandoned_past_window();
+  test_baud_switch();
+  test_pull_hexdigit_corrupt_aborts();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

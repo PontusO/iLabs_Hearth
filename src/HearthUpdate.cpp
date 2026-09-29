@@ -35,7 +35,14 @@ HearthUpdate::HearthUpdate()
     _stagedWriteOpen(false),
     _draining(false),
     _applyRequestCB(0),
-    _statusCB(0) {
+    _statusCB(0),
+    _baudChangerCB(0),
+    _fwPart(0xFF),
+    _hostPart(0xFF),
+    _consentPending(false),
+    _consentRefusalMs(0),
+    _baud(HEARTH_LINK_BAUD),
+    _baudWantedDownload(false) {
   _status.state = HEARTH_UPDATE_DISABLED;
   _status.percent = 0;
   _status.offeredVersion = 0;
@@ -60,6 +67,13 @@ int HearthUpdate::hearthCmd(const char *cmd, HearthLink::LineCb onLine, void *ar
   return ((HearthClass *)_owner)->hearthCommand(cmd, onLine, arg);
 }
 
+/* The per-command timeout form: the block pull's own 1500 ms deadline. 0
+ * keeps the link's default, so this is a plain forward. */
+int HearthUpdate::hearthCmd(const char *cmd, HearthLink::LineCb onLine, void *arg, uint32_t timeout_ms) {
+  if (!_owner) return -2;
+  return ((HearthClass *)_owner)->hearthCommand(cmd, onLine, arg, timeout_ms);
+}
+
 void HearthUpdate::hearthAttach(HearthFs &fs) { _fs = &fs; }
 
 void HearthUpdate::hearthSetOwner(void *owner) { _owner = owner; }
@@ -69,6 +83,8 @@ void HearthUpdate::hearthSetFlasher(HearthFlasher *f) { _flasher = f; }
 void HearthUpdate::onApplyRequest(bool (*cb)()) { _applyRequestCB = cb; }
 
 void HearthUpdate::onStatus(void (*cb)(const HearthUpdateStatus &)) { _statusCB = cb; }
+
+void HearthUpdate::hearthSetBaudChanger(void (*cb)(uint32_t)) { _baudChangerCB = cb; }
 
 HearthUpdateStatus HearthUpdate::status() const { return _status; }
 
@@ -91,6 +107,14 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
   if (!rest || _status.state == HEARTH_UPDATE_DISABLED) {
     return;
   }
+  /* A new transfer starting clears the error the last one left readable:
+   * the case 6b contract is that the FAILED error and detail stay in
+   * status() until the next transfer starts (a BLOCK line), not forever. */
+  if (strncmp(rest, "BLOCK,", 6) == 0) {
+    _status.error = HEARTH_UPDATE_OK;
+    _status.reason = 0;
+    _status.detail[0] = 0;
+  }
   const char *comma = strchr(rest, ',');
   char state[24];
   size_t n = comma ? (size_t)(comma - rest) : strlen(rest);
@@ -105,13 +129,15 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
      * line always means a transfer is in progress, so the state is set to
      * DOWNLOADING (the co-processor may send the BLOCK before the
      * DOWNLOADING state line, or the state may still be IDLE from a
-     * previous transfer). */
+     * previous transfer). A new transfer also resets the download-complete
+     * flag the last one set, so a later DOWNLOADED ends the write again. */
     char *end;
     uint32_t seq = (uint32_t)strtoul(comma + 1, &end, 10);
     uint32_t len = (uint32_t)strtoul(end + 1, 0, 10);
     _pendingSeq = seq;
     _pendingLen = len;
     _havePendingBlock = true;
+    _downloadComplete = false;
     _status.state = HEARTH_UPDATE_DOWNLOADING;
     return;
   }
@@ -125,12 +151,17 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
     _status.percent = 0;
     _havePendingBlock = false;
   } else if (strcmp(state, "QUERYING") == 0) {
-    /* Leaves the state where it is (IDLE); the callback still fires. */
+    /* Leaves the state where it is (IDLE); the callback still fires (case
+     * 6b). No link call: this is a parse-only URC route. */
   } else if (strcmp(state, "AVAILABLE") == 0) {
+    /* The provider is offering an image: the download is starting, so the
+     * link goes to the download baud (case 10). This is a parse-only URC
+     * route, so the AT+MTBAUD itself goes out on the next drain, not here. */
     _status.state = HEARTH_UPDATE_IDLE;
     if (comma) {
       _status.offeredVersion = (uint32_t)strtoul(comma + 1, 0, 10);
     }
+    _baudWantedDownload = true;
   } else if (strcmp(state, "DOWNLOADING") == 0) {
     _status.state = HEARTH_UPDATE_DOWNLOADING;
     if (comma) {
@@ -140,9 +171,10 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
     _status.state = HEARTH_UPDATE_VERIFYING;
     _status.percent = 100;
     _havePendingBlock = false;
-    /* The drain ends the staged write and sets _downloadComplete on this
-     * state; it runs outside the link's dispatch, where this callback
-     * cannot (the hearthDrain* pattern, this header's own comment). */
+    /* The drain ends the staged write, restores the link baud and runs the
+     * verification and the verdict on this state; it runs outside the link's
+     * dispatch, where this callback cannot (the hearthDrain* pattern, this
+     * header's own comment). */
   } else if (strcmp(state, "APPLY") == 0) {
     /* The requestor asked to apply; 4b/6 answers it with the flasher. */
     _status.state = HEARTH_UPDATE_APPLYING_FW;
@@ -153,8 +185,13 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
     _status.state = HEARTH_UPDATE_IDLE;
     _status.percent = 0;
   } else if (strcmp(state, "ERROR") == 0) {
+    /* The co-processor ended the transfer (case 6b): the state is FAILED
+     * with HEARTH_UPDATE_ERR_COPROC and the detail, and the link baud goes
+     * back to the default. The error and detail stay readable in status()
+     * until the next transfer starts (a BLOCK line). */
     _status.state = HEARTH_UPDATE_FAILED;
     _status.error = HEARTH_UPDATE_ERR_COPROC;
+    _baudWantedDownload = false;
     if (comma) {
       const char *d = comma + 1;
       size_t dn = strlen(d);
@@ -192,23 +229,55 @@ void HearthUpdate::hearthDrain() {
   if (_status.state == HEARTH_UPDATE_DISABLED || _status.state == HEARTH_UPDATE_UNAVAILABLE) {
     return;
   }
+  /* The download-time baud switch (case 10). A state line only records the
+   * rate it needs (_baudWantedDownload); the AT+MTBAUD itself goes out here,
+   * because a URC callback may not call the link. The switch is sent only
+   * when the needed rate differs from the one last set, so a repeat state
+   * line is a no-op and a switch back is seen. */
+  uint32_t wantBaud = _baudWantedDownload ? _cfg.downloadBaud : HEARTH_LINK_BAUD;
+  if (wantBaud != _baud) {
+    hearthSetBaud(wantBaud);
+  }
   if (_havePendingBlock) {
     hearthPullBlock();
     return;
   }
   if (_status.state == HEARTH_UPDATE_VERIFYING && !_downloadComplete) {
     /* +MTOTA:DOWNLOADED was parsed (the state is VERIFYING) but the
-     * staged write has not ended yet: end it now and set the flag.
-     * Task 4b2 picks up from here: verify the staged bundle, give the
-     * verdict, run the consent, send AT+MTOTASTAGED. */
+     * staged write has not ended yet: end it now, restore the link baud,
+     * set the flag, and run the verification and the verdict. */
     _stage.stagedEndWrite();
     _stagedWriteOpen = false;
     _downloadComplete = true;
+    _baudWantedDownload = false;
+    hearthSetBaud(HEARTH_LINK_BAUD);  /* the download is over, back to the default */
+    hearthVerifyAndVerdict();
     return;
   }
-  if (_status.state == HEARTH_UPDATE_VERIFYING && _downloadComplete) {
-    /* Task 4b2: verify the staged bundle, give the verdict, run the
-     * consent, send AT+MTOTASTAGED. */
+  /* The consent hook refused and the verdict is still pending: if the
+   * refusal has outlived the consent window the attempt is abandoned
+   * (AT+MTOTA=0 then AT+MTOTA=1, the staged bundle removed, the state
+   * IDLE). A refusal inside the window re-runs the hook on this drain, and
+   * the verdict goes out when the hook returns true. */
+  if (_status.state == HEARTH_UPDATE_VERIFYING && _consentPending) {
+    if (_consentRefusalMs != 0
+        && (millis() - _consentRefusalMs) >= _cfg.consentWindowMs) {
+      hearthAbandon();
+      return;
+    }
+    bool consent = _applyRequestCB ? _applyRequestCB() : true;
+    if (!consent) {
+      return;  /* still refused, wait for the next drain */
+    }
+    _consentPending = false;
+    _consentRefusalMs = 0;
+    char cmd[HEARTH_LINE_MAX];
+    snprintf(cmd, sizeof(cmd), "AT+MTOTASTAGED=1");
+    hearthCmd(cmd, 0, 0);
+    _status.state = HEARTH_UPDATE_WAIT_APPLY;
+    if (_statusCB) {
+      _statusCB(_status);
+    }
   }
 }
 
@@ -336,7 +405,7 @@ void HearthUpdate::hearthPullBlock() {
       pull.len = len;
     }
     snprintf(cmd, sizeof(cmd), "AT+MTOTAGET=%lu", (unsigned long)seq);
-    rc = hearthCmd(cmd, onBlkLine, &pull);
+    rc = hearthCmd(cmd, onBlkLine, &pull, kPullTimeoutMs);
     if (rc == 12) {
       /* +MTERR:12 after partial lines: the co-processor dropped the
        * transfer mid-pull. Nothing is acknowledged and the state is left
@@ -408,6 +477,224 @@ void HearthUpdate::hearthAbortPull() {
 
 bool HearthUpdate::hearthDownloadComplete() const {
   return _downloadComplete;
+}
+
+/*
+ * The download-time baud switch (case 10). The link goes to the download
+ * baud on AVAILABLE and back to the default on DOWNLOADED and on FAILED.
+ * On the device the link's own port brings the UART to the rate; in the host
+ * build (HEARTH_SERIAL_PORT undefined) there is no UART to re-clock, so the
+ * AT+MTBAUD goes out and the test hook (hearthSetBaudChanger) records the
+ * rate the sketch's own port would use.
+ */
+void HearthUpdate::hearthSetBaud(uint32_t baud) {
+  _baud = baud;
+  char cmd[HEARTH_LINE_MAX];
+  snprintf(cmd, sizeof(cmd), "AT+MTBAUD=%lu", (unsigned long)baud);
+  hearthCmd(cmd, 0, 0);
+  if (_baudChangerCB) {
+    _baudChangerCB(baud);
+  }
+}
+
+/*
+ * Abandon the attempt (case 8, past the consent window). The co-processor's
+ * block buffer is held for the whole download and is freed only when the
+ * attempt ends, so the host sends AT+MTOTA=0 (the abort that frees the
+ * buffer at once, not after the driver's six-hour watchdog) and then
+ * AT+MTOTA=1 to re-arm the requestor for the next offer. The staged bundle
+ * is removed and the state goes IDLE.
+ */
+void HearthUpdate::hearthAbandon() {
+  _havePendingBlock = false;
+  _downloadComplete = false;
+  _stagedWriteOpen = false;
+  _consentPending = false;
+  _consentRefusalMs = 0;
+  _stage.stagedEndWrite();
+  _stage.stagedRemove();
+  hearthCmd("AT+MTOTA=0", 0, 0);
+  hearthCmd("AT+MTOTA=1", 0, 0);
+  _status.state = HEARTH_UPDATE_IDLE;
+  _status.percent = 0;
+  _status.error = HEARTH_UPDATE_OK;
+  _status.reason = 0;
+  if (_statusCB) {
+    _statusCB(_status);
+  }
+}
+
+/*
+ * The verification and the verdict (Task 4b2), run from hearthDrain() on
+ * +MTOTA:DOWNLOADED once the staged write is ended.
+ *
+ * The order (plan Task 4, step 2) is: open the staged bundle and verify its
+ * signature (a parse or signature failure is a hard refusal with the bundle's
+ * own error as the reason); then the apply decision per spec 4, which
+ * produces a refusal reason or the selected parts; then verifyPart for each
+ * selected part (a digest failure is a hard refusal, reason 2); then the
+ * product-version downgrade check (reason 4 unless allowDowngrade); then
+ * consent, then AT+MTOTASTAGED.
+ *
+ * The refusal reasons 1 to 6 are the HearthBundleError values (spec 5.4).
+ * A target that does not match the running co-processor is a refusal of the
+ * whole bundle with reason 3, the plan's hard refusal, not a skip. A cached
+ * variant of unknown selects no Hearth part at all. A bundle where nothing
+ * is selected answers =0,4 (the versions all match, nothing to do) and
+ * updates the manifest's product version to the bundle's so the provider
+ * stops offering it.
+ */
+void HearthUpdate::hearthVerifyAndVerdict() {
+  HearthFile *staged = _stage.stagedOpenRead();
+  if (!staged) {
+    /* The staged file is gone: a storage failure staging the bundle. */
+    hearthRefuse(HEARTH_BUNDLE_ERR_STORAGE);
+    return;
+  }
+  HearthFileSource src(*staged);
+  HearthBundleInfo info;
+  HearthBundleError e = HearthBundle::open(src, _cfg.publicKey, info);
+  if (e != HEARTH_BUNDLE_OK) {
+    delete staged;
+    hearthRefuse(e);
+    return;
+  }
+
+  /* The apply decision. _fwPart and _hostPart are indexes into info.parts,
+   * 0xFF for the part not selected. */
+  int fwPart = 0xFF;
+  int hostPart = 0xFF;
+  bool unknownVariant = (strcmp(_variant, "unknown") == 0);
+  for (int i = 0; i < (int)info.partCount; i++) {
+    const HearthBundlePart &p = info.parts[i];
+    if (p.type == 2) {
+      /* A Hearth part: it refuses the whole bundle when its target does not
+       * match the running co-processor (case 6d, the nRF part on a C6). */
+      if (strcmp(p.target, _model) != 0) {
+        delete staged;
+        hearthRefuse(HEARTH_BUNDLE_ERR_TARGET);
+        return;
+      }
+      if (!unknownVariant) {
+        int pv = 0;
+        if (strcmp(_variant, "wifi") == 0) pv = 1;
+        else if (strcmp(_variant, "thread") == 0) pv = 2;
+        else if (strcmp(_variant, "combined") == 0) pv = 3;
+        if (p.variant != 0 && p.variant != (uint8_t)pv) {
+          delete staged;
+          hearthRefuse(HEARTH_BUNDLE_ERR_TARGET);
+          return;
+        }
+        if (fwPart == 0xFF && strcmp(p.version, _hearthVersion) != 0) {
+          fwPart = i;
+        }
+      }
+    } else if (p.type == 1) {
+      /* A host part: it applies when its version differs from the manifest's
+       * host version. The manifest is the applied product version's record. */
+      if (hostPart == 0xFF) {
+        const char *hv = _haveManifest ? _manifest.hostVersion : "";
+        if (strcmp(p.version, hv) != 0) {
+          hostPart = i;
+        }
+      }
+    }
+  }
+
+  /* Verify each selected part's digest. */
+  if (fwPart != 0xFF && HearthBundle::verifyPart(src, info, fwPart) != HEARTH_BUNDLE_OK) {
+    delete staged;
+    hearthRefuse(HEARTH_BUNDLE_ERR_DIGEST);
+    return;
+  }
+  if (hostPart != 0xFF && HearthBundle::verifyPart(src, info, hostPart) != HEARTH_BUNDLE_OK) {
+    delete staged;
+    hearthRefuse(HEARTH_BUNDLE_ERR_DIGEST);
+    return;
+  }
+  delete staged;
+
+  /* The product-version downgrade check: a lower product version is refused
+   * with reason 4 unless allowDowngrade (case 7). */
+  if (info.productVersion < _effectiveVersion && !_cfg.allowDowngrade) {
+    hearthRefuse(HEARTH_BUNDLE_ERR_VERSION);
+    return;
+  }
+
+  /* Nothing selected: the versions all match, nothing to do. Answer =0,4
+   * and record the product version so the provider stops offering it. */
+  if (fwPart == 0xFF && hostPart == 0xFF) {
+    HearthManifest m;
+    if (_haveManifest) {
+      m = _manifest;
+    } else {
+      memset(&m, 0, sizeof(m));
+    }
+    m.productVersion = info.productVersion;
+    snprintf(m.productVersionString, sizeof(m.productVersionString), "%s", info.productVersionString);
+    if (hostPart != 0xFF) {
+      snprintf(m.hostVersion, sizeof(m.hostVersion), "%s", info.parts[hostPart].version);
+    }
+    _stage.saveManifest(m);
+    _manifest = m;
+    _haveManifest = true;
+    _status.state = HEARTH_UPDATE_FAILED;
+    _status.error = HEARTH_UPDATE_ERR_BUNDLE;
+    _status.reason = HEARTH_BUNDLE_ERR_VERSION;
+    _stage.stagedRemove();
+    if (_statusCB) {
+      _statusCB(_status);
+    }
+    return;
+  }
+
+  _fwPart = fwPart;
+  _hostPart = hostPart;
+
+  /* The consent hook. A refusal leaves the verdict pending (the staged
+   * bundle stays) and re-runs the hook on the next drain until it is
+   * accepted or the consent window lapses (hearthDrain abandons it). */
+  bool consent = true;
+  if (_applyRequestCB) {
+    consent = _applyRequestCB();
+  }
+  if (!consent) {
+    _consentPending = true;
+    _consentRefusalMs = (uint32_t)millis();
+    return;
+  }
+  _consentPending = false;
+  _consentRefusalMs = 0;
+
+  /* The verdict is in: AT+MTOTASTAGED=1 and the state WAIT_APPLY. The apply
+   * (the flasher) is Task 6, which answers the +MTOTA:APPLY that follows. */
+  char cmd[HEARTH_LINE_MAX];
+  snprintf(cmd, sizeof(cmd), "AT+MTOTASTAGED=1");
+  hearthCmd(cmd, 0, 0);
+  _status.state = HEARTH_UPDATE_WAIT_APPLY;
+  _status.offeredVersion = info.productVersion;
+  if (_statusCB) {
+    _statusCB(_status);
+  }
+}
+
+/*
+ * A refusal of the downloaded bundle: the verdict goes out as
+ * AT+MTOTASTAGED=0,<reason> with the reason the HearthBundleError value
+ * (1 to 6, spec 5.4), the staged bundle is removed and the state is FAILED
+ * with HEARTH_UPDATE_ERR_BUNDLE and .reason the same value.
+ */
+void HearthUpdate::hearthRefuse(HearthBundleError reason) {
+  char cmd[HEARTH_LINE_MAX];
+  snprintf(cmd, sizeof(cmd), "AT+MTOTASTAGED=0,%d", (int)reason);
+  hearthCmd(cmd, 0, 0);
+  _stage.stagedRemove();
+  _status.state = HEARTH_UPDATE_FAILED;
+  _status.error = HEARTH_UPDATE_ERR_BUNDLE;
+  _status.reason = (int)reason;
+  if (_statusCB) {
+    _statusCB(_status);
+  }
 }
 
 void HearthUpdate::end() {
@@ -506,15 +793,6 @@ void onVerLine2(const char *line, void *arg) {
   q->got = true;
 }
 
-/* The block-pull collector, for AT+MTOTAGET=<seq>. The answer is one
- * +MTOTABLK:<seq>,<off>,<hex> line per at most 96 bytes (ceil(len/96)
- * lines, the last shorter for a short block, the hex upper-case) and then
- * the terminal OK. Each line is validated before it is copied: the prefix,
- * the block's own seq, the offset exactly where the previous line ended,
- * and the hex length exactly the announced span of the block at that
- * offset. The first failure marks the pull failed, and every later line,
- * the included line, is ignored: the partial data is discarded by the
- * caller and nothing is acknowledged. */
 /* The model's filesystem need in bytes (DE625, the per-port figures the
  * plan's Global Constraints name). 0: a model the list does not know. */
 uint32_t modelFsNeed(const char *model) {

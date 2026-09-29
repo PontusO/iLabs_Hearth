@@ -128,6 +128,10 @@ public:
    * test scripted, not the global's unstarted one. */
   void hearthSetOwner(void *owner);
   bool hearthDownloadComplete() const;  /* 4b1: the staged write was ended on +MTOTA:DOWNLOADED */
+  /* The test hook for the download baud switch (plan Task 4b2 case 10). On
+   * the device the link's own port brings the UART to the rate; the tests
+   * install a callback that records it instead. 0 disables the switch. */
+  void hearthSetBaudChanger(void (*cb)(uint32_t));
 
 private:
   /* The re-entry guard for hearthDrain(): set on construction, cleared by
@@ -141,6 +145,11 @@ private:
   void hearthPullBlock();   /* AT+MTOTAGET/ACK for _pendingSeq, with the retry rules */
   void hearthAbortPull();   /* AT+MTOTA=0, remove the partial staged file, FAILED/ERR_LINK */
   int hearthCmd(const char *cmd, HearthLink::LineCb onLine, void *arg);
+  int hearthCmd(const char *cmd, HearthLink::LineCb onLine, void *arg, uint32_t timeout_ms);
+  void hearthVerifyAndVerdict();  /* 4b2: on DOWNLOADED, verify the staged bundle, consent, AT+MTOTASTAGED */
+  void hearthRefuse(HearthBundleError reason);  /* 4b2: AT+MTOTASTAGED=0,<reason>, remove staged, FAILED/ERR_BUNDLE */
+  void hearthSetBaud(uint32_t baud);  /* 4b2: AT+MTBAUD=<baud> plus the test hook */
+  void hearthAbandon();     /* 4b2: AT+MTOTA=0 then AT+MTOTA=1, remove the staged bundle, IDLE */
   void *_owner;
   HearthFs *_fs;
   HearthUpdateConfig _cfg;
@@ -185,4 +194,21 @@ private:
 
   bool (*_applyRequestCB)();
   void (*_statusCB)(const HearthUpdateStatus &);
+  void (*_baudChangerCB)(uint32_t);  /* 4b2 test hook for AT+MTBAUD, 0 = no switch */
+
+  /* 4b2: the apply decision from the verify on DOWNLOADED. Set before the
+   * consent hook runs; _fwPart and _hostPart are indexes into the bundle's
+   * parts, 0xFF for the part not selected. */
+  int _fwPart;
+  int _hostPart;
+  bool _consentPending;      /* true while the verdict waits on the consent hook */
+  uint32_t _consentRefusalMs; /* millis() of the first refusal, 0 if none */
+  /* The link rate as last set over AT+MTBAUD (HEARTH_LINK_BAUD at start).
+   * The drain compares the rate a state needs against this and sends the
+   * switch only when they differ, so a repeat state line is a no-op and a
+   * switch back is seen. The URC callback only records which rate a state
+   * needs (_baudWantedDownload); the AT+MTBAUD itself goes out on the next
+   * drain, because a URC callback may not call the link. */
+  uint32_t _baud;
+  bool _baudWantedDownload;
 };
