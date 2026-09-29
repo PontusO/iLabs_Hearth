@@ -68,6 +68,7 @@ build/
 /test/host/test_bundle
 /test/host/test_update_stage
 /test/host/test_update
+/test/host/test_update_apply
 /test/host/test_flasher_smp
 /test/host/test_flasher_xmodem
 /test/host/test_flasher_esp

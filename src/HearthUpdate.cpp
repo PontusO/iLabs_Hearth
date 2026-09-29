@@ -17,6 +17,7 @@
  */
 #include "HearthGlobal.h"
 #include "HearthUpdate.h"
+#include "HearthFlasher.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -43,7 +44,10 @@ HearthUpdate::HearthUpdate()
     _consentRefused(false),
     _consentRefusalMs(0),
     _baud(HEARTH_LINK_BAUD),
-    _baudWantedDownload(false) {
+    _baudWantedDownload(false),
+    _applyPending(false) {
+  _declaredVersion = 0;
+  _declaredVersionString[0] = 0;
   _status.state = HEARTH_UPDATE_DISABLED;
   _status.percent = 0;
   _status.offeredVersion = 0;
@@ -177,8 +181,11 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
      * dispatch, where this callback cannot (the hearthDrain* pattern, this
      * header's own comment). */
   } else if (strcmp(state, "APPLY") == 0) {
-    /* The requestor asked to apply; 4b/6 answers it with the flasher. */
+    /* The requestor asked to apply (spec 7.3): set the pending flag only.
+     * This is a URC route and may not call the link, so hearthDrain() is
+     * where the apply runs, once, in hearthApply(). */
     _status.state = HEARTH_UPDATE_APPLYING_FW;
+    _applyPending = true;
   } else if (strcmp(state, "DEFERRED") == 0) {
     _status.state = HEARTH_UPDATE_IDLE;
     _status.deferredSeconds = comma ? (uint32_t)strtoul(comma + 1, 0, 10) : 0;
@@ -283,6 +290,14 @@ void HearthUpdate::hearthDrain() {
     if (_statusCB) {
       _statusCB(_status);
     }
+  }
+  /* 6a: the requestor's apply request. It was parsed on the URC route
+   * (hearthOnOtaLine set _applyPending), and this is where the flasher
+   * runs: the whole apply is blocking by design, so it runs here, on the
+   * drain, and the loop is blocked for its duration. */
+  if (_applyPending) {
+    _applyPending = false;
+    hearthApply();
   }
 }
 
@@ -543,6 +558,415 @@ void HearthUpdate::hearthAbandon() {
 }
 
 /*
+ * The query-result collectors: the lines after the prefix, kept in plain
+ * members (no heap, no link calls from inside a command callback).
+ */
+namespace {
+struct OtaQuery {
+  bool got;
+  int mode;
+  char state[24];
+  int percent;
+  char variant[16];
+};
+void onOtaQueryLine(const char *line, void *arg) {
+  OtaQuery *q = (OtaQuery *)arg;
+  if (strncmp(line, "+MTOTA:", 7) != 0) {
+    return;
+  }
+  /* The answer is +MTOTA:<mode>,<state>,<percent>,<variant>: the first
+   * field is the mode digit, which is what keeps it out of the URC set. */
+  char *end;
+  int mode = (int)strtol(line + 7, &end, 10);
+  if (end == line + 7 || *end != ',') {
+    return;
+  }
+  q->mode = mode;
+  const char *p = end + 1;
+  const char *c1 = strchr(p, ',');
+  if (!c1) {
+    return;
+  }
+  size_t n = (size_t)(c1 - p);
+  if (n >= sizeof(q->state)) {
+    n = sizeof(q->state) - 1;
+  }
+  memcpy(q->state, p, n);
+  q->state[n] = 0;
+  const char *c2 = strchr(c1 + 1, ',');
+  q->percent = c2 ? atoi(c1 + 1) : 0;
+  if (c2) {
+    const char *v = c2 + 1;
+    size_t vn = strlen(v);
+    if (vn >= sizeof(q->variant)) {
+      vn = sizeof(q->variant) - 1;
+    }
+    memcpy(q->variant, v, vn);
+    q->variant[vn] = 0;
+  }
+  q->got = true;
+}
+
+struct ModelQuery {
+  bool got;
+  char model[33];
+};
+void onModelLine(const char *line, void *arg) {
+  ModelQuery *q = (ModelQuery *)arg;
+  /* AT+CGMM answers with the plain model line, no prefix: anything but a
+   * terminal or a + line is the answer. */
+  if (line[0] == '+' || strcmp(line, "OK") == 0 || strcmp(line, "ERROR") == 0) {
+    return;
+  }
+  size_t n = strlen(line);
+  if (n >= sizeof(q->model)) {
+    n = sizeof(q->model) - 1;
+  }
+  memcpy(q->model, line, n);
+  q->model[n] = 0;
+  q->got = true;
+}
+
+struct VerQuery {
+  bool got;
+  char version[33];
+};
+void onVerLine2(const char *line, void *arg) {
+  VerQuery *q = (VerQuery *)arg;
+  if (strncmp(line, "+MTVER:", 7) != 0) {
+    return;
+  }
+  size_t n = strlen(line + 7);
+  if (n >= sizeof(q->version)) {
+    n = sizeof(q->version) - 1;
+  }
+  memcpy(q->version, line + 7, n);
+  q->version[n] = 0;
+  q->got = true;
+}
+
+/* The model's filesystem need in bytes (DE625, the per-port figures the
+ * plan's Global Constraints name). 0: a model the list does not know. */
+uint32_t modelFsNeed(const char *model) {
+  if (strcmp(model, "ESP32-C6 Hearth") == 0) {
+    return 6815744;  /* 6.5 MiB: a combined image, an 8 MB FS board */
+  }
+  if (strcmp(model, "nRF54L15 Hearth") == 0 || strcmp(model, "nRF54LM20A Hearth") == 0
+      || strcmp(model, "MGM240P Hearth") == 0) {
+    return 3670016;  /* 3.5 MiB: a 4 MB FS board */
+  }
+  return 0;
+}
+}  // namespace
+
+/*
+ * The apply of the Hearth (co-processor) part (plan Task 6a, spec 7.3 and
+ * 7.5). hearthDrain() runs it once, for the +MTOTA:APPLY the URC route
+ * parsed. It works from the staged file and the state record, not from
+ * download-time memory alone: Task 6b's resume after a power loss reopens
+ * the same stage and calls hearthApplyFw() with the state it loaded.
+ *
+ * The order (the test pins every command):
+ *  1. AT+MTSWVER=<the bundle's product version>,"<its string>" FIRST,
+ *     before any flash (spec 7.5): every reset from here on is one the
+ *     requestor must come back from already knowing the new version.
+ *  2. hearthApplyFw(): up to three flash attempts, each
+ *     flash -> re-clock the link -> wait for +MTREADY -> AT+MTVER?.
+ *  3. Success: retain the new part, AT+MTOTA=1 (the requestor's mode is
+ *     not persisted, spec 5.2, so it is off after the co-processor's
+ *     reboot), the manifest, and then the host part (6b).
+ *  4. Three failures: re-declare the old version, the retained image if
+ *     one fits this model, AT+MTOTA=1, FAILED with HEARTH_UPDATE_ERR_FLASH
+ *     and the staged bundle kept for a manual retry.
+ */
+void HearthUpdate::hearthApply() {
+  HearthFile *staged = _stage.stagedOpenRead();
+  if (!staged) {
+    /* The staged bundle is gone (a power loss in the consent window):
+     * nothing to flash. The stagedRemove() below is a no-op. */
+    hearthCmd("AT+MTOTA=1", 0, 0);
+    _stage.clearState();
+    _status.state = HEARTH_UPDATE_FAILED;
+    _status.error = HEARTH_UPDATE_ERR_FLASH;
+    if (_statusCB) {
+      _statusCB(_status);
+    }
+    return;
+  }
+  HearthFileSource src(*staged);
+  HearthBundleInfo info;
+  HearthBundleError e = HearthBundle::open(src, _cfg.publicKey, info);
+  if (e != HEARTH_BUNDLE_OK) {
+    delete staged;
+    hearthCmd("AT+MTOTA=1", 0, 0);
+    _stage.clearState();
+    _status.state = HEARTH_UPDATE_FAILED;
+    _status.error = HEARTH_UPDATE_ERR_BUNDLE;
+    _status.reason = (int)e;
+    if (_statusCB) {
+      _statusCB(_status);
+    }
+    return;
+  }
+
+  /* The part to flash: the one the verify selected, or the bundle's first
+   * Hearth part (a resume reloads this from the state record instead, but
+   * the value is the same one the verify wrote). */
+  int part = _fwPart;
+  if (part < 0 || part >= (int)info.partCount || info.parts[part].type != 2) {
+    part = 0xFF;
+    for (int i = 0; i < (int)info.partCount; i++) {
+      if (info.parts[i].type == 2) {
+        part = i;
+        break;
+      }
+    }
+  }
+  if (part == 0xFF) {
+    /* A bundle with no Hearth part: a host-only bundle, 6b's territory. */
+    delete staged;
+    hearthApplyHost();
+    return;
+  }
+
+  HearthUpdateState st;
+  memset(&st, 0, sizeof(st));
+  st.phase = HEARTH_PHASE_FW;
+  st.targetVersion = info.productVersion;
+  snprintf(st.targetVersionString, sizeof(st.targetVersionString), "%s", info.productVersionString);
+  st.fwPart = (uint8_t)part;
+  st.hostPart = (uint8_t)_hostPart;
+
+  /* The declaration goes out before any flash (spec 7.5's hard rule). */
+  char cmd[HEARTH_LINE_MAX];
+  snprintf(cmd, sizeof(cmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)info.productVersion,
+           info.productVersionString);
+  hearthCmd(cmd, 0, 0);
+
+  if (hearthApplyFw(st) == 0) {
+    /* Success: the new image is confirmed running (AT+MTVER? matched the
+     * part's version). Retain it for a future rollback (the rotation
+     * deletes the old retained image first, DE625), turn the requestor
+     * back on (its mode is not persisted, spec 5.2, so it is off after
+     * the co-processor's reboot) and cache the new running version. */
+    const HearthBundlePart &p = info.parts[part];
+    _stage.retainFwPart(*staged, info.containerOffset + p.offset, p.length, p.target, p.version);
+    delete staged;
+    hearthCmd("AT+MTOTA=1", 0, 0);
+    snprintf(_hearthVersion, sizeof(_hearthVersion), "%s", p.version);
+    snprintf(_status.hearthVersion, sizeof(_status.hearthVersion), "%s", p.version);
+
+    if (st.hostPart == 0xFF) {
+      /* No host part selected: the fw-only finish. The manifest takes the
+       * bundle's product version and string; the host version is kept
+       * from the old manifest, "" when there was none. */
+      HearthManifest m;
+      if (_haveManifest) {
+        m = _manifest;
+      } else {
+        memset(&m, 0, sizeof(m));
+      }
+      m.productVersion = info.productVersion;
+      snprintf(m.productVersionString, sizeof(m.productVersionString), "%s", info.productVersionString);
+      _stage.saveManifest(m);
+      _manifest = m;
+      _haveManifest = true;
+      _stage.stagedRemove();
+      _stage.clearState();
+      _effectiveVersion = info.productVersion;
+      _status.state = HEARTH_UPDATE_IDLE;
+      _status.error = HEARTH_UPDATE_OK;
+      _status.reason = 0;
+      _status.effectiveVersion = info.productVersion;
+      if (_statusCB) {
+        _statusCB(_status);
+      }
+    } else {
+      /* A host part is selected: the host applies second (spec 7). */
+      hearthApplyHost();
+    }
+  } else {
+    /* Three failed attempts (spec 7.3): the retained image, if one fits
+     * this model, is one more flash. */
+    char rtarget[33], rversion[33];
+    uint32_t rlen = 0;
+    bool haveRetained = _stage.retainedFwInfo(rtarget, rversion, rlen);
+    bool didRollback = false;
+    if (haveRetained && strcmp(rtarget, _model) == 0) {
+      /* The old version is re-declared BEFORE the rollback flash (the
+       * ruling): between the declaration and a successful boot the
+       * co-processor claims a version it is not yet running. */
+      char rcmd[HEARTH_LINE_MAX];
+      snprintf(rcmd, sizeof(rcmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)_declaredVersion,
+               _declaredVersionString);
+      hearthCmd(rcmd, 0, 0);
+      HearthFile *ret = _stage.retainedFwOpen();
+      if (ret) {
+        HearthFlasher *fl = _flasher ? _flasher : HearthFlasher::forModel(_model);
+        if (fl) {
+          HearthFileSource rsrc(*ret);
+          HearthCoprocPins pins;
+          pins.reset = _cfg.resetPin;
+          pins.resetActiveLow = _cfg.resetActiveLow;
+          pins.strap = _cfg.strapPin;
+          pins.strapActiveLow = _cfg.strapActiveLow;
+          /* The retained image carries no digest (it is the bytes of an
+           * image that already ran, not a bundle part): a zero digest, the
+           * same convention the flashers apply to a range with no bundle
+           * part behind it. */
+          uint8_t zeros[32];
+          memset(zeros, 0, sizeof(zeros));
+          fl->flash(*((HearthClass *)_owner)->link().stream(), pins, rsrc, 0, rlen, zeros);
+#if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
+          /* The flasher left the port at its own rate; re-clock it. */
+          HEARTH_SERIAL_PORT.begin(HEARTH_LINK_BAUD);
+#endif
+          ((HearthClass *)_owner)->hearthArmExpectedReboot();
+          if (((HearthClass *)_owner)->link().waitReady(HEARTH_READY_TIMEOUT_MS)) {
+            VerQuery rvq;
+            rvq.got = false;
+            rvq.version[0] = 0;
+            hearthCmd("AT+MTVER?", onVerLine2, &rvq);
+            if (rvq.got) {
+              /* Cache whatever it answers as the running version. */
+              snprintf(_hearthVersion, sizeof(_hearthVersion), "%s", rvq.version);
+              snprintf(_status.hearthVersion, sizeof(_status.hearthVersion), "%s", rvq.version);
+            }
+            didRollback = true;
+          } else {
+            ((HearthClass *)_owner)->hearthDisarmExpectedReboot();
+          }
+        }
+        delete ret;
+      }
+    }
+    if (!didRollback) {
+      /* No retained image to restore: the old version is re-declared so
+       * the requestor comes back knowing what it is running. */
+      char rcmd[HEARTH_LINE_MAX];
+      snprintf(rcmd, sizeof(rcmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)_declaredVersion,
+               _declaredVersionString);
+      hearthCmd(rcmd, 0, 0);
+    }
+
+    /* Either way the requestor is back on, the state file is gone (a
+     * failed apply must not resume) and the staged bundle is KEPT, for a
+     * manual retry. */
+    delete staged;
+    hearthCmd("AT+MTOTA=1", 0, 0);
+    _stage.clearState();
+    _status.state = HEARTH_UPDATE_FAILED;
+    _status.error = HEARTH_UPDATE_ERR_FLASH;
+    _status.reason = 0;
+    if (_statusCB) {
+      _statusCB(_status);
+    }
+  }
+}
+
+/*
+ * One flash attempt of the part named by st (6a): the state is saved with
+ * the attempt number, the flasher runs on the link's stream, the port is
+ * re-clocked to the link baud (the flashers leave it at their own rate),
+ * the expected reboot is armed and the link waits for +MTREADY, and
+ * AT+MTVER? must answer the part's version. The return: 0 on success, 1
+ * when the attempt failed (the caller tries again).
+ */
+int HearthUpdate::hearthApplyFw(HearthUpdateState &st) {
+  HearthClass *owner = (HearthClass *)_owner;
+  HearthFlasher *fl = _flasher ? _flasher : HearthFlasher::forModel(_model);
+  /* Reopen the staged bundle on every call: the flasher reads the image
+   * bytes through the source, and a resume (6b) enters this function with
+   * no file open yet. */
+  HearthFile *staged = _stage.stagedOpenRead();
+  if (!staged || !fl) {
+    delete staged;
+    if (!fl) {
+      /* No flasher knows this model: the declaration is rolled back
+       * (below) and the failure reported. */
+      char rcmd[HEARTH_LINE_MAX];
+      snprintf(rcmd, sizeof(rcmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)_declaredVersion,
+               _declaredVersionString);
+      hearthCmd(rcmd, 0, 0);
+      _status.state = HEARTH_UPDATE_FAILED;
+      _status.error = HEARTH_UPDATE_ERR_FLASH;
+      _status.reason = 0;
+      if (_statusCB) {
+        _statusCB(_status);
+      }
+    }
+    return 1;
+  }
+  HearthFileSource src(*staged);
+  HearthBundleInfo info;
+  if (HearthBundle::open(src, _cfg.publicKey, info) != HEARTH_BUNDLE_OK) {
+    delete staged;
+    return 1;
+  }
+  const HearthBundlePart &p = info.parts[st.fwPart];
+  uint32_t off = info.containerOffset + p.offset;
+  HearthCoprocPins pins;
+  pins.reset = _cfg.resetPin;
+  pins.resetActiveLow = _cfg.resetActiveLow;
+  pins.strap = _cfg.strapPin;
+  pins.strapActiveLow = _cfg.strapActiveLow;
+
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    st.attempts = (uint8_t)attempt;
+    _stage.saveState(st);
+    int rc = fl->flash(*owner->link().stream(), pins, src, off, p.length, p.sha256);
+#if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
+    /* The flasher left the port at its own rate (921600 on the ESP ROM
+     * loader): back to the link baud before the next line on this stream. */
+    HEARTH_SERIAL_PORT.begin(HEARTH_LINK_BAUD);
+#endif
+    if (rc != HEARTH_FLASH_OK) {
+      /* The flasher failed: the next attempt, with no wait and no
+       * AT+MTVER? (the co-processor never rebooted). */
+      continue;
+    }
+    /* The flash landed: the co-processor is rebooting into the new image.
+     * Arm the expected reboot on the owner (so the boot is not reported as
+     * an unexpected one) and wait for its +MTREADY. */
+    owner->hearthArmExpectedReboot();
+    if (!owner->link().waitReady(HEARTH_READY_TIMEOUT_MS)) {
+      /* No +MTREADY in time: the attempt failed, disarm so the next
+       * spontaneous reboot is still reported. */
+      owner->hearthDisarmExpectedReboot();
+      continue;
+    }
+    VerQuery vq;
+    vq.got = false;
+    vq.version[0] = 0;
+    hearthCmd("AT+MTVER?", onVerLine2, &vq);
+    if (vq.got && strcmp(vq.version, p.version) == 0) {
+      delete staged;
+      return 0;  /* the new image is confirmed running */
+    }
+    /* A boot that reports another version: the attempt failed. */
+  }
+  delete staged;
+  return 1;
+}
+
+/*
+ * The host part of the apply (spec 7: the host applies second). Task 6b
+ * implements it; 6a only names the failure it will report, and no 6a path
+ * reaches here with a host part selected.
+ */
+void HearthUpdate::hearthApplyHost() {
+  /* Task 6b */
+  _stage.stagedRemove();
+  _stage.clearState();
+  _status.state = HEARTH_UPDATE_FAILED;
+  _status.error = HEARTH_UPDATE_ERR_HOST;
+  _status.reason = 0;
+  if (_statusCB) {
+    _statusCB(_status);
+  }
+}
+
+/*
  * The verification and the verdict (Task 4b2), run from hearthDrain() on
  * +MTOTA:DOWNLOADED once the staged write is ended.
  *
@@ -729,109 +1153,10 @@ void HearthUpdate::end() {
   _havePendingBlock = false;
   _downloadComplete = false;
   _stagedWriteOpen = false;
+  _applyPending = false;
 }
 
-/*
- * The query-result collectors: the lines after the prefix, kept in plain
- * members (no heap, no link calls from inside a command callback).
- */
-namespace {
-struct OtaQuery {
-  bool got;
-  int mode;
-  char state[24];
-  int percent;
-  char variant[16];
-};
-void onOtaQueryLine(const char *line, void *arg) {
-  OtaQuery *q = (OtaQuery *)arg;
-  if (strncmp(line, "+MTOTA:", 7) != 0) {
-    return;
-  }
-  /* The answer is +MTOTA:<mode>,<state>,<percent>,<variant>: the first
-   * field is the mode digit, which is what keeps it out of the URC set. */
-  char *end;
-  int mode = (int)strtol(line + 7, &end, 10);
-  if (end == line + 7 || *end != ',') {
-    return;
-  }
-  q->mode = mode;
-  const char *p = end + 1;
-  const char *c1 = strchr(p, ',');
-  if (!c1) {
-    return;
-  }
-  size_t n = (size_t)(c1 - p);
-  if (n >= sizeof(q->state)) {
-    n = sizeof(q->state) - 1;
-  }
-  memcpy(q->state, p, n);
-  q->state[n] = 0;
-  const char *c2 = strchr(c1 + 1, ',');
-  q->percent = c2 ? atoi(c1 + 1) : 0;
-  if (c2) {
-    const char *v = c2 + 1;
-    size_t vn = strlen(v);
-    if (vn >= sizeof(q->variant)) {
-      vn = sizeof(q->variant) - 1;
-    }
-    memcpy(q->variant, v, vn);
-    q->variant[vn] = 0;
-  }
-  q->got = true;
-}
 
-struct ModelQuery {
-  bool got;
-  char model[33];
-};
-void onModelLine(const char *line, void *arg) {
-  ModelQuery *q = (ModelQuery *)arg;
-  /* AT+CGMM answers with the plain model line, no prefix: anything but a
-   * terminal or a + line is the answer. */
-  if (line[0] == '+' || strcmp(line, "OK") == 0 || strcmp(line, "ERROR") == 0) {
-    return;
-  }
-  size_t n = strlen(line);
-  if (n >= sizeof(q->model)) {
-    n = sizeof(q->model) - 1;
-  }
-  memcpy(q->model, line, n);
-  q->model[n] = 0;
-  q->got = true;
-}
-
-struct VerQuery {
-  bool got;
-  char version[33];
-};
-void onVerLine2(const char *line, void *arg) {
-  VerQuery *q = (VerQuery *)arg;
-  if (strncmp(line, "+MTVER:", 7) != 0) {
-    return;
-  }
-  size_t n = strlen(line + 7);
-  if (n >= sizeof(q->version)) {
-    n = sizeof(q->version) - 1;
-  }
-  memcpy(q->version, line + 7, n);
-  q->version[n] = 0;
-  q->got = true;
-}
-
-/* The model's filesystem need in bytes (DE625, the per-port figures the
- * plan's Global Constraints name). 0: a model the list does not know. */
-uint32_t modelFsNeed(const char *model) {
-  if (strcmp(model, "ESP32-C6 Hearth") == 0) {
-    return 6815744;  /* 6.5 MiB: a combined image, an 8 MB FS board */
-  }
-  if (strcmp(model, "nRF54L15 Hearth") == 0 || strcmp(model, "nRF54LM20A Hearth") == 0
-      || strcmp(model, "MGM240P Hearth") == 0) {
-    return 3670016;  /* 3.5 MiB: a 4 MB FS board */
-  }
-  return 0;
-}
-}  // namespace
 
 /*
  * begin(): bring FOTA up. The order (plan Task 4, step 2) is:
@@ -889,6 +1214,10 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
     effStr = _manifest.productVersionString;
   }
   _effectiveVersion = eff;
+  /* The version begin() is about to declare, kept for the rollback path
+   * (spec 7.5 re-declares it before a failed apply gives up). */
+  _declaredVersion = eff;
+  snprintf(_declaredVersionString, sizeof(_declaredVersionString), "%s", effStr);
 
   char cmd[HEARTH_LINE_MAX];
   snprintf(cmd, sizeof(cmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)eff, effStr);

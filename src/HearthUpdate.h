@@ -150,6 +150,12 @@ private:
   void hearthRefuse(HearthBundleError reason);  /* 4b2: AT+MTOTASTAGED=0,<reason>, remove staged, FAILED/ERR_BUNDLE */
   void hearthSetBaud(uint32_t baud);  /* 4b2: AT+MTBAUD=<baud> plus the test hook */
   void hearthAbandon();     /* 4b2: AT+MTOTA=0 then AT+MTOTA=1, remove the staged bundle, IDLE */
+  /* 6a: the apply of the Hearth (co-processor) part, run by hearthDrain()
+   * once and for all on the pending +MTOTA:APPLY. Task 6b's resume calls
+   * hearthApplyFw() directly with the state it loaded. */
+  void hearthApply();
+  int hearthApplyFw(HearthUpdateState &st);  /* 6a: the flash attempts, 0 success, 1 three failures */
+  void hearthApplyHost();  /* 6b: the host part; 6a only sets FAILED/ERR_HOST */
   void *_owner;
   HearthFs *_fs;
   HearthUpdateConfig _cfg;
@@ -212,4 +218,15 @@ private:
    * drain, because a URC callback may not call the link. */
   uint32_t _baud;
   bool _baudWantedDownload;
+
+  /* 6a: the pending apply, parsed by hearthOnOtaLine() (+MTOTA:APPLY sets
+   * it, no link call there) and answered once by hearthDrain() in
+   * hearthApply(). */
+  bool _applyPending;
+  /* The version begin() declared with its first AT+MTSWVER (the effective
+   * version and its string). The rollback path re-declares it before it
+   * gives up (spec 7.5): the co-processor claims a version it is not yet
+   * running until the old image is back and booted. */
+  uint32_t _declaredVersion;
+  char _declaredVersionString[33];
 };
