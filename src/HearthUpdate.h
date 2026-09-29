@@ -202,7 +202,8 @@ private:
   int _fwPart;
   int _hostPart;
   bool _consentPending;      /* true while the verdict waits on the consent hook */
-  uint32_t _consentRefusalMs; /* millis() of the first refusal, 0 if none */
+  bool _consentRefused;      /* true while a refusal is on the clock */
+  uint32_t _consentRefusalMs; /* millis() of the refusal, the time only */
   /* The link rate as last set over AT+MTBAUD (HEARTH_LINK_BAUD at start).
    * The drain compares the rate a state needs against this and sends the
    * switch only when they differ, so a repeat state line is a no-op and a

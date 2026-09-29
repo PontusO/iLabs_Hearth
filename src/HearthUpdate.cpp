@@ -40,6 +40,7 @@ HearthUpdate::HearthUpdate()
     _fwPart(0xFF),
     _hostPart(0xFF),
     _consentPending(false),
+    _consentRefused(false),
     _consentRefusalMs(0),
     _baud(HEARTH_LINK_BAUD),
     _baudWantedDownload(false) {
@@ -260,7 +261,10 @@ void HearthUpdate::hearthDrain() {
    * IDLE). A refusal inside the window re-runs the hook on this drain, and
    * the verdict goes out when the hook returns true. */
   if (_status.state == HEARTH_UPDATE_VERIFYING && _consentPending) {
-    if (_consentRefusalMs != 0
+    /* _consentRefused, not a sentinel in the timestamp: a refusal recorded
+     * when millis() is 0 lapses like any other (0 was "no refusal" before
+     * the flag existed, and it could never lapse). */
+    if (_consentRefused
         && (millis() - _consentRefusalMs) >= _cfg.consentWindowMs) {
       hearthAbandon();
       return;
@@ -270,6 +274,7 @@ void HearthUpdate::hearthDrain() {
       return;  /* still refused, wait for the next drain */
     }
     _consentPending = false;
+    _consentRefused = false;
     _consentRefusalMs = 0;
     char cmd[HEARTH_LINE_MAX];
     snprintf(cmd, sizeof(cmd), "AT+MTOTASTAGED=1");
@@ -459,12 +464,19 @@ void HearthUpdate::hearthPullBlock() {
  * End a failed transfer: the AT+MTOTA=0 that tells the co-processor to
  * abort, the partial staged file removed (a dead transfer must not leave a
  * file a later transfer could append to), and the state FAILED with
- * HEARTH_UPDATE_ERR_LINK.
+ * HEARTH_UPDATE_ERR_LINK. This is one of the places a transfer ends FAILED
+ * while the download baud is active (a pull that timed out or failed to
+ * parse twice, mid-download at downloadBaud), so the link goes back to the
+ * default here, exactly as the DOWNLOADED path does: when the co-processor
+ * next reboots it comes up at the default rate and the two ends must still
+ * understand each other (plan case 10).
  */
 void HearthUpdate::hearthAbortPull() {
   _havePendingBlock = false;
   _downloadComplete = false;
   _stagedWriteOpen = false;
+  _baudWantedDownload = false;
+  hearthSetBaud(HEARTH_LINK_BAUD);  /* the download is over, back to the default */
   hearthCmd("AT+MTOTA=0", 0, 0);
   _stage.stagedEndWrite();
   _stage.stagedRemove();
@@ -510,8 +522,14 @@ void HearthUpdate::hearthAbandon() {
   _downloadComplete = false;
   _stagedWriteOpen = false;
   _consentPending = false;
+  _consentRefused = false;
   _consentRefusalMs = 0;
-  _stage.stagedEndWrite();
+  /* End the staged write only while it is open: on DOWNLOADED the write
+   * already ended, so the second endWrite here would be a no-op at best and
+   * could remove a staged file the verdict is still using at worst. */
+  if (_stagedWriteOpen) {
+    _stage.stagedEndWrite();
+  }
   _stage.stagedRemove();
   hearthCmd("AT+MTOTA=0", 0, 0);
   hearthCmd("AT+MTOTA=1", 0, 0);
@@ -621,8 +639,11 @@ void HearthUpdate::hearthVerifyAndVerdict() {
     return;
   }
 
-  /* Nothing selected: the versions all match, nothing to do. Answer =0,4
-   * and record the product version so the provider stops offering it. */
+  /* Nothing selected: the versions all match, nothing to do. The =0,4
+   * answer is the plan's chosen answer for "nothing to do" (the plan's Task
+   * 4 rule names 4 as its reason), not a failure of this bundle: record the
+   * product version so the provider stops offering it, and leave the state
+   * IDLE with no error. */
   if (fwPart == 0xFF && hostPart == 0xFF) {
     HearthManifest m;
     if (_haveManifest) {
@@ -638,10 +659,13 @@ void HearthUpdate::hearthVerifyAndVerdict() {
     _stage.saveManifest(m);
     _manifest = m;
     _haveManifest = true;
-    _status.state = HEARTH_UPDATE_FAILED;
-    _status.error = HEARTH_UPDATE_ERR_BUNDLE;
-    _status.reason = HEARTH_BUNDLE_ERR_VERSION;
+    _status.state = HEARTH_UPDATE_IDLE;
+    _status.error = HEARTH_UPDATE_OK;
+    _status.reason = 0;
     _stage.stagedRemove();
+    char cmd[HEARTH_LINE_MAX];
+    snprintf(cmd, sizeof(cmd), "AT+MTOTASTAGED=0,4");
+    hearthCmd(cmd, 0, 0);
     if (_statusCB) {
       _statusCB(_status);
     }
@@ -660,10 +684,12 @@ void HearthUpdate::hearthVerifyAndVerdict() {
   }
   if (!consent) {
     _consentPending = true;
+    _consentRefused = true;
     _consentRefusalMs = (uint32_t)millis();
     return;
   }
   _consentPending = false;
+  _consentRefused = false;
   _consentRefusalMs = 0;
 
   /* The verdict is in: AT+MTOTASTAGED=1 and the state WAIT_APPLY. The apply

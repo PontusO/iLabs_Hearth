@@ -304,6 +304,12 @@ static void scriptBegin(MockStream &s) {
   s.expect("AT+MTOTA=1", "OK\r\n");
 }
 
+/* The baud hook and its record, forward-declared for the first-half tests;
+ * defined with the second-half hooks below. */
+static int g_baudCalls = 0;
+static uint32_t g_lastBaud = 0;
+static void baudHook(uint32_t b);
+
 /* One +MTOTABLK: line: the seq, the block-local offset and the hex for the
  * bytes at that offset, upper-case. The line carries at most 96 bytes; the
  * last line of a short block carries the rest. The terminal OK the
@@ -486,6 +492,7 @@ static void test_pull_garbled_twice_aborts(void) {
   }
   s.expect("AT+MTOTAGET=0", bad);
   s.expect("AT+MTOTAGET=0", bad);
+  s.expect("AT+MTBAUD=115200", "OK\r\n");
   s.expect("AT+MTOTA=0", "OK\r\n");
   s.injectURC("+MTOTA:BLOCK,0,1024");
   g_yieldAdvanceMs = 50;
@@ -504,7 +511,11 @@ static void test_pull_garbled_twice_aborts(void) {
 /* Case 6, the timeout half: no OK within the pull's 1500 ms. The update is
  * NOT re-pulled (the 5 s acknowledgement deadline cannot absorb a second
  * full pull at 115200): it aborts at once with AT+MTOTA=0, state FAILED,
- * HEARTH_UPDATE_ERR_LINK, and the partial staged file is removed. */
+ * HEARTH_UPDATE_ERR_LINK, and the partial staged file is removed. Case 10's
+ * switch back on FAILED: the download ran at the download baud, so the abort
+ * restores the link baud (AT+MTBAUD=115200) before the AT+MTOTA=0, or the
+ * co-processor's next reboot at the default rate would no longer be
+ * understood. */
 static void test_pull_timeout_aborts_at_once(void) {
   std::string fx;
   check("the good.ota fixture loads (timeout)", loadFixture("fixtures/good.ota", fx));
@@ -518,10 +529,22 @@ static void test_pull_timeout_aborts_at_once(void) {
   check("begin returns true (timeout)", hearth.update.begin(0x10400, "1.4.0"));
   g_yieldAdvanceMs = 0;
 
+  g_baudCalls = 0;
+  g_lastBaud = 0;
+  hearth.update.hearthSetBaudChanger(baudHook);
   const char *stagedPath = "/hearth/staged.ota";
-  /* The pull is answered with the first block line and then silence: the
-   * co-processor never sends the OK, so the pull's 1500 ms runs out. */
+  /* The switch to the download baud on AVAILABLE, then the pull answered
+   * with the first block line and then silence: the co-processor never
+   * sends the OK, so the pull's 1500 ms runs out. The abort restores the
+   * link baud before it sends AT+MTOTA=0. */
+  s.expect("AT+MTBAUD=921600", "OK\r\n");
+  s.injectURC("+MTOTA:AVAILABLE,66561");
+  s.injectURC("+MTOTA:DOWNLOADING,0");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
   s.expect("AT+MTOTAGET=0", blkLine(0, 0, 96, fx, 0, false));
+  s.expect("AT+MTBAUD=115200", "OK\r\n");
   s.expect("AT+MTOTA=0", "OK\r\n");
   s.injectURC("+MTOTA:BLOCK,0,1024");
   g_yieldAdvanceMs = 50;
@@ -537,6 +560,8 @@ static void test_pull_timeout_aborts_at_once(void) {
         !fs.exists(stagedPath));
   check("the download-complete flag is clear on a pull timeout",
         !hearth.update.hearthDownloadComplete());
+  check("the link baud was restored on the abort (AT+MTBAUD=115200 scripted, hook last 115200)",
+        g_lastBaud == 115200);
 }
 
 /* Case 6, the mterr half: a pull answered with some +MTOTABLK lines and
@@ -647,19 +672,20 @@ static int g_consentCalls = 0;
 static bool g_consentResult = true;
 static bool consentHook() { g_consentCalls++; return g_consentResult; }
 
-static int g_baudCalls = 0;
-static uint32_t g_lastBaud = 0;
 static void baudHook(uint32_t b) { g_baudCalls++; g_lastBaud = b; }
 
 /* Run the full download of `fx` against the scripted co-processor and end on
- * +MTOTA:DOWNLOADED, so the staged file is the fixture and the state is
- * VERIFYING with _downloadComplete set, and the verdict command `verdict`
- * (AT+MTOTASTAGED=1 or =0,<reason>) is scripted and sent on the same drain.
- * The drain on AVAILABLE sends AT+MTBAUD=<download baud> and the drain on
- * DOWNLOADED sends AT+MTBAUD=<default> before the verdict, so those are
- * scripted in order here. */
+ * +MTOTA:DOWNLOADED (the default), so the staged file is the fixture and the
+ * state is VERIFYING with _downloadComplete set, and the verdict command
+ * `verdict` (AT+MTOTASTAGED=1 or =0,<reason>) is scripted and sent on the
+ * same drain. The drain on AVAILABLE sends AT+MTBAUD=<download baud> and the
+ * drain on DOWNLOADED sends AT+MTBAUD=<default> before the verdict, so those
+ * are scripted in order here. With beginWrite false the download stops after
+ * the last block (no DOWNLOADED): the staged write is still open and the
+ * state still DOWNLOADING, which is the state a transfer in the middle of
+ * its consent window is in. */
 static void runDownload(MockStream &s, HearthClass &hearth, const std::string &fx,
-                        const std::string &verdict) {
+                        const std::string &verdict, bool beginWrite = true) {
   s.expect("AT+MTBAUD=921600", "OK\r\n");
   s.injectURC("+MTOTA:AVAILABLE,66561");
   s.injectURC("+MTOTA:DOWNLOADING,0");
@@ -681,6 +707,9 @@ static void runDownload(MockStream &s, HearthClass &hearth, const std::string &f
     g_yieldAdvanceMs = 0;
     pos += blen;
     seq++;
+  }
+  if (!beginWrite) {
+    return;  /* the download stops here, mid-transfer */
   }
   s.expect("AT+MTBAUD=115200", "OK\r\n");
   if (!verdict.empty()) {
@@ -832,17 +861,42 @@ static void test_verdict_downgrade(void) {
         && h2.update.status().state == HEARTH_UPDATE_WAIT_APPLY);
 }
 
+/* A HearthByteSource over the fixture's bytes, so the test can open the
+ * container with the library's own parser and find the parts. */
+struct TmpSource : HearthByteSource {
+  const std::string *d;
+  explicit TmpSource(const std::string &s) : d(&s) {}
+  bool read(uint32_t off, uint8_t *buf, size_t n) override {
+    if (off + n > d->size()) return false;
+    memcpy(buf, d->data() + off, n);
+    return true;
+  }
+  uint32_t size() const override { return (uint32_t)d->size(); }
+};
+
 /* Case 7, the tampered-part refusal: a good.ota byte flipped in the fw part
- * refuses with AT+MTOTASTAGED=0,2 (ERR_DIGEST). The tamper is applied to the
- * fixture in the test (the brief allows building the variant in the test). */
+ * refuses with AT+MTOTASTAGED=0,2 (ERR_DIGEST), not =0,1: the container's
+ * signature covers the header and the parts table only, so a tampered part
+ * still opens (the digest is what catches it, one part at a time). The
+ * tamper's offset comes from the parsed container (HearthBundle::open on the
+ * fixture: info.containerOffset + parts[0].offset), not a hardcoded file
+ * offset, so it cannot land on the signature. */
 static void test_verdict_tampered(void) {
   std::string fx;
   check("the good.ota fixture loads (tampered)", loadFixture("fixtures/good.ota", fx));
-  /* Flip one byte inside the fw part (part 0, offset 352 in the container,
-   * which is inside the part's data range). The container starts at 82 in
-   * the file, so the part data starts at 82+352. */
-  size_t tamperAt = 82 + 352 + 10;
-  if (tamperAt >= fx.size()) tamperAt = fx.size() / 2;
+  TmpSource tsrc(fx);
+  HearthBundleInfo info;
+  check("the good.ota container opens (tampered)",
+        HearthBundle::open(tsrc, HEARTH_DEV_PUBKEY, info) == HEARTH_BUNDLE_OK);
+  /* Flip one byte inside the fw part's data, past the part's start and well
+   * inside its length, so it is part data and not the header, the table or
+   * the signature. */
+  size_t tamperAt = (size_t)info.containerOffset + (size_t)info.parts[0].offset + 10;
+  check("the tamper offset is inside the fw part",
+        tamperAt < fx.size()
+        && tamperAt > (size_t)info.containerOffset + (size_t)info.parts[0].offset
+        && tamperAt < (size_t)info.containerOffset + (size_t)info.parts[0].offset
+                            + (size_t)info.parts[0].length);
   fx[tamperAt] = (char)(fx[tamperAt] ^ 0xFF);
   MockStream s;
   scriptBegin(s);
@@ -1033,6 +1087,127 @@ static void test_consent_abandoned_past_window(void) {
         !fs.exists("/hearth/staged.ota"));
 }
 
+/* Case 8, the zero-clock half: a refusal recorded when millis() is 0 must
+ * lapse like any other. With 0 as the "no refusal" sentinel such a refusal
+ * would never lapse, so the lapsed check now runs on the _consentRefused
+ * flag and the timestamp carries the time only. */
+static void test_consent_refused_at_zero_clock(void) {
+  g_millis = 0;  /* the refusal is recorded at millis() == 0 */
+  std::string fx;
+  check("the good.ota fixture loads (refusal at zero)", loadFixture("fixtures/good.ota", fx));
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  HearthUpdateConfig cfg;
+  cfg.consentWindowMs = 0;  /* a refusal is outlived by the very next drain */
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (refusal at zero)",
+        hearth.update.begin(0x10400, "1.4.0", cfg));
+  g_yieldAdvanceMs = 0;
+
+  g_consentCalls = 0;
+  g_consentResult = false;  /* always refuse */
+  hearth.update.onApplyRequest(consentHook);
+  /* The download ends on DOWNLOADED (the verdict drain refuses, the
+   * AT+MTOTA:DOWNLOADED state is VERIFYING) and the refusal is recorded at
+   * g_millis == 0. */
+  runDownload(s, hearth, fx, "");
+  check("the refusal was recorded at the zero clock (no abandonment yet)",
+        hearth.update.status().state == HEARTH_UPDATE_VERIFYING
+        && g_consentCalls == 1);
+
+  /* The next drain finds the zero-clock refusal outlived by the (zero)
+   * window and abandons: AT+MTOTA=0 then AT+MTOTA=1, state IDLE. */
+  s.expect("AT+MTOTA=0", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  g_yieldAdvanceMs = 50;
+  hearth.update.hearthDrain();
+  g_yieldAdvanceMs = 0;
+  check("the zero-clock refusal lapsed on the next drain",
+        s.scriptDrained() && s.unexpected().empty());
+  check("the state is IDLE after the abandonment",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("the staged bundle was removed on the abandonment",
+        !fs.exists("/hearth/staged.ota"));
+}
+
+/* The nothing-to-do half of the apply decision: a bundle whose parts all
+ * match what is already applied (the fw part at the running Hearth version,
+ * the host part at the manifest's host version) selects nothing. The plan's
+ * Task 4 rule answers AT+MTOTASTAGED=0,4 (its chosen answer for "nothing to
+ * do") and updates the manifest's product version to the bundle's so the
+ * provider stops offering it, with the state IDLE and no error (it is not a
+ * failure). The fixture is the good.ota bundle as-is; the test sets the
+ * running Hearth version and the manifest's host version to the bundle's
+ * part versions so nothing differs. */
+static void test_verdict_nothing_to_do(void) {
+  std::string fx;
+  check("the good.ota fixture loads (nothing to do)", loadFixture("fixtures/good.ota", fx));
+  TmpSource tsrc(fx);
+  HearthBundleInfo info;
+  check("the good.ota container opens (nothing to do)",
+        HearthBundle::open(tsrc, HEARTH_DEV_PUBKEY, info) == HEARTH_BUNDLE_OK);
+  const char *fwVer = 0, *hostVer = 0;
+  for (int i = 0; i < (int)info.partCount; i++) {
+    if (info.parts[i].type == 2) fwVer = info.parts[i].version;
+    else if (info.parts[i].type == 1) hostVer = info.parts[i].version;
+  }
+  check("the fixture has one fw and one host part",
+        fwVer && hostVer);
+
+  /* A manifest whose host version is the host part's: nothing differs. */
+  HearthFsMem fs;
+  HearthUpdateStage stage;
+  check("stage begin for seeding (nothing to do)", stage.begin(fs));
+  HearthManifest m;
+  m.productVersion = 0x10400;
+  strcpy(m.productVersionString, "1.4.0");
+  strcpy(m.hostVersion, hostVer);
+  check("seed manifest written (nothing to do)", stage.saveManifest(m));
+
+  MockStream s;
+  /* The running Hearth version (AT+MTVER?) is the fw part's version, so the
+   * fw part is not selected; the manifest's host version is the host part's
+   * version, so the host part is not selected either: nothing differs. The
+   * effective version is max(baseline, manifest) = 0x10400, so the
+   * declaration is unchanged. */
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+CGMM", "ESP32-C6 Hearth\r\nOK\r\n");
+  s.expect("AT+MTVER?", std::string("+MTVER:") + fwVer + "\r\nOK\r\n");
+  s.expect("AT+MTOTA?", "+MTOTA:0,IDLE,0,wifi\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  HearthClass hearth;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (nothing to do)",
+        hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+
+  runDownload(s, hearth, fx, "AT+MTOTASTAGED=0,4");
+
+  check("the nothing-to-do bundle was answered with AT+MTOTASTAGED=0,4",
+        s.scriptDrained() && s.unexpected().empty());
+  check("the state is IDLE (not a failure)",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("the error is HEARTH_UPDATE_OK (not a failure)",
+        hearth.update.status().error == HEARTH_UPDATE_OK);
+  check("the staged bundle was removed",
+        !fs.exists("/hearth/staged.ota"));
+  HearthManifest after;
+  check("the manifest loaded back",
+        hearth.update.stage().loadManifest(after));
+  check("the manifest's product version is the bundle's",
+        after.productVersion == info.productVersion);
+  check("the manifest's version string is the bundle's",
+        strcmp(after.productVersionString, info.productVersionString) == 0);
+  check("the manifest's host version is kept",
+        strcmp(after.hostVersion, hostVer) == 0);
+}
+
 /* Case 10: the baud switch. With a test hook installed, AT+MTBAUD=<download
  * baud> is sent on AVAILABLE, the hook is called, and AT+MTBAUD=<default>
  * plus the hook are called again on DOWNLOADED and on FAILED. With no hook
@@ -1168,6 +1343,7 @@ static void test_pull_hexdigit_corrupt_aborts(void) {
   }
   s.expect("AT+MTOTAGET=0", bad);
   s.expect("AT+MTOTAGET=0", bad);
+  s.expect("AT+MTBAUD=115200", "OK\r\n");
   s.expect("AT+MTOTA=0", "OK\r\n");
   s.injectURC("+MTOTA:BLOCK,0,1024");
   g_yieldAdvanceMs = 50;
@@ -1208,6 +1384,8 @@ int main(void) {
   test_coproc_states();
   test_consent_refused_then_accepted();
   test_consent_abandoned_past_window();
+  test_consent_refused_at_zero_clock();
+  test_verdict_nothing_to_do();
   test_baud_switch();
   test_pull_hexdigit_corrupt_aborts();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
