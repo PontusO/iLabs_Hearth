@@ -478,7 +478,12 @@ int main() {
     check("MGM240P Hearth -> the XMODEM flasher", HearthFlasher::forModel("MGM240P Hearth") != nullptr);
     check("nRF54L15 Hearth -> the SMP flasher still", HearthFlasher::forModel("nRF54L15 Hearth") != nullptr);
     check("nRF54LM20A Hearth -> the SMP flasher still", HearthFlasher::forModel("nRF54LM20A Hearth") != nullptr);
-    check("ESP32-C6 Hearth -> nullptr (5c)", HearthFlasher::forModel("ESP32-C6 Hearth") == nullptr);
+    /* 5c registered the ESP ROM loader for the C6; it is a different
+     * instance from the XMODEM one, so this test (the XMODEM family) only
+     * asserts it is not the XMODEM object. */
+    check("ESP32-C6 Hearth -> a flasher, not the XMODEM one (5c)",
+          HearthFlasher::forModel("ESP32-C6 Hearth") != nullptr &&
+          HearthFlasher::forModel("ESP32-C6 Hearth") != HearthFlasher::forModel("MGM240P Hearth"));
     check("an unknown model -> nullptr", HearthFlasher::forModel("Ophelia-IV") == nullptr);
     check("the XMODEM instance is a stable library-owned static",
           HearthFlasher::forModel("MGM240P Hearth") == HearthFlasher::forModel("MGM240P Hearth"));

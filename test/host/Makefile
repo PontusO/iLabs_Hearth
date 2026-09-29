@@ -10,7 +10,7 @@ CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
 CC ?= cc
 CFLAGS_VENDOR = -std=c99 -Wall -Wextra -Werror -O2
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer test_cmdfields test_roboticvacuum test_microwaveoven test_composition_parent test_refrigerator test_oven test_cooksurface test_attr64 test_electrical test_waterheater test_heatpump test_demcontrol test_solarpower test_batterystorage test_dem test_thread test_rowtransfer test_chargingschedule test_evse test_utilitymeter test_bundle test_update_stage test_update test_flasher_smp test_flasher_xmodem
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer test_cmdfields test_roboticvacuum test_microwaveoven test_composition_parent test_refrigerator test_oven test_cooksurface test_attr64 test_electrical test_waterheater test_heatpump test_demcontrol test_solarpower test_batterystorage test_dem test_thread test_rowtransfer test_chargingschedule test_evse test_utilitymeter test_bundle test_update_stage test_update test_flasher_smp test_flasher_xmodem test_flasher_esp
 
 all: $(TESTS)
 
@@ -385,18 +385,34 @@ test_update: test_update.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../s
 # firmware repo's smp.py produced (fixtures/smp_*.txt). The client is
 # platform code over Stream + HearthByteSource, so it links the shim and
 # its family's files, nothing else: no Hearth.cpp, no bundle crypto. The
-# registry (HearthFlasher.cpp) names both flasher families, so the
-# XMODEM object links in as well.
-test_flasher_smp: test_flasher_smp.cpp ArduinoShim.cpp ../../src/HearthFlasher.cpp ../../src/HearthFlasherSmp.cpp ../../src/HearthFlasherXmodem.cpp
+# registry (HearthFlasher.cpp) names all three flasher families, so the
+# XMODEM and ESP objects link in as well (the ESP object pulls in the
+# vendored esp_loader.o for the loader_port_* symbols the registry's
+# static needs).
+test_flasher_smp: test_flasher_smp.cpp ArduinoShim.cpp ../../src/HearthFlasher.cpp ../../src/HearthFlasherSmp.cpp ../../src/HearthFlasherXmodem.cpp ../../src/HearthFlasherEsp.cpp esp_loader.o
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 # Task 5b (FOTA): the XMODEM client for the MG24's Gecko bootloader
 # against the fixtures the firmware repo's xmodem.py produced
 # (fixtures/xmodem_layers.txt) and the GeckoBootloaderFake (this
 # directory). The client is platform code over Stream + HearthByteSource,
-# but the registry (HearthFlasher.cpp) now names both families, so the
-# SMP object links in as well.
-test_flasher_xmodem: test_flasher_xmodem.cpp ArduinoShim.cpp ../../src/HearthFlasher.cpp ../../src/HearthFlasherSmp.cpp ../../src/HearthFlasherXmodem.cpp
+# but the registry (HearthFlasher.cpp) now names all three families, so
+# the SMP and ESP objects link in as well (the ESP object pulling in the
+# vendored esp_loader.o).
+test_flasher_xmodem: test_flasher_xmodem.cpp ArduinoShim.cpp ../../src/HearthFlasher.cpp ../../src/HearthFlasherSmp.cpp ../../src/HearthFlasherXmodem.cpp ../../src/HearthFlasherEsp.cpp esp_loader.o
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+# Task 5c (FOTA): the ESP32-C6 ROM download loader over the vendored
+# esp-serial-flasher. The port layer's loader_port_* symbols are
+# defined in HearthFlasherEsp.cpp, so the test links that file plus the
+# vendored esp_loader.o (esp_loader_build.c, see its VENDORED.md). The
+# registry (HearthFlasher.cpp) names all three families, so the SMP and
+# XMODEM objects link in as well. ByteStream.h is the binary stand-in
+# for the C6's UART (records every written byte, answers only what it is
+# fed); the silent-target oracle is fixtures/esp_layers.txt (the SLIP
+# SYNC request and the 10-trial connect against a target that never
+# answers, from esptool 4.12.0).
+test_flasher_esp: test_flasher_esp.cpp ArduinoShim.cpp ../../src/HearthFlasher.cpp ../../src/HearthFlasherSmp.cpp ../../src/HearthFlasherXmodem.cpp ../../src/HearthFlasherEsp.cpp esp_loader.o
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 run: all

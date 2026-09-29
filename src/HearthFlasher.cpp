@@ -11,15 +11,16 @@
 #include "HearthFlasher.h"
 #include "HearthFlasherSmp.h"     /* Task 5a: the SMP family (nRF) */
 #include "HearthFlasherXmodem.h"  /* Task 5b: the Gecko bootloader (MGM240P) */
+#include "HearthFlasherEsp.h"     /* Task 5c: the ESP32-C6 ROM download loader */
 
 #include <string.h>
 
 /*
- * Task 5a registers the SMP client for the two nRF model strings. The
- * XMODEM flasher (MGM240P, Task 5b) and the ESP loader (ESP32-C6, Task
- * 5c) add their branches below when they land: the model strings are the
- * AT+CGMM answers the update's per-port check already trusts, so no other
- * registry is needed.
+ * The three flasher families are registered here for their AT+CGMM model
+ * strings: the SMP client (nRF, Task 5a), the XMODEM client (MGM240P,
+ * Task 5b) and the ESP loader (ESP32-C6, Task 5c). The model strings are
+ * the AT+CGMM answers the update's per-port check already trusts, so no
+ * other registry is needed.
  */
 HearthFlasher *HearthFlasher::forModel(const char *model) {
   if (!model) {
@@ -37,7 +38,11 @@ HearthFlasher *HearthFlasher::forModel(const char *model) {
     static HearthFlasherXmodem xmodem;
     return &xmodem;
   }
-  /* Task 5c: "ESP32-C6 Hearth" -> the ESP loader. */
+  if (strcmp(model, "ESP32-C6 Hearth") == 0) {
+    /* The same library-owned static, for the ESP ROM loader (Task 5c). */
+    static HearthFlasherEsp esp;
+    return &esp;
+  }
   return nullptr;
 }
 

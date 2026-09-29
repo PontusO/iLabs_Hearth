@@ -657,7 +657,12 @@ int main() {
     check("MGM240P Hearth -> a flasher, not the SMP one (5b)",
           HearthFlasher::forModel("MGM240P Hearth") != nullptr &&
           HearthFlasher::forModel("MGM240P Hearth") != HearthFlasher::forModel("nRF54L15 Hearth"));
-    check("ESP32-C6 Hearth -> nullptr in 5a and 5b", HearthFlasher::forModel("ESP32-C6 Hearth") == nullptr);
+    /* 5c registered the ESP ROM loader for the C6; it is a different
+     * instance from the SMP one, so this test (the SMP family) only
+     * asserts it is not the SMP object. */
+    check("ESP32-C6 Hearth -> a flasher, not the SMP one (5c)",
+          HearthFlasher::forModel("ESP32-C6 Hearth") != nullptr &&
+          HearthFlasher::forModel("ESP32-C6 Hearth") != HearthFlasher::forModel("nRF54L15 Hearth"));
     check("an unknown model -> nullptr", HearthFlasher::forModel("Ophelia-IV") == nullptr);
     /* The result is a library-owned static: never deleted, and repeated
      * calls hand back the same instance. */
