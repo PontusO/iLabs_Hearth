@@ -651,8 +651,13 @@ int main() {
   {
     check("nRF54L15 Hearth -> a flasher", HearthFlasher::forModel("nRF54L15 Hearth") != nullptr);
     check("nRF54LM20A Hearth -> a flasher", HearthFlasher::forModel("nRF54LM20A Hearth") != nullptr);
-    check("MGM240P Hearth -> nullptr in 5a", HearthFlasher::forModel("MGM240P Hearth") == nullptr);
-    check("ESP32-C6 Hearth -> nullptr in 5a", HearthFlasher::forModel("ESP32-C6 Hearth") == nullptr);
+    /* 5b registered the XMODEM client for the MG24; it is a different
+     * instance from the SMP one, so this test (the SMP family) only
+     * asserts it is not the SMP object. */
+    check("MGM240P Hearth -> a flasher, not the SMP one (5b)",
+          HearthFlasher::forModel("MGM240P Hearth") != nullptr &&
+          HearthFlasher::forModel("MGM240P Hearth") != HearthFlasher::forModel("nRF54L15 Hearth"));
+    check("ESP32-C6 Hearth -> nullptr in 5a and 5b", HearthFlasher::forModel("ESP32-C6 Hearth") == nullptr);
     check("an unknown model -> nullptr", HearthFlasher::forModel("Ophelia-IV") == nullptr);
     /* The result is a library-owned static: never deleted, and repeated
      * calls hand back the same instance. */

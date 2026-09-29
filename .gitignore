@@ -69,6 +69,7 @@ build/
 /test/host/test_update_stage
 /test/host/test_update
 /test/host/test_flasher_smp
+/test/host/test_flasher_xmodem
 /test/host/uECC.o
 /test/host/sha256.o
 

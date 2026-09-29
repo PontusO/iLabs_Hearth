@@ -9,7 +9,8 @@
  * (mode, level, the pulse width).
  */
 #include "HearthFlasher.h"
-#include "HearthFlasherSmp.h"   /* Task 5a: the SMP family, the only one in this build so far */
+#include "HearthFlasherSmp.h"     /* Task 5a: the SMP family (nRF) */
+#include "HearthFlasherXmodem.h"  /* Task 5b: the Gecko bootloader (MGM240P) */
 
 #include <string.h>
 
@@ -31,7 +32,12 @@ HearthFlasher *HearthFlasher::forModel(const char *model) {
     static HearthFlasherSmp smp;
     return &smp;
   }
-  /* Task 5b: "MGM240P Hearth" -> the XMODEM client. Task 5c: "ESP32-C6 Hearth" -> the ESP loader. */
+  if (strcmp(model, "MGM240P Hearth") == 0) {
+    /* The same library-owned static, for the XMODEM family (Task 5b). */
+    static HearthFlasherXmodem xmodem;
+    return &xmodem;
+  }
+  /* Task 5c: "ESP32-C6 Hearth" -> the ESP loader. */
   return nullptr;
 }
 
