@@ -60,9 +60,13 @@ bool HearthUpdateStage::loadManifest(HearthManifest &m) {
   if (!_fs->exists(p)) return false;
   HearthFile *f = _fs->open(p, "r");
   if (!f) return false;
+  /* exactly magic plus the struct, no more and no less: a truncated file
+   * would load with the struct partly uninitialised, and a longer one is
+   * not a manifest this code wrote */
   uint8_t hdr[4];
-  bool ok = f->read(hdr, 4) == 4 && memcmp(hdr, kManifestMagic, 4) == 0
-      && f->seek(4) && f->read((uint8_t *)&m, sizeof(m)) == (int)sizeof(m);
+  bool ok = f->size() == 4 + sizeof(HearthManifest)
+      && f->seek(4) && f->read((uint8_t *)&m, sizeof(m)) == (int)sizeof(m)
+      && f->seek(0) && f->read(hdr, 4) == 4 && memcmp(hdr, kManifestMagic, 4) == 0;
   delete f;
   return ok;
 }
@@ -90,9 +94,13 @@ bool HearthUpdateStage::loadState(HearthUpdateState &s) {
   if (!_fs->exists(p)) return false;
   HearthFile *f = _fs->open(p, "r");
   if (!f) return false;
+  /* exactly magic plus the struct, no more and no less: a truncated file
+   * would load with the struct partly uninitialised, and a longer one is
+   * not a state file this code wrote */
   uint8_t hdr[4];
-  bool ok = f->read(hdr, 4) == 4 && memcmp(hdr, kStateMagic, 4) == 0
-      && f->seek(4) && f->read((uint8_t *)&s, sizeof(s)) == (int)sizeof(s);
+  bool ok = f->size() == 4 + sizeof(HearthUpdateState)
+      && f->seek(4) && f->read((uint8_t *)&s, sizeof(s)) == (int)sizeof(s)
+      && f->seek(0) && f->read(hdr, 4) == 4 && memcmp(hdr, kStateMagic, 4) == 0;
   /* a state file we cannot make sense of is not a failure: the resume path
    * simply starts from none */
   if (ok && !knownPhase(s.phase)) s.phase = HEARTH_PHASE_NONE;

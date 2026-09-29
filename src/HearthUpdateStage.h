@@ -119,6 +119,11 @@ class HearthFileSource : public HearthByteSource {
 public:
   explicit HearthFileSource(HearthFile &f) : _f(f) {}
   virtual ~HearthFileSource() {}
+  /* Returns true only when all n bytes were read: a short read, such as
+   * one near the end of file on a filesystem that may hand back fewer
+   * bytes than asked, is a failure, not a success with less. Callers
+   * therefore read size-bounded ranges within size(), never a request
+   * that could run past the end. */
   bool read(uint32_t offset, uint8_t *buf, size_t n) override {
     if (offset + n > _f.size() || !_f.seek(offset)) return false;
     int r = _f.read(buf, n);

@@ -59,6 +59,37 @@ int main() {
           stBroken.begin(broken) && !stBroken.loadManifest(m2));
   }
 
+  /* manifest: a truncated or overlong file is corrupt, not a load. */
+  {
+    HearthFsMem fs; HearthUpdateStage st;
+    check("begin", st.begin(fs));
+    HearthManifest m;
+    memset(&m, 0, sizeof(m));
+    m.productVersion = 0x10700;
+    strcpy(m.productVersionString, "1.7.0");
+    strcpy(m.hostVersion, "");
+    check("saveManifest", st.saveManifest(m));
+    std::vector<uint8_t> blob;
+    loadInto(fs, "/hearth/manifest", blob);
+    /* truncated to half its size: the load reads up to EOF and would
+     * otherwise succeed with the struct partly uninitialised */
+    blob.resize(blob.size() / 2);
+    HearthFsMem half = fs;
+    half.files["/hearth/manifest"] = blob;
+    HearthUpdateStage stHalf;
+    check("manifest truncated to half its size loads as false",
+          stHalf.begin(half) && !stHalf.loadManifest(m));
+    /* one byte too long: the extra byte is not part of the struct */
+    std::vector<uint8_t> longblob;
+    loadInto(fs, "/hearth/manifest", longblob);
+    longblob.push_back(0);
+    HearthFsMem longFs = fs;
+    longFs.files["/hearth/manifest"] = longblob;
+    HearthUpdateStage stLong;
+    check("manifest one byte too long loads as false",
+          stLong.begin(longFs) && !stLong.loadManifest(m));
+  }
+
   /* state: round trip, clear, unknown phase treated as none. */
   {
     HearthFsMem fs; HearthUpdateStage st;
@@ -107,6 +138,42 @@ int main() {
     HearthUpdateStage st2;
     check("unknown phase is treated as none, not a failure",
           st2.begin(fs2) && st2.loadState(s3) && s3.phase == HEARTH_PHASE_NONE);
+  }
+
+  /* state: a truncated or overlong file is corrupt, not a load. */
+  {
+    HearthFsMem fs; HearthUpdateStage st;
+    check("begin", st.begin(fs));
+    HearthUpdateState s;
+    memset(&s, 0, sizeof(s));
+    s.phase = HEARTH_PHASE_HOST_CONFIRM;
+    s.attempts = 1;
+    s.targetVersion = 0x10800;
+    strcpy(s.targetVersionString, "1.8.0");
+    s.fwPart = 0;
+    s.hostPart = 0xFF;
+    check("saveState", st.saveState(s));
+    std::vector<uint8_t> blob;
+    loadInto(fs, "/hearth/ota.state", blob);
+    /* truncated to half its size: the load reads up to EOF and would
+     * otherwise succeed with the struct partly uninitialised */
+    blob.resize(blob.size() / 2);
+    HearthFsMem half = fs;
+    half.files["/hearth/ota.state"] = blob;
+    HearthUpdateState s2;
+    HearthUpdateStage stHalf;
+    check("state truncated to half its size loads as false",
+          stHalf.begin(half) && !stHalf.loadState(s2));
+    /* one byte too long: the extra byte is not part of the struct */
+    std::vector<uint8_t> longblob;
+    loadInto(fs, "/hearth/ota.state", longblob);
+    longblob.push_back(0);
+    HearthFsMem longFs = fs;
+    longFs.files["/hearth/ota.state"] = longblob;
+    HearthUpdateState s3;
+    HearthUpdateStage stLong;
+    check("state one byte too long loads as false",
+          stLong.begin(longFs) && !stLong.loadState(s3));
   }
 
   /* staged: three appends, read back byte for byte through HearthFileSource. */
