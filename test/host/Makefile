@@ -354,6 +354,14 @@ uECC.o: ../../src/vendor/uECC/uECC_build.c
 	$(CC) $(CFLAGS_VENDOR) -I../../src/vendor/uECC -c -o $@ $<
 sha256.o: ../../src/vendor/sha256/sha256.c
 	$(CC) $(CFLAGS_VENDOR) -I../../src/vendor/sha256 -c -o $@ $<
+# The vendored esp-serial-flasher (src/vendor/esp_loader, see its
+# VENDORED.md): esp_loader_build.c is the wrapper that compiles the .inc
+# files under the Hearth configuration. Upstream v1.11.0 compares signed
+# and unsigned lengths in its MIN() macro and three loops, so
+# -Wsign-compare is the one warning disabled, for this object only; the
+# code is compiled as shipped.
+esp_loader.o: ../../src/vendor/esp_loader/esp_loader_build.c
+	$(CC) $(CFLAGS_VENDOR) -Wno-sign-compare -I../../src/vendor/esp_loader -c -o $@ $<
 test_bundle: test_bundle.cpp ../../src/HearthBundle.cpp uECC.o sha256.o
 	$(CXX) $(CXXFLAGS) -I../../src/vendor/uECC -I../../src/vendor/sha256 -o $@ $^
 
