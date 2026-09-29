@@ -1,12 +1,12 @@
 /*
  * HearthFirmwareUpdate: the same on/off light as HearthFirstLight, with the
- * host side of the co-processor's FOTA turned on. Once the C6 is running
- * Hearth and commissioned, this sketch downloads a signed bundle when an
- * OTA provider offers one, verifies it, asks for consent, applies the
- * Hearth part over the C6's UART, stages and reboots into the host part,
- * and rolls back to the retained image if the new one fails. Every
- * transition of the update prints on the Serial Monitor, and the BOOTSEL
- * button keeps its job.
+ * host side of the co-processor's FOTA turned on. Once the co-processor is
+ * running Hearth and commissioned, this sketch downloads a signed bundle
+ * when an OTA provider offers one, verifies it, asks for consent, applies
+ * the Hearth part over the co-processor's UART, stages and reboots into
+ * the host part, and rolls back to the retained image if the new one
+ * fails. Every transition of the update prints on the Serial Monitor, and
+ * the BOOTSEL button keeps its job.
  *
  * FLASH SIZE, in the Arduino IDE's Tools > Flash Size menu: the LittleFS
  * partition must hold the co-processor's image, and begin() refuses to
@@ -26,10 +26,10 @@
  * thing).
  *
  * BUILDING A BUNDLE for this sketch. The Matter header of a bundle must
- * carry the device's own vendor and product id, or the C6's OTA requestor
- * ignores the offer. The development builds use vendor 0xFFF1 with product
- * 0x8000 (the ESP32-C6) and 0x8010 (the MGM240P); an nRF uses its SDK's
- * default. Read any device's ids with:
+ * carry the device's own vendor and product id, or the co-processor's OTA
+ * requestor ignores the offer. The development builds use vendor 0xFFF1
+ * with product 0x8000 (the ESP32-C6) and 0x8010 (the MGM240P); an nRF uses
+ * its SDK's default. Read any device's ids with:
  *
  *   chip-tool basicinformation read product-id <node> 0
  *
@@ -46,7 +46,7 @@
  *   python3 fw/make_bundle.py --vendor 0xFFF1 --product 0x8000 \
  *     --version 0x00010100 --version-string 1.1.0 \
  *     --key fw/keys/hearth_bundle_dev_p256.pem \
- *     --host <sketch>.bin --host-gz \
+ *     --host <sketch>.bin \
  *     -o product-1.1.0.ota
  *
  * and one with both parts, this sketch plus a WiFi build of the C6 image:
@@ -54,10 +54,14 @@
  *   python3 fw/make_bundle.py --vendor 0xFFF1 --product 0x8000 \
  *     --version 0x00010100 --version-string 1.1.0 \
  *     --key fw/keys/hearth_bundle_dev_p256.pem \
- *     --host <sketch>.bin --host-gz \
- *     --fw hearth-wifi-1.1.0.bin --target "ESP32-C6 Hearth" \
- *     --variant wifi --fw-version 1.1.0 \
+ *     --host <sketch>.bin \
+ *     --fw hearth-wifi-<version>.bin --target "ESP32-C6 Hearth" \
+ *     --variant wifi --fw-version <version> \
  *     -o product-1.1.0.ota
+ *
+ * The host part must be the uncompressed .bin: the library refuses a gzip
+ * host part. The Hearth part is applied only when its version differs from
+ * what the co-processor reports to AT+MTVER?.
  *
  * For the nRF, --fw is the MCUboot-signed zephyr.signed.bin, --target the
  * exact AT+CGMM answer ("nRF54L15 Hearth" or "nRF54LM20A Hearth") and
@@ -102,18 +106,10 @@ const uint32_t debounceMs = 250;
  * The update's config. On a Challenger 2350 the reset and strap pins come
  * from the variant (PIN_ESP_RST and PIN_ESP_MODE) and stay at their
  * defaults. On a board that does not define those macros (the CPico 2350
- * carrier), the guard below sets them to the pins the carrier wires, GP2
- * and GP3, both active low, which the defaults already are. A flasher
- * with a pin of -1 would refuse to enter boot mode, which is what the
- * guard exists to prevent.
+ * carrier), setup() sets them to the pins the carrier wires before begin()
+ * runs. A flasher with a pin of -1 would refuse to enter boot mode.
  */
 HearthUpdateConfig updateCfg;
-#if !defined(PIN_ESP_RST)
-static void __attribute__((constructor)) setUpdatePins() {
-  updateCfg.resetPin = 2;
-  updateCfg.strapPin = 3;
-}
-#endif
 
 /*
  * The state and error names the status callback prints. Kept in noinline
@@ -228,9 +224,10 @@ void setup() {
   digitalWrite(ledPin, LOW);
   pinMode(buttonPin, INPUT_PULLUP);
 
-  /* The first call into the library brings the link up: it resets the C6
-   * into run mode and waits for its +MTREADY. An empty answer means the
-   * link is not working. */
+  /* The first call into the library brings the link up: it resets the
+   * co-processor into run mode where the board wires its reset line and
+   * waits for its +MTREADY. An empty answer means the link is not working.
+   */
   String version = Hearth.firmwareVersion();
   Serial.print("Firmware on the co-processor: ");
   if (version.length() == 0) {
@@ -259,6 +256,10 @@ void setup() {
    * as the plain light. */
   Hearth.update.onStatus(onUpdateStatus);
   Hearth.update.onApplyRequest(onApplyRequest);
+#if !defined(PIN_ESP_RST)
+  updateCfg.resetPin = 2;   /* the CPico 2350 carrier: reset on GP2 */
+  updateCfg.strapPin = 3;   /* and the boot strap on GP3, both active low */
+#endif
   if (!Hearth.update.begin(0x00010000, "1.0.0", updateCfg)) {
     const HearthUpdateStatus st = Hearth.update.status();
     Serial.print("Hearth.update is off (");
@@ -269,7 +270,8 @@ void setup() {
     }
     Serial.println("): running as a plain light.");
   } else {
-    Serial.println("FOTA on. The light keeps working while an update runs.");
+    Serial.println("FOTA on. Downloads run alongside the light;");
+    Serial.println("the apply blocks loop() while it flashes.");
   }
 }
 
