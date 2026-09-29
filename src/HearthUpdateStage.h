@@ -99,6 +99,9 @@ public:
   /* The running host image, saved before the host applies a new one. */
   bool saveHostPrev(const uint8_t *xip, uint32_t len);
   HearthFile *hostPrevOpen();     /* caller deletes; null when absent */
+  /* The saved image's path, as PicoOTA's addFile() wants it: the
+   * first-boot failure re-stages the whole file from offset 0. */
+  const char *hostPrevPath() const;
 
   /* The staged file's path, as PicoOTA's addFile() wants it. */
   const char *stagedPath() const;

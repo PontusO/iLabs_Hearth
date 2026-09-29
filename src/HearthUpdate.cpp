@@ -22,11 +22,21 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#ifdef ARDUINO
+/* The host part's defaults (plan Task 6b): PicoOTA stages the part's range
+ * of the named file into the OTA command page, rp2040.reboot() hands the
+ * RP2350's OTA bootloader the page, and the linker's __flash_binary symbols
+ * name the running sketch's range in XIP. XIP_BASE comes with the pico
+ * headers the core pulls in, as it does in PicoOTA.h's own addFile(). */
+#include <PicoOTA.h>
+extern "C" uint8_t __flash_binary_start, __flash_binary_end;
+#endif
 
 HearthUpdate::HearthUpdate()
   : _owner(0),
     _fs(0),
     _flasher(0),
+    _hostHooks(),
     _haveManifest(false),
     _pendingSeq(0),
     _pendingLen(0),
@@ -48,6 +58,31 @@ HearthUpdate::HearthUpdate()
     _applyPending(false) {
   _declaredVersion = 0;
   _declaredVersionString[0] = 0;
+#ifdef ARDUINO
+  /* The real host hooks: the running sketch in XIP, the PicoOTA staging
+   * (addFile of the named range plus the commit), rp2040's reboot and the
+   * co-processor's reset line. */
+  _hostHooks.imageRange = [](const uint8_t **start, uint32_t *len) {
+    *start = &__flash_binary_start;
+    *len = (uint32_t)(&__flash_binary_end - &__flash_binary_start);
+    return true;
+  };
+  _hostHooks.stageImage = [](const char *path, uint32_t off, uint32_t len) {
+    picoOTA.begin();
+    picoOTA.addFile(path, off, XIP_BASE, len);
+    return picoOTA.commit();
+  };
+  _hostHooks.reboot = []() {
+    rp2040.reboot();
+  };
+  _hostHooks.coprocReset = [](const HearthCoprocPins &pins) {
+    return hearthCoprocReset(pins, 100);
+  };
+#else
+  /* The host has none of these: every hook stays null, which means "not
+   * available here" (the host apply fails, the co-processor reset is
+   * skipped with a log line). Tests install their own. */
+#endif
   _status.state = HEARTH_UPDATE_DISABLED;
   _status.percent = 0;
   _status.offeredVersion = 0;
@@ -90,6 +125,8 @@ void HearthUpdate::onApplyRequest(bool (*cb)()) { _applyRequestCB = cb; }
 void HearthUpdate::onStatus(void (*cb)(const HearthUpdateStatus &)) { _statusCB = cb; }
 
 void HearthUpdate::hearthSetBaudChanger(void (*cb)(uint32_t)) { _baudChangerCB = cb; }
+
+void HearthUpdate::hearthSetHostHooks(const HearthHostHooks &h) { _hostHooks = h; }
 
 HearthUpdateStatus HearthUpdate::status() const { return _status; }
 
@@ -709,21 +746,20 @@ void HearthUpdate::hearthApply() {
     return;
   }
 
-  /* The part to flash: the one the verify selected, or the bundle's first
-   * Hearth part (a resume reloads this from the state record instead, but
-   * the value is the same one the verify wrote). */
+  /* The part to flash: the one the verify selected, and only that one.
+   * 0xFF (or a part that is not a type-2 Hearth part) means there is no
+   * Hearth part: the apply goes straight to the host part. The verify
+   * leaves _fwPart 0xFF for a host-only selection (the Hearth part's
+   * version equals the running one, so it skipped it), and falling back to
+   * the bundle's first Hearth part here would flash a part the verify
+   * skipped. */
   int part = _fwPart;
   if (part < 0 || part >= (int)info.partCount || info.parts[part].type != 2) {
     part = 0xFF;
-    for (int i = 0; i < (int)info.partCount; i++) {
-      if (info.parts[i].type == 2) {
-        part = i;
-        break;
-      }
-    }
   }
   if (part == 0xFF) {
-    /* A bundle with no Hearth part: a host-only bundle, 6b's territory. */
+    /* A host-only selection: the host applies alone, and the declaration
+    * it needs is the one it sends itself (it was never declared here). */
     delete staged;
     hearthApplyHost();
     return;
@@ -950,20 +986,141 @@ int HearthUpdate::hearthApplyFw(HearthUpdateState &st) {
 }
 
 /*
- * The host part of the apply (spec 7: the host applies second). Task 6b
- * implements it; 6a only names the failure it will report, and no 6a path
- * reaches here with a host part selected.
+ * The host part of the apply (spec 7: the host applies second, plan Task
+ * 6b). Reached two ways: after a successful Hearth part (the caller has
+ * already declared the bundle's product version, and it must not be
+ * declared twice), or directly for a host-only selection (the declaration
+ * is sent here, before the reboot it precedes, per spec 7.5's hard rule).
+ *
+ * The order:
+ *  1. the declaration, host-only only;
+ *  2. the state APPLYING_HOST;
+ *  3. the hooks must all be present (imageRange, stageImage, reboot):
+ *     a null one is a FAILED with HEARTH_UPDATE_ERR_HOST, the staged
+ *     bundle kept;
+ *  4. save the running sketch as host-prev.bin (its XIP range), stage the
+ *     part's range of the staged bundle through PicoOTA (addFile, no
+ *     copy), and on either failure the same FAILED with the bundle kept;
+ *  5. the state record: phase HOST, attempts 0, the target and the part
+ *     indexes the first-boot confirm and the resume (6c) need;
+ *  6. the reboot: on the device it does not return, on the host the
+ *     test's hook does, and the function returns with it.
  */
 void HearthUpdate::hearthApplyHost() {
-  /* Task 6b */
-  _stage.stagedRemove();
-  _stage.clearState();
-  _status.state = HEARTH_UPDATE_FAILED;
-  _status.error = HEARTH_UPDATE_ERR_HOST;
-  _status.reason = 0;
+  HearthUpdateState st;
+  memset(&st, 0, sizeof(st));
+  if (_fwPart == 0xFF) {
+    /* The host-only path: the declaration goes out before the reboot that
+     * boots the new image (spec 7.5). The both-parts path already sent it
+     * in hearthApply() and must not send it twice. */
+    HearthFile *staged = _stage.stagedOpenRead();
+    if (staged) {
+      HearthFileSource src(*staged);
+      HearthBundleInfo info;
+      if (HearthBundle::open(src, _cfg.publicKey, info) == HEARTH_BUNDLE_OK) {
+        st.targetVersion = info.productVersion;
+        snprintf(st.targetVersionString, sizeof(st.targetVersionString), "%s",
+                 info.productVersionString);
+        char cmd[HEARTH_LINE_MAX];
+        snprintf(cmd, sizeof(cmd), "AT+MTSWVER=%lu,\"%s\"",
+                 (unsigned long)info.productVersion, info.productVersionString);
+        hearthCmd(cmd, 0, 0);
+      }
+      delete staged;
+    }
+  } else {
+    /* Both parts: hearthApply() declared the bundle's product version
+     * before the flash; the state record takes the same value. */
+    st.targetVersion = _declaredVersion;
+    snprintf(st.targetVersionString, sizeof(st.targetVersionString), "%s",
+             _declaredVersionString);
+  }
+
+  _status.state = HEARTH_UPDATE_APPLYING_HOST;
   if (_statusCB) {
     _statusCB(_status);
   }
+  if (!_hostHooks.imageRange || !_hostHooks.stageImage || !_hostHooks.reboot) {
+    /* A hook is not available here: the apply fails, the state file is
+     * gone (there is nothing to resume to) and the staged bundle is kept
+     * for a manual retry. */
+    _stage.clearState();
+    _status.state = HEARTH_UPDATE_FAILED;
+    _status.error = HEARTH_UPDATE_ERR_HOST;
+    _status.reason = 0;
+    if (_statusCB) {
+      _statusCB(_status);
+    }
+    return;
+  }
+
+  const uint8_t *xipStart = 0;
+  uint32_t xipLen = 0;
+  if (!_hostHooks.imageRange(&xipStart, &xipLen)
+      || !_stage.saveHostPrev(xipStart, xipLen)
+      || !stagedHostPart(_hostPart, st)) {
+    _stage.clearState();
+    _status.state = HEARTH_UPDATE_FAILED;
+    _status.error = HEARTH_UPDATE_ERR_HOST;
+    _status.reason = 0;
+    if (_statusCB) {
+      _statusCB(_status);
+    }
+    return;
+  }
+  st.phase = HEARTH_PHASE_HOST;
+  st.attempts = 0;
+  st.fwPart = (uint8_t)_fwPart;
+  st.hostPart = (uint8_t)_hostPart;
+  if (!_stage.saveState(st)) {
+    _status.state = HEARTH_UPDATE_FAILED;
+    _status.error = HEARTH_UPDATE_ERR_HOST;
+    _status.reason = 0;
+    if (_statusCB) {
+      _statusCB(_status);
+    }
+    return;
+  }
+  _hostHooks.reboot();
+  /* On the device this does not return. On the host the test's hook does,
+   * and so does this function: the state record and the staged bundle are
+   * what the next boot's begin() acts on. */
+}
+
+/*
+ * Stage the host part through the stageImage hook: the part's range inside
+ * the staged bundle (its offset plus the container's, the same offset a
+ * flasher is handed), from the staged file's path. The state record is
+ * filled with the target's version and the part's index, which the
+ * first-boot confirm and the resume (6c) need.
+ */
+bool HearthUpdate::stagedHostPart(int hostPart, HearthUpdateState &st) {
+  HearthFile *staged = _stage.stagedOpenRead();
+  if (!staged) {
+    return false;
+  }
+  HearthFileSource src(*staged);
+  HearthBundleInfo info;
+  if (HearthBundle::open(src, _cfg.publicKey, info) != HEARTH_BUNDLE_OK) {
+    delete staged;
+    return false;
+  }
+  if (hostPart < 0 || hostPart >= (int)info.partCount) {
+    delete staged;
+    return false;
+  }
+  const HearthBundlePart &p = info.parts[hostPart];
+  bool ok = _hostHooks.stageImage(_stage.stagedPath(),
+                                  info.containerOffset + p.offset, p.length);
+  delete staged;
+  if (!ok) {
+    return false;
+  }
+  st.targetVersion = info.productVersion;
+  snprintf(st.targetVersionString, sizeof(st.targetVersionString), "%s",
+           info.productVersionString);
+  st.hostPart = (uint8_t)hostPart;
+  return true;
 }
 
 /*
@@ -1207,6 +1364,15 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
   _stage.loadManifest(_manifest);
   _haveManifest = _stage.haveManifest();
 
+  /* A state file loaded right after the manifest, before the link
+   * commands (plan Task 6b): the host part was staged and the sketch
+   * rebooted into it, and this boot confirms it (HOST) or gives up
+   * (HOST_CONFIRM, the previous sketch is running again after a failed
+   * first boot). Phase FW is 6c's resume: it is left alone here and
+   * begin() behaves as it did before. */
+  HearthUpdateState st;
+  bool haveState = _stage.loadState(st);
+
   uint32_t eff = productVersion;
   const char *effStr = versionString ? versionString : "";
   if (_haveManifest && _manifest.productVersion > eff) {
@@ -1219,13 +1385,58 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
   _declaredVersion = eff;
   snprintf(_declaredVersionString, sizeof(_declaredVersionString), "%s", effStr);
 
+  /* The declaration: for the HOST phase it is the state's target (the new
+   * product version, even if the sketch's baseline is lower), tried up to
+   * three times until one answers OK. For the HOST_CONFIRM phase it is the
+   * normal declaration (the effective version), also tried up to three
+   * times. For the normal path it is the effective version, tried once. */
   char cmd[HEARTH_LINE_MAX];
-  snprintf(cmd, sizeof(cmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)eff, effStr);
-  int r0 = hearthCmd(cmd, 0, 0);
-  if (r0 != 0) {
-    _status.state = HEARTH_UPDATE_DISABLED;
-    _status.error = HEARTH_UPDATE_ERR_LINK;
-    return false;
+  int r0;
+  if (haveState && st.phase == HEARTH_PHASE_HOST) {
+    /* The declaration is the state's target (the new product version, even
+     * if the sketch's baseline is lower), tried up to three times until one
+     * answers OK. Three failures: the first-boot failure (re-stage
+     * host-prev.bin and reboot, the phase becomes HOST_CONFIRM). */
+    r0 = -1;
+    for (int i = 0; i < 3; i++) {
+      snprintf(cmd, sizeof(cmd), "AT+MTSWVER=%lu,\"%s\"",
+               (unsigned long)st.targetVersion, st.targetVersionString);
+      r0 = hearthCmd(cmd, 0, 0);
+      if (r0 == 0) break;
+    }
+    if (r0 != 0) {
+      return hearthFirstBootHostFail(st);
+    }
+  } else if (haveState && st.phase == HEARTH_PHASE_HOST_CONFIRM) {
+    /* The normal declaration (the effective version), tried up to three
+     * times. No answer: clearState, FAILED with HEARTH_UPDATE_ERR_LINK,
+     * begin() returns false, no stageImage, no reboot (it must not loop). */
+    r0 = -1;
+    for (int i = 0; i < 3; i++) {
+      snprintf(cmd, sizeof(cmd), "AT+MTSWVER=%lu,\"%s\"",
+               (unsigned long)_effectiveVersion, _declaredVersionString);
+      r0 = hearthCmd(cmd, 0, 0);
+      if (r0 == 0) break;
+    }
+    if (r0 != 0) {
+      _stage.clearState();
+      _status.state = HEARTH_UPDATE_FAILED;
+      _status.error = HEARTH_UPDATE_ERR_LINK;
+      _status.reason = 0;
+      if (_statusCB) {
+        _statusCB(_status);
+      }
+      return false;
+    }
+  } else {
+    /* The normal declaration: the effective version, tried once. */
+    snprintf(cmd, sizeof(cmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)eff, effStr);
+    r0 = hearthCmd(cmd, 0, 0);
+    if (r0 != 0) {
+      _status.state = HEARTH_UPDATE_DISABLED;
+      _status.error = HEARTH_UPDATE_ERR_LINK;
+      return false;
+    }
   }
 
   ModelQuery mq;
@@ -1299,7 +1510,171 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
 
   _status.state = HEARTH_UPDATE_IDLE;
   _status.effectiveVersion = eff;
-  /* The resume path (a state file naming an in-progress phase) is Task 6. */
+  if (_statusCB) {
+    _statusCB(_status);
+  }
+  /* The first-boot confirm (plan Task 6b): the declaration already ran
+   * (above), the normal sequence just reached IDLE, and now the phase's
+   * own work runs. Phase FW is 6c's resume: it is left alone here. */
+  if (haveState && st.phase == HEARTH_PHASE_HOST) {
+    return hearthFirstBootHost(st);
+  }
+  if (haveState && st.phase == HEARTH_PHASE_HOST_CONFIRM) {
+    return hearthFirstBootHostConfirm(st);
+  }
+  return true;
+}
+
+/*
+ * The first-boot failure (plan Task 6b): the new sketch cannot reach
+ * Hearth (the declaration timed out three times in begin()). host-prev.bin
+ * is re-staged whole and the sketch reboots back to it, with the phase set
+ * to HOST_CONFIRM so the second boot does not loop. No host-prev.bin, or a
+ * null or failing stageImage hook: clearState, FAILED with
+ * HEARTH_UPDATE_ERR_HOST, return false, no reboot.
+ */
+bool HearthUpdate::hearthFirstBootHostFail(const HearthUpdateState &stIn) {
+  HearthUpdateState st = stIn;
+  HearthFile *prev = _stage.hostPrevOpen();
+  uint32_t size = prev ? prev->size() : 0;
+  delete prev;
+  if (!size || !_hostHooks.stageImage) {
+    _stage.clearState();
+    _status.state = HEARTH_UPDATE_FAILED;
+    _status.error = HEARTH_UPDATE_ERR_HOST;
+    _status.reason = 0;
+    if (_statusCB) {
+      _statusCB(_status);
+    }
+    return false;  /* no host-prev.bin, or no hook: no reboot, no loop */
+  }
+  if (!_hostHooks.stageImage(_stage.hostPrevPath(), 0, size)) {
+    _stage.clearState();
+    _status.state = HEARTH_UPDATE_FAILED;
+    _status.error = HEARTH_UPDATE_ERR_HOST;
+    _status.reason = 0;
+    if (_statusCB) {
+      _statusCB(_status);
+    }
+    return false;
+  }
+  st.phase = HEARTH_PHASE_HOST_CONFIRM;
+  _stage.saveState(st);
+  _hostHooks.reboot();
+  _status.state = HEARTH_UPDATE_FAILED;
+  _status.error = HEARTH_UPDATE_ERR_HOST;
+  _status.reason = 0;
+  if (_statusCB) {
+    _statusCB(_status);
+  }
+  return false;
+}
+
+/*
+ * The first-boot confirm (plan Task 6b, spec 7.5): the new sketch is
+ * running, the declaration already answered OK (in begin()), and the
+ * normal sequence just reached IDLE. The manifest is written with the
+ * state's target and the host part's version read from the staged bundle
+ * (the manifest after a host apply is written here, not before the
+ * reboot, so a failed host boot leaves the old one), the state and the
+ * staged bundle are gone, and the co-processor is reset on its reset line
+ * (never AT+MTEPAPPLY, which the firmware answers with an error when no
+ * AT+MTEP session is open and would rewrite the composition) so its
+ * requestor re-initialises with the declared version and sends its
+ * NotifyUpdateApplied.
+ */
+bool HearthUpdate::hearthFirstBootHost(const HearthUpdateState &stIn) {
+  HearthUpdateState st = stIn;
+  /* Confirmed: the manifest takes the state's target and the host part's
+   * version from the staged bundle, "" when it cannot be read. */
+  char hostVer[33];
+  hostVer[0] = 0;
+  {
+    HearthFile *staged = _stage.stagedOpenRead();
+    if (staged) {
+      HearthFileSource src(*staged);
+      HearthBundleInfo info;
+      if (HearthBundle::open(src, _cfg.publicKey, info) == HEARTH_BUNDLE_OK
+          && st.hostPart < (int)info.partCount) {
+        snprintf(hostVer, sizeof(hostVer), "%s", info.parts[st.hostPart].version);
+      }
+      delete staged;
+    }
+  }
+  HearthManifest m;
+  if (_haveManifest) {
+    m = _manifest;
+  } else {
+    memset(&m, 0, sizeof(m));
+  }
+  m.productVersion = st.targetVersion;
+  snprintf(m.productVersionString, sizeof(m.productVersionString), "%s", st.targetVersionString);
+  snprintf(m.hostVersion, sizeof(m.hostVersion), "%s", hostVer);
+  _stage.saveManifest(m);
+  _manifest = m;
+  _haveManifest = true;
+  _stage.clearState();
+  _stage.stagedRemove();
+  _effectiveVersion = st.targetVersion;
+  _status.effectiveVersion = st.targetVersion;
+  /* The co-processor reset: the reset line, not AT+MTEPAPPLY. A null or
+   * false hook skips it with a log line (the requestor's NotifyUpdateApplied
+   * then waits for the co-processor's next boot). */
+  HearthCoprocPins pins;
+  pins.reset = _cfg.resetPin;
+  pins.resetActiveLow = _cfg.resetActiveLow;
+  pins.strap = _cfg.strapPin;
+  pins.strapActiveLow = _cfg.strapActiveLow;
+  if (_hostHooks.coprocReset) {
+    ((HearthClass *)_owner)->hearthArmExpectedReboot();
+    if (_hostHooks.coprocReset(pins)) {
+      if (((HearthClass *)_owner)->link().waitReady(HEARTH_READY_TIMEOUT_MS)) {
+        hearthCmd("AT+MTOTA=1", 0, 0);
+      } else {
+        ((HearthClass *)_owner)->hearthDisarmExpectedReboot();
+      }
+    } else {
+      ((HearthClass *)_owner)->hearthDisarmExpectedReboot();
+#ifdef ARDUINO
+      Serial.println("Hearth.update: no co-processor reset line, the reset is skipped");
+#endif
+    }
+  } else {
+#ifdef ARDUINO
+    Serial.println("Hearth.update: no co-processor reset hook, the reset is skipped");
+#endif
+  }
+  _status.state = HEARTH_UPDATE_IDLE;
+  _status.error = HEARTH_UPDATE_OK;
+  _status.reason = 0;
+  if (_statusCB) {
+    _statusCB(_status);
+  }
+  return true;
+}
+
+/*
+ * The boot after a failed first boot (plan Task 6b): the previous sketch
+ * is running again (the host update did not take). The normal declaration
+ * (the effective version) is tried up to three times. It answers: begin()
+ * completes, the state is cleared and the update reports FAILED with
+ * HEARTH_UPDATE_ERR_HOST (the host update did not take); the manifest is
+ * untouched and the staged bundle kept. No answer: FAILED with
+ * HEARTH_UPDATE_ERR_LINK and begin() returns false, with no stageImage and
+ * no reboot (it must not loop).
+ */
+bool HearthUpdate::hearthFirstBootHostConfirm(const HearthUpdateState &st) {
+  /* The declaration already ran in begin() (the normal declaration, the
+   * effective version, up to three times) and the normal sequence reached
+   * IDLE: this function only reports the outcome. The state is cleared and
+   * the update is FAILED with HEARTH_UPDATE_ERR_HOST (the host update did
+   * not take); the manifest is untouched and the staged bundle kept. No
+   * stageImage, no reboot: the loop must stop. */
+  (void)st;
+  _stage.clearState();
+  _status.state = HEARTH_UPDATE_FAILED;
+  _status.error = HEARTH_UPDATE_ERR_HOST;
+  _status.reason = 0;
   if (_statusCB) {
     _statusCB(_status);
   }

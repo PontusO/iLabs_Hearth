@@ -296,6 +296,12 @@ HearthFile *HearthUpdateStage::hostPrevOpen() {
   return _fs ? _fs->open(p, "r") : 0;
 }
 
+const char *HearthUpdateStage::hostPrevPath() const {
+  static char p[64];
+  snprintf(p, sizeof(p), "%s/host-prev.bin", _dir[0] ? _dir : "/hearth");
+  return p;
+}
+
 const char *HearthUpdateStage::stagedPath() const {
   static char p[64];
   snprintf(p, sizeof(p), "%s/staged.ota", _dir[0] ? _dir : "/hearth");

@@ -28,6 +28,7 @@
 #include "HearthUpdateStage.h"
 #include "HearthBundle.h"
 #include "HearthDevKey.h"
+#include "HearthFlasher.h"  /* HearthCoprocPins, for the host hooks */
 
 /* The co-processor's reset and strap pins, from the board variant where it
  * defines them (the Challenger 2350 does: PIN_ESP_RST and PIN_ESP_MODE) and
@@ -95,6 +96,25 @@ struct HearthUpdateConfig {
 
 class HearthFlasher;  /* Task 5; forward declared so Task 4 links without it */
 
+/* The host-side hooks for the host part of the apply (spec 7, plan Task 6b).
+ * Each is a function pointer that takes no context: the library-internal
+ * hearthSetHostHooks() installs a set of them and the constructor installs
+ * the defaults. On the device (ARDUINO) the defaults are the real ones:
+ * imageRange the running sketch's XIP range (from the linker's
+ * __flash_binary_start / __flash_binary_end), stageImage the PicoOTA
+ * addFile of the named range plus its commit, reboot rp2040.reboot() and
+ * coprocReset the co-processor's reset line pulsed for 100 ms. On the host
+ * every default is null: a null hook means "not available here", the host
+ * apply then fails with HEARTH_UPDATE_ERR_HOST, and a null or false
+ * coprocReset skips the reset with a log line (the co-processor's next boot
+ * answers the NotifyUpdateApplied on its own). */
+struct HearthHostHooks {
+  bool (*imageRange)(const uint8_t **start, uint32_t *len);   /* the running sketch in XIP */
+  bool (*stageImage)(const char *path, uint32_t off, uint32_t len); /* PicoOTA: addFile + commit */
+  void (*reboot)();                                           /* rp2040.reboot() */
+  bool (*coprocReset)(const HearthCoprocPins &pins);          /* pulse the reset line; false when there is none */
+};
+
 class HearthUpdate {
 public:
   HearthUpdate();
@@ -132,6 +152,12 @@ public:
    * the device the link's own port brings the UART to the rate; the tests
    * install a callback that records it instead. 0 disables the switch. */
   void hearthSetBaudChanger(void (*cb)(uint32_t));
+  /* The test hook for the host part (plan Task 6b). The constructor
+   * installs the ARDUINO defaults (PicoOTA, the linker symbols,
+   * rp2040.reboot, hearthCoprocReset) and all-null hooks on the host;
+   * tests install their own over file-static records instead. A null hook
+   * means "not available here". */
+  void hearthSetHostHooks(const HearthHostHooks &h);
 
 private:
   /* The re-entry guard for hearthDrain(): set on construction, cleared by
@@ -155,11 +181,24 @@ private:
    * hearthApplyFw() directly with the state it loaded. */
   void hearthApply();
   int hearthApplyFw(HearthUpdateState &st);  /* 6a: the flash attempts, 0 success, 1 three failures */
-  void hearthApplyHost();  /* 6b: the host part; 6a only sets FAILED/ERR_HOST */
+  void hearthApplyHost();  /* 6b: the host part; stage it through PicoOTA and reboot */
+  /* 6b: the first-boot paths in begin(), after the state file is loaded.
+   * The host part was staged and the sketch rebooted into it; now confirm
+   * (HOST, the manifest is written here) or give up (HOST_CONFIRM, the
+   * previous sketch is running again and the loop must stop). */
+  bool hearthFirstBootHost(const HearthUpdateState &st);
+  bool hearthFirstBootHostConfirm(const HearthUpdateState &st);
+  /* 6b: the first-boot failure, called from begin() when the declaration
+   * timed out three times: re-stage host-prev.bin and reboot. */
+  bool hearthFirstBootHostFail(const HearthUpdateState &st);
+  /* 6b: the host part's range of the staged bundle, through the stageImage
+   * hook; fills the state record's version fields and hostPart. */
+  bool stagedHostPart(int hostPart, HearthUpdateState &st);
   void *_owner;
   HearthFs *_fs;
   HearthUpdateConfig _cfg;
   HearthFlasher *_flasher;
+  HearthHostHooks _hostHooks;  /* 6b: the host part's hooks, set by hearthSetHostHooks */
 
   HearthUpdateStatus _status;
 
