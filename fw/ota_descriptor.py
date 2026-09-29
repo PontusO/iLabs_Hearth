@@ -13,6 +13,8 @@ maxApplicableSoftwareVersion, releaseNotesUrl.
   otaUrl is required. otaChecksum is the sha256 of the file, base64;
   otaChecksumType is 1 (sha256). maxApplicableSoftwareVersion is the
   product version minus one, the highest version that needs an update.
+  A product version of 0 is refused (exit 2), because version - 1 would
+  wrap to 0xFFFFFFFF.
 """
 import argparse, base64, hashlib, json, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -33,6 +35,10 @@ def main():
     except ValueError as e:
         sys.exit("%s: %s" % (a.ota, e))
     version = ota["version"]
+    if version == 0:
+        print("%s: product version 0 is not allowed, because maxApplicableSoftwareVersion"
+              " (version - 1) would wrap to 0xFFFFFFFF" % a.ota, file=sys.stderr)
+        sys.exit(2)
     desc = {
         "vid": ota["vendor_id"],
         "pid": ota["product_id"],

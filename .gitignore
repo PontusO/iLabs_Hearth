@@ -80,6 +80,10 @@ build/
 .vscode/
 .arduino-cli
 
+# The Python tests import fw/*.py from the repo root, which leaves bytecode
+# here.
+/fw/__pycache__/
+
 # This library lives inside the Dropbox-synced sketchbook, so Dropbox's own
 # artefacts land in the working tree. The sibling iLabs_ESP-NOW sits outside
 # Dropbox and does not need these.

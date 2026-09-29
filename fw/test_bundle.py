@@ -76,9 +76,29 @@ class TestBundle(unittest.TestCase):
     def test_committed_dev_key_matches_header(self):
         pub = os.path.join(FW, "keys", "hearth_bundle_dev_p256.pub.pem")
         raw = hb.pubkey_raw(pub)
-        hdr = open(os.path.join(FW, "..", "src", "HearthDevKey.h")).read()
+        with open(os.path.join(FW, "..", "src", "HearthDevKey.h")) as f:
+            hdr = f.read()
         for b in raw:
             self.assertIn("0x%02X" % b, hdr)
+
+    def test_dev_key_header_first_line_names_the_key(self):
+        out = os.path.join(self.d, "HearthDevKey.h")
+        hb.emit_dev_key_header(self.pub, out)
+        with open(out) as f:
+            first = f.readline().rstrip("\n")
+        self.assertIn("k.pub.pem", first)
+        self.assertNotIn("%s", first)
+
+    def test_ota_descriptor_refuses_version_zero(self):
+        img = hb.wrap_ota(b"x" * 100, 0xFFF1, 0x8000, 0, "0.0.0")
+        ota = os.path.join(self.d, "v0.ota")
+        with open(ota, "wb") as f:
+            f.write(img)
+        r = subprocess.run([sys.executable, os.path.join(FW, "ota_descriptor.py"), ota,
+                            "--url", "file://" + ota, "-o", os.path.join(self.d, "d.json")],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn(b"version 0", r.stderr)
 
 
 if __name__ == "__main__":
