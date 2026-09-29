@@ -3,8 +3,14 @@
 # Run with `make -C test/host run`.
 
 CXXFLAGS = -std=c++11 -Wall -Wextra -Werror -g -I. -I../../src
+# The two vendored C sources compile as C, not C++, and the strict flags
+# match the rest of the suite. Both build clean under -Werror as shipped
+# (micro-ecc v1.1 as uECC_impl.inc, Brad Conte's public-domain sha-256),
+# so no warning is disabled for them.
+CC ?= cc
+CFLAGS_VENDOR = -std=c99 -Wall -Wextra -Werror -O2
 SRC = ../../src/HearthLink.cpp
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer test_cmdfields test_roboticvacuum test_microwaveoven test_composition_parent test_refrigerator test_oven test_cooksurface test_attr64 test_electrical test_waterheater test_heatpump test_demcontrol test_solarpower test_batterystorage test_dem test_thread test_rowtransfer test_chargingschedule test_evse test_utilitymeter
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer test_cmdfields test_roboticvacuum test_microwaveoven test_composition_parent test_refrigerator test_oven test_cooksurface test_attr64 test_electrical test_waterheater test_heatpump test_demcontrol test_solarpower test_batterystorage test_dem test_thread test_rowtransfer test_chargingschedule test_evse test_utilitymeter test_bundle
 
 all: $(TESTS)
 
@@ -336,6 +342,21 @@ test_evse: test_evse.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/H
 test_utilitymeter: test_utilitymeter.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/HearthThread.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterElectricalUtilityMeter.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
+# The bundle parser against the real signed fixtures (fixtures/, generated
+# by fw/make_bundle.py with the public development key). The vendored C
+# sources are the device's own crypto: uECC_build.c is the wrapper that
+# compiles uECC_impl.inc under the Hearth configuration (see the vendor
+# directory's VENDORED.md for why the upstream uECC.c is renamed), and
+# sha256.c compiles as-is. No ArduinoShim: this parser is platform code
+# with a byte-source abstraction, so the test only needs the library
+# header, the dev key header and the two vendor includes.
+uECC.o: ../../src/vendor/uECC/uECC_build.c
+	$(CC) $(CFLAGS_VENDOR) -I../../src/vendor/uECC -c -o $@ $<
+sha256.o: ../../src/vendor/sha256/sha256.c
+	$(CC) $(CFLAGS_VENDOR) -I../../src/vendor/sha256 -c -o $@ $<
+test_bundle: test_bundle.cpp ../../src/HearthBundle.cpp uECC.o sha256.o
+	$(CXX) $(CXXFLAGS) -I../../src/vendor/uECC -I../../src/vendor/sha256 -o $@ $^
+
 run: all
 	@for t in $(TESTS); do ./$$t || exit 1; done
 
@@ -366,6 +387,6 @@ count: all
 	[ "$$failed" = "0" ]
 
 clean:
-	rm -f $(TESTS)
+	rm -f $(TESTS) uECC.o sha256.o
 
 .PHONY: all run count clean
