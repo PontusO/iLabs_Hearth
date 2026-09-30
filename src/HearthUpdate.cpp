@@ -57,7 +57,10 @@ HearthUpdate::HearthUpdate()
     _commissionedMs(0),
     _baud(HEARTH_LINK_BAUD),
     _baudWantedDownload(false),
-    _applyPending(false) {
+    _applyPending(false),
+    _requestorRetry(false),
+    _requestorRetryMs(0),
+    _requestorRetryNow(false) {
   _declaredVersion = 0;
   _declaredVersionString[0] = 0;
 #ifdef ARDUINO
@@ -274,6 +277,35 @@ void HearthUpdate::hearthDrain() {
   }
   DrainGuard guard(_draining);
   if (_status.state == HEARTH_UPDATE_DISABLED || _status.state == HEARTH_UPDATE_UNAVAILABLE) {
+    /* B667, bench 2026-09-30 (nRF54L15 on its CPico carrier): an
+     * uncommissioned nRF answers AT+MTOTA=1 with +MTERR:8 while its
+     * AT+MTSWVER answered OK, because its firmware wires the requestor
+     * only once the device is commissioned (the ESP32-C6 wires it before
+     * commissioning, so the C6 bench did not show it). begin() settled
+     * UNAVAILABLE, and hearthDrain() used to return here forever: a
+     * product powered up and then commissioned never got FOTA until its
+     * host rebooted. When begin()'s AT+MTOTA=1 met that 8 it armed
+     * _requestorRetry, and now the retry goes out once the commissioning
+     * is noted (hearthNoteCommissioned set _requestorRetryNow) or every
+     * 30 s while it lasts (one AT command per 30 s). It stays UNAVAILABLE
+     * while it lasts: a firmware without FOTA never arms it, so its
+     * UNAVAILABLE is settled for good. */
+    if (_requestorRetry
+        && (_requestorRetryNow
+            || millis() - _requestorRetryMs >= 30000)) {
+      _requestorRetryNow = false;
+      _requestorRetryMs = (uint32_t)millis();
+      int rc = hearthCmd("AT+MTOTA=1", 0, 0);
+      if (rc == 0) {
+        _requestorRetry = false;
+        _status.state = HEARTH_UPDATE_IDLE;
+        _status.error = HEARTH_UPDATE_OK;
+        if (_statusCB) {
+          _statusCB(_status);
+        }
+      }
+      /* 8 (or any other failure): stay UNAVAILABLE and retry later. */
+    }
     return;
   }
   /* The download-time baud switch (case 10). A state line only records the
@@ -1384,6 +1416,9 @@ void HearthUpdate::end() {
   _downloadComplete = false;
   _stagedWriteOpen = false;
   _applyPending = false;
+  _requestorRetry = false;
+  _requestorRetryMs = 0;
+  _requestorRetryNow = false;
 }
 
 
@@ -1427,6 +1462,12 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
   _status.detail[0] = 0;
   _haveManifest = false;
   _havePendingBlock = false;
+  /* B667: a retry armed by an earlier begin() (or an end() in between)
+   * does not survive a new begin(): this begin() either reaches IDLE or
+   * arms the retry again on its own AT+MTOTA=1. */
+  _requestorRetry = false;
+  _requestorRetryMs = 0;
+  _requestorRetryNow = false;
 
   if (!_fs->begin() || !_stage.begin(*_fs, _cfg.dir)) {
     _status.state = HEARTH_UPDATE_DISABLED;
@@ -1701,9 +1742,18 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
   int rc = hearthCmd("AT+MTOTA=1", 0, 0);
   if (rc == 8) {
     /* The image has no requestor: FOTA unavailable, not an error. No
-     * further command (spec 3.31). */
+     * further command (spec 3.31).
+     *
+     * B667: an AT+MTSWVER that answered OK proves the firmware has FOTA,
+     * so this 8 is the requestor not being wired yet (the nRF54L15 wires
+     * its requestor only once the device is commissioned), not the
+     * firmware without FOTA that the AT+MTSWVER -> 8 branch above settled
+     * for good. hearthDrain() retries this once the commissioning is
+     * noted or every 30 s until it goes. */
     _status.state = HEARTH_UPDATE_UNAVAILABLE;
     _status.effectiveVersion = eff;
+    _requestorRetry = true;
+    _requestorRetryMs = (uint32_t)millis();
     if (_statusCB) {
       _statusCB(_status);
     }
@@ -1901,6 +1951,13 @@ bool HearthUpdate::hearthFirstBootHostConfirm(const HearthUpdateState &st) {
 void HearthUpdate::hearthNoteCommissioned() {
   _commissioned = true;
   _commissionedMs = (uint32_t)millis();
+  /* B667: the requestor retry may have been armed by begin() (the
+   * nRF54L15 wires its requestor on commissioning): record that it may
+   * go now. Recording only, the AT+MTOTA=1 goes out on the next
+   * hearthDrain(). */
+  if (_requestorRetry) {
+    _requestorRetryNow = true;
+  }
 }
 
 /* B632: the MG24's key store saves its key map two seconds after a write,

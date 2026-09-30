@@ -291,4 +291,19 @@ private:
    * running until the old image is back and booted. */
   uint32_t _declaredVersion;
   char _declaredVersionString[33];
+
+  /* B667: begin() met a +MTERR:8 on AT+MTOTA=1 after a good AT+MTSWVER
+   * (the firmware has FOTA, the requestor is not wired yet, e.g. an
+   * nRF54L15 that is not commissioned): UNAVAILABLE, but hearthDrain()
+   * retries AT+MTOTA=1 on the commissioning or every 30 s until it goes.
+   * Set only in begin()'s AT+MTOTA=1 -> 8 branch, cleared when the retry
+   * succeeds and by end() and begin(). */
+  bool _requestorRetry;
+  /* B667: millis() of the last retry attempt (begin()'s AT+MTOTA=1 sets
+   * it when it arms _requestorRetry). */
+  uint32_t _requestorRetryMs;
+  /* B667: a commissioning (+MTEVT:3) was recorded while _requestorRetry
+   * is set; hearthNoteCommissioned() only records it (it runs inside a
+   * URC callback, no link calls), hearthDrain() acts on it and clears it. */
+  bool _requestorRetryNow;
 };

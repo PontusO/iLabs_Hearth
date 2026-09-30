@@ -1651,6 +1651,195 @@ static void test_b666_accepted_followed_once(void) {
   check("the hook got 921600 (b666 accepted)", g_b7fixBaud == 921600);
 }
 
+/*
+ * Task 7c-fix2 (B667): the begin() script for an nRF54L15 that is not
+ * commissioned yet: AT+MTSWVER answers OK, AT+MTOTA=1 answers +MTERR:8.
+ * begin() must settle UNAVAILABLE and arm the retry; the nRF's fs need is
+ * 3,670,016 B, so the fs is capped just above it (4 MiB, as test_update.cpp
+ * does for the DE625 cases).
+ */
+static void scriptBeginB667(MockStream &s) {
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+CGMM", "nRF54L15 Hearth\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTOTA?", "+MTOTA:0,IDLE,0,thread\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "+MTERR:8\r\nERROR\r\n");
+}
+
+static int g_b667Calls = 0;
+static HearthUpdateStateEnum g_b667State = HEARTH_UPDATE_UNAVAILABLE;
+static HearthUpdateErr g_b667Error = HEARTH_UPDATE_ERR_NO_FS;
+static void b667Status(const HearthUpdateStatus &st) {
+  g_b667Calls++;
+  g_b667State = st.state;
+  g_b667Error = st.error;
+}
+
+/* B667, case 1: begin() settles UNAVAILABLE on the requestor's 8 and
+ * holds; a commissioning (the nRF wires its requestor on +MTEVT:3)
+ * releases the retry on the next poll: AT+MTOTA=1 goes out, OK, the state
+ * is IDLE and the status callback fired. */
+static void test_b667_commissioning_releases_retry(void) {
+  HearthFsMem fs;
+  fs.setFreeLimit(4 * 1024 * 1024);
+  MockStream s;
+  HearthClass hearth;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_b667Calls = 0;
+  g_b667State = HEARTH_UPDATE_UNAVAILABLE;
+  g_b667Error = HEARTH_UPDATE_ERR_NO_FS;
+  hearth.update.onStatus(b667Status);
+  scriptBeginB667(s);
+  HearthUpdateConfig cfg;
+  cfg.resetPin = 15;
+  cfg.resetActiveLow = true;
+  cfg.strapPin = 14;
+  cfg.strapActiveLow = true;
+  g_yieldAdvanceMs = 50;
+  check("b667: begin returns true", hearth.update.begin(0x10400, "1.4.0", cfg));
+  g_yieldAdvanceMs = 0;
+  check("b667: the state is UNAVAILABLE",
+        hearth.update.status().state == HEARTH_UPDATE_UNAVAILABLE);
+  check("b667: the script is drained", s.scriptDrained());
+  check("b667: nothing else went out on begin", s.unexpected().empty());
+  check("b667: the status callback fired on begin", g_b667Calls == 1
+        && g_b667State == HEARTH_UPDATE_UNAVAILABLE);
+
+  /* A poll 10 s later: no commissioning and no 30 s deadline, so
+   * nothing goes out. */
+  delay(10000);
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("b667: the 10 s poll sends nothing", s.unexpected().empty());
+  check("b667: still UNAVAILABLE after the quiet poll",
+        hearth.update.status().state == HEARTH_UPDATE_UNAVAILABLE);
+  check("b667: no extra status callback on the quiet poll", g_b667Calls == 1);
+
+  /* The commissioning: the nRF wires its requestor, the next poll
+   * retries and it goes. */
+  s.injectURC("+MTEVT:3");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("b667: AT+MTOTA=1 went out on the commissioning poll", s.scriptDrained());
+  check("b667: the state is IDLE",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("b667: the error is OK",
+        hearth.update.status().error == HEARTH_UPDATE_OK);
+  check("b667: the status callback fired on the retry", g_b667Calls == 2
+        && g_b667State == HEARTH_UPDATE_IDLE);
+  check("b667: nothing unexpected on the wire", s.unexpected().empty());
+}
+
+/* B667, case 2: the periodic path on a fresh setup. No commissioning:
+ * the retry goes out on the 30 s deadline, holds UNAVAILABLE while it
+ * keeps meeting 8, and goes IDLE when it finally gets OK. */
+static void test_b667_periodic_retry(void) {
+  HearthFsMem fs;
+  fs.setFreeLimit(4 * 1024 * 1024);
+  MockStream s;
+  HearthClass hearth;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  scriptBeginB667(s);
+  HearthUpdateConfig cfg;
+  cfg.resetPin = 15;
+  cfg.resetActiveLow = true;
+  cfg.strapPin = 14;
+  cfg.strapActiveLow = true;
+  g_yieldAdvanceMs = 50;
+  check("b667 periodic: begin returns true",
+        hearth.update.begin(0x10400, "1.4.0", cfg));
+  g_yieldAdvanceMs = 0;
+  check("b667 periodic: the state is UNAVAILABLE",
+        hearth.update.status().state == HEARTH_UPDATE_UNAVAILABLE);
+
+  /* 30 s on the clock, no commissioning: the deadline retry goes out
+   * once and meets 8 again. */
+  delay(30000);
+  s.expect("AT+MTOTA=1", "+MTERR:8\r\nERROR\r\n");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  /* The poll put nothing but the retry on the wire: with no commissioning
+   * and the 30 s deadline just met, the retry was the only command. The
+   * MockStream counts a matched expectation as consumed, not unexpected,
+   * so the proof is the drained script plus the quiet polls around it. */
+  check("b667 periodic: the deadline retry went out once, no commissioning",
+        s.scriptDrained());
+  check("b667 periodic: still UNAVAILABLE on the 8",
+        hearth.update.status().state == HEARTH_UPDATE_UNAVAILABLE);
+  check("b667 periodic: nothing unexpected on the wire (8)", s.unexpected().empty());
+
+  /* Another 30 s, and this time the requestor answers OK. */
+  delay(30000);
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("b667 periodic: the next deadline retry went out", s.scriptDrained());
+  check("b667 periodic: the state is IDLE",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("b667 periodic: the error is OK",
+        hearth.update.status().error == HEARTH_UPDATE_OK);
+  check("b667 periodic: nothing unexpected on the wire (OK)",
+        s.unexpected().empty());
+}
+
+/* B667, case 3: the firmware without FOTA stays settled. AT+MTSWVER
+ * itself answers +MTERR:8 (firmware 1.2.0 and earlier, the Task 7a3
+ * branch of begin()), so the retry is never armed: a commissioning and
+ * two 30 s deadlines later, nothing more has gone out and the state is
+ * still UNAVAILABLE. */
+static void test_b667_no_fota_not_retried(void) {
+  HearthFsMem fs;
+  fs.setFreeLimit(4 * 1024 * 1024);
+  MockStream s;
+  HearthClass hearth;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "+MTERR:8\r\nERROR\r\n");
+  HearthUpdateConfig cfg;
+  cfg.resetPin = 15;
+  cfg.resetActiveLow = true;
+  cfg.strapPin = 14;
+  cfg.strapActiveLow = true;
+  g_yieldAdvanceMs = 50;
+  check("b667 no fota: begin returns true",
+        hearth.update.begin(0x10400, "1.4.0", cfg));
+  g_yieldAdvanceMs = 0;
+  check("b667 no fota: the state is UNAVAILABLE",
+        hearth.update.status().state == HEARTH_UPDATE_UNAVAILABLE);
+  /* The 7a3 branch stops at the declaration: AT+MTOTA=1 was never sent
+   * (a scripted expectation that no command consumes would hide a stray
+   * one, so the wire proof here is the unexpected list alone). */
+  check("b667 no fota: nothing else went out on begin", s.unexpected().empty());
+
+  s.injectURC("+MTEVT:3");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("b667 no fota: the commissioning poll sends nothing",
+        s.unexpected().empty());
+  delay(60000);
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("b667 no fota: the first deadline poll sends nothing",
+        s.unexpected().empty());
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("b667 no fota: the second deadline poll sends nothing",
+        s.unexpected().empty());
+  check("b667 no fota: still UNAVAILABLE",
+        hearth.update.status().state == HEARTH_UPDATE_UNAVAILABLE);
+  check("b667 no fota: the error is OK",
+        hearth.update.status().error == HEARTH_UPDATE_OK);
+}
+
 int main(void) {
   printf("\n===== HearthUpdate apply (task 6a) tests =====\n");
   test_order_and_arguments();
@@ -1686,6 +1875,10 @@ int main(void) {
   printf("\n===== HearthUpdate apply (task 7c-fix1, B666) tests =====\n");
   test_b666_refused_not_followed();
   test_b666_accepted_followed_once();
+  printf("\n===== HearthUpdate apply (task 7c-fix2, B667) tests =====\n");
+  test_b667_commissioning_releases_retry();
+  test_b667_periodic_retry();
+  test_b667_no_fota_not_retried();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }
