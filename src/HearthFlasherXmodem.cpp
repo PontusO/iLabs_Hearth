@@ -14,7 +14,7 @@
  *   2. entry: strap asserted low for 100 ms, reset pulsed 100 ms, read
  *      until the menu's "BL >" prompt (within 3 s), then the strap
  *      released (it is sampled at boot only).
- *   3. "1": the bootloader echoes the 17-byte "\r\nbegin upload\r\0"
+ *   3. "1": the bootloader echoes the 17-byte "\r\nbegin upload\r\n\0"
  *      preamble, THEN the XMODEM 'C'. The preamble is drained first, and
  *      the 'C' must be consumed before any block goes out.
  *   4. XMODEM-CRC, 128-byte SOH blocks only (the bootloader's parser
@@ -96,7 +96,10 @@ void xmodemBuildBlock(uint8_t out[3 + HEARTH_XMODEM_BLOCK + 2], uint8_t seq, con
   out[3 + HEARTH_XMODEM_BLOCK + 1] = (uint8_t)crc;
 }
 
-/* ---- stream helpers: deadlines run on millis()/yield(), as on the host ---- */
+/* ---- stream helpers: deadlines run on millis()/yield(), as on the host ----
+ * M2: every deadline below is compared by subtraction ((int32_t)(millis()
+ * - deadline) >= 0), so the 49.7-day millis() wrap does not make a fresh
+ * wait time out at once. ---- */
 
 /*
  * Read the next byte of the stream, advancing simulated time (or, on
@@ -114,7 +117,7 @@ static int xmodemReadByte(Stream &uart, uint32_t timeoutMs) {
   for (;;) {
     int c = uart.read();
     if (c >= 0) return c;
-    if (millis() >= deadline) return -1;
+    if ((int32_t)(millis() - deadline) >= 0) return -1;
     yield();
   }
 }
@@ -173,7 +176,7 @@ static bool xmodemReadUntil(Stream &uart, const char *marker, uint32_t timeoutMs
         continue;   /* a byte landed, so the deadline is not re-armed */
       }
     }
-    if (millis() >= deadline) return false;
+    if ((int32_t)(millis() - deadline) >= 0) return false;
     yield();
   }
 }
@@ -196,7 +199,12 @@ static int xmodemFail(const HearthCoprocPins &pins, int err) {
 
 int HearthFlasherXmodem::flash(Stream &uart, const HearthCoprocPins &pins, HearthByteSource &src, uint32_t off, uint32_t len,
                                const uint8_t sha256[32]) {
-  if (!hearthCoprocStrap(pins, false) || !hearthCoprocReset(pins, 1)) {
+  /* A pin of -1 is refused before anything is written, exactly as the
+   * other two families do at the top of their flash(). M3: the
+   * availability is checked by the pin numbers, not by driving the
+   * lines (the old check pulsed the reset for a real 1 ms on the
+   * device just to test availability). */
+  if (pins.reset < 0 || pins.strap < 0) {
     return HEARTH_FLASH_ERR_ENTER;
   }
   (void)sha256;   /* verified by the bundle; the bootloader takes the blocks as they are */
@@ -204,8 +212,15 @@ int HearthFlasherXmodem::flash(Stream &uart, const HearthCoprocPins &pins, Heart
 #ifdef ARDUINO
 #ifdef HEARTH_SERIAL_PORT
   /* The AT link's port is the object the caller's begin() re-clocks
-   * after this returns; the same pattern Hearth.cpp uses at bring-up. */
-  HEARTH_SERIAL_PORT.begin(HEARTH_XMODEM_BAUD);
+   * after this returns; the same pattern Hearth.cpp uses at bring-up.
+   * M9: re-clock only the port the flasher was actually handed. When
+   * the link runs on a sketch-owned Stream (Hearth.begin(Stream&)),
+   * re-clocking HEARTH_SERIAL_PORT would change a port the library does
+   * not own, so the rate is left alone (as on the host, where the
+   * macro is not defined). */
+  if (&uart == (Stream *)&HEARTH_SERIAL_PORT) {
+    HEARTH_SERIAL_PORT.begin(HEARTH_XMODEM_BAUD);
+  }
 #endif
 #endif
 

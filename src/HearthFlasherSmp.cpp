@@ -496,79 +496,52 @@ SmpSerialDecoder::SmpSerialDecoder() { reset(); }
  */
 size_t SmpSerialDecoder::feed(const uint8_t *data, size_t n, uint8_t *out, size_t outCap) {
   /*
-   * Pending bytes from the previous call (the tail of the batch after
-   * the line that call examined last) come first, then the new bytes.
-   * A batch read from the UART can hold several responses at once (the
-   * mock delivers them eagerly, and a real port can buffer just as
-   * well), and the caller takes one frame per read cycle, so the tail
-   * after the last examined line must survive until it is consumed.
+   * Pending bytes from a previous call (the tail after the line that
+   * call examined last) come first, then the new bytes, in arrival
+   * order: they are examined in one byte loop, and the same frame must
+   * come out whatever the chunking (B673). A batch read from the UART
+   * can hold several responses at once (the mock delivers them
+   * eagerly, and a real port can buffer just as well), and the caller
+   * takes one frame per read cycle, so the tail after the last
+   * examined byte must survive until it is consumed.
    *
-   * Two passes: the first re-examines the pending bytes, the second
-   * the new bytes. Every line is examined exactly once and its bytes
-   * are consumed whether or not it completes a frame: only the bytes
-   * after the last examined line are carried over, so a rejected line
-   * (bad marker, bad CRC, a stale reply with a foreign sequence number)
+   * The line buffer is reset before the bytes are examined: it is
+   * rebuilt from the pending bytes on every call, and the old two-pass
+   * code re-appended the pending (still-incomplete) line to the line
+   * already in hand, so a reply arriving in small pieces corrupted its
+   * own marker and base64 and was never decoded (the whole-feed case
+   * had no pending bytes to re-append and worked).
+   *
+   * Every line is examined exactly once and its bytes are consumed
+   * whether or not it completes a frame, so a rejected line (bad
+   * marker, bad CRC, a stale reply with a foreign sequence number)
    * can never be re-examined and never block the bytes behind it.
    */
-  if (pendLen) {
-    size_t i = 0;
-    for (; i < pendLen; i++) {
-      uint8_t c = pend[i];
-      if (c == '\n') {
-        if (feedLine(out, outCap)) {
-          lineLen = 0;
-          size_t rest = pendLen - (i + 1);
-          if (rest) {
-            pendLen = rest > sizeof(pend) ? sizeof(pend) : rest;
-            memmove(pend, pend + i + 1, pendLen);
-          } else {
-            pendLen = 0;
-          }
-          return outLen;
-        }
-        lineLen = 0;
-        continue;   /* the line is consumed, even though it was rejected */
-      }
-      if (lineLen < sizeof(line)) line[lineLen++] = c;
-    }
-    /* No line completed in the pending pass: carry the trailing
-     * partial line (if any) over to the new bytes. */
-    size_t rest = pendLen - i;
-    if (rest) {
-      pendLen = rest > sizeof(pend) ? sizeof(pend) : rest;
-      memmove(pend, pend + i, pendLen);
-    } else {
-      pendLen = 0;
-    }
+  lineLen = 0;
+  size_t total = pendLen + n;
+  if (total > sizeof(pend)) total = sizeof(pend);
+  if (n) {
+    memcpy(pend + pendLen, data, (size_t)total - pendLen);
   }
-  size_t consumed = 0;
-  for (size_t i = 0; i < n; i++) {
-    uint8_t c = data[i];
+  for (size_t i = 0; i < total; i++) {
+    uint8_t c = pend[i];
     if (c == '\n') {
       if (feedLine(out, outCap)) {
         lineLen = 0;
-        size_t rest = n - (i + 1);
+        size_t rest = total - (i + 1);
         if (rest) {
-          pendLen = rest > sizeof(pend) ? sizeof(pend) : rest;
-          memcpy(pend, data + i + 1, pendLen);
+          memmove(pend, pend + i + 1, rest);
         }
+        pendLen = rest;
         return outLen;
       }
-      lineLen = 0;
-      consumed = i + 1;   /* the rejected line is consumed */
+      lineLen = 0;   /* the line is consumed, even though it was rejected */
       continue;
     }
     if (lineLen < sizeof(line)) line[lineLen++] = c;
-    /* an overlong line: drop it (the marker check rejects it anyway) */
+    /* an overlong line: drop the extra (the marker check rejects it anyway) */
   }
-  /* No line completed in the new pass: carry the trailing partial line
-   * over so it is not lost (the same protection the original code had
-   * only for the bytes after a returned frame). */
-  if (n > consumed) {
-    size_t rest = n - consumed;
-    pendLen = rest > sizeof(pend) ? sizeof(pend) : rest;
-    memcpy(pend, data + consumed, pendLen);
-  }
+  pendLen = total;
   return 0;
 }
 
@@ -665,6 +638,8 @@ struct SmpFrame {
  * error.
  */
 static bool smpReadFrame(Stream &uart, SmpSerialDecoder &dec, uint32_t timeoutMs, uint8_t expectedSeq, SmpFrame &out, uint8_t *frameBuf) {
+  /* M2: the deadline is compared by subtraction, so the 49.7-day
+   * millis() wrap does not make a fresh wait time out at once. */
   uint32_t deadline = millis() + timeoutMs;
   for (;;) {
     /* Read in batches and feed them whole, the way the reference
@@ -711,37 +686,42 @@ static bool smpReadFrame(Stream &uart, SmpSerialDecoder &dec, uint32_t timeoutMs
       }
       if (avail <= 0) break;   /* nothing on the wire and no pending frame */
     }
-    if (millis() >= deadline) return false;
+    if ((int32_t)(millis() - deadline) >= 0) return false;
     yield();
   }
 }
 
 /*
- * The upload loop, flash.py's upload() with its two stall bounds. Each
- * chunk is sent with one seq per offset (a resend of the same offset
- * reuses it, since the reply is matched against that same value); the
- * reply's "off" is the bootloader's own idea of the next offset and is
- * the loop variable, which is what makes a resend safe. rc not 0 is a
- * protocol error straight up; rc 0 without an advancing off is bounded
- * the same way as the timeouts.
+ * The upload loop, flash.py's upload() with its two stall bounds. The
+ * loop variable is the IMAGE offset o (from 0), not the source offset:
+ * the source holds the whole bundle and the part sits at off0, so the
+ * bytes are read at off0 + o and sent to MCUboot as "off": o (C1: the
+ * old code started o at off0 and bounded it by the part length, so a
+ * non-zero bundle offset sent the wrong image offset and read outside
+ * the part). Each chunk is sent with one seq per offset (a resend of
+ * the same offset reuses it, since the reply is matched against that
+ * same value); the reply's "off" is the bootloader's own idea of the
+ * next image offset and is the loop variable, which is what makes a
+ * resend safe. rc not 0 is a protocol error straight up; rc 0 without
+ * an advancing off is bounded the same way as the timeouts.
  */
 static int smpUpload(Stream &uart, SmpSerialDecoder &dec, SmpSeq &seq, HearthByteSource &src,
                      uint32_t off0, uint32_t len, const uint8_t sha256[32], uint8_t *frameBuf) {
   uint32_t total = len;
-  uint32_t off = off0;
+  uint32_t o = 0;   /* the image offset, from 0 */
   int consecutiveTimeouts = 0;
   int consecutiveNoProgress = 0;
   uint8_t frameSeq = seq.next();
   uint8_t chunk[HEARTH_SMP_CHUNK];
   uint8_t frame[8 + 8 + HEARTH_SMP_CHUNK + 80];   /* header + map overhead + chunk + len/sha keys */
 
-  while (off < total) {
-    uint32_t n = total - off;
+  while (o < total) {
+    uint32_t n = total - o;
     if (n > HEARTH_SMP_CHUNK) n = HEARTH_SMP_CHUNK;
-    if (!src.read(off, chunk, n)) {
+    if (!src.read(off0 + o, chunk, n)) {
       return HEARTH_FLASH_ERR_SOURCE;
     }
-    size_t payloadLen = smpEncodeUploadMap(frame + HEARTH_SMP_HDR_LEN, off, total, chunk, n, off == 0, sha256);
+    size_t payloadLen = smpEncodeUploadMap(frame + HEARTH_SMP_HDR_LEN, o, total, chunk, n, o == 0, sha256);
     frame[0] = HEARTH_SMP_OP_WRITE;
     frame[1] = 0;
     frame[2] = (uint8_t)(payloadLen >> 8);
@@ -768,7 +748,7 @@ static int smpUpload(Stream &uart, SmpSerialDecoder &dec, SmpSeq &seq, HearthByt
     if (!hasOff) {
       return HEARTH_FLASH_ERR_PROTOCOL;     /* rc 0 must carry the next offset */
     }
-    if (newOff <= off) {
+    if (newOff <= o) {
       consecutiveNoProgress++;
       if (consecutiveNoProgress > HEARTH_SMP_MAX_NO_PROGRESS) {
         return HEARTH_FLASH_ERR_PROTOCOL;   /* parked at a different offset than this one */
@@ -776,7 +756,7 @@ static int smpUpload(Stream &uart, SmpSerialDecoder &dec, SmpSeq &seq, HearthByt
     } else {
       consecutiveNoProgress = 0;
     }
-    off = newOff;
+    o = newOff;
     frameSeq = seq.next();
   }
   return HEARTH_FLASH_OK;
@@ -853,8 +833,11 @@ int HearthFlasherSmp::flash(Stream &uart, const HearthCoprocPins &pins, HearthBy
   /* The pins are the whole entry story: no strap and no reset means
    * this board cannot put the co-processor into recovery, so refuse
    * before touching the wire (the log line is the caller's, with the
-   * pin numbers). */
-  if (!hearthCoprocStrap(pins, false) || !hearthCoprocReset(pins, 1)) {
+   * pin numbers). M3: the availability is checked by the pin numbers,
+   * not by driving the lines: the old check called the pin helpers,
+   * which on the device released the strap and pulsed the reset for a
+   * real 1 ms just to test availability. */
+  if (pins.reset < 0 || pins.strap < 0) {
     return HEARTH_FLASH_ERR_ENTER;
   }
   if (len < HEARTH_SMP_IMAGE_HDR) {
@@ -875,8 +858,15 @@ int HearthFlasherSmp::flash(Stream &uart, const HearthCoprocPins &pins, HearthBy
    * CONFIG_BOOT_SERIAL_UART rate); the link may have been left at
    * another rate, and every echo vanishes at a wrong one. The AT
    * link's port is the object the caller's begin() re-clocks after
-   * this returns; the same pattern HearthFlasherXmodem.cpp uses. */
-  HEARTH_SERIAL_PORT.begin(HEARTH_SMP_BAUD);
+   * this returns; the same pattern HearthFlasherXmodem.cpp uses.
+   * M9: re-clock only the port the flasher was actually handed. When
+   * the link runs on a sketch-owned Stream (Hearth.begin(Stream&)),
+   * re-clocking HEARTH_SERIAL_PORT would change a port the library does
+   * not own, so the rate is left alone (as on the host, where the
+   * macro is not defined). */
+  if (&uart == (Stream *)&HEARTH_SERIAL_PORT) {
+    HEARTH_SERIAL_PORT.begin(HEARTH_SMP_BAUD);
+  }
 #endif
 
   SmpSerialDecoder dec;

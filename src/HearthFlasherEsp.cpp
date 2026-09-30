@@ -71,10 +71,19 @@ void hearthEspPortBind(Stream *uart, const HearthCoprocPins &pins) {
   s_pins = pins;
 }
 
-/* True only where the AT link's port is known and can be re-clocked. */
+/*
+ * True only where the AT link's port is known and can be re-clocked.
+ * M9: and only when the stream the port layer is bound to IS that port.
+ * When the link runs on a sketch-owned Stream (Hearth.begin(Stream&)),
+ * s_uart points at the sketch's stream, not at HEARTH_SERIAL_PORT, so
+ * re-clocking would change a port the library does not own and the rate
+ * is left alone (as on the host, where the macro is not defined).
+ * flash() binds the port (hearthEspPortBind) before it consults this, so
+ * s_uart is the stream the flasher was handed by the time it is read.
+ */
 bool hearthEspCanReclock() {
 #if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
-  return true;
+  return s_uart == (Stream *)&HEARTH_SERIAL_PORT;
 #else
   return false;
 #endif
@@ -100,7 +109,8 @@ esp_loader_error_t loader_port_write(const uint8_t *data, uint16_t size, uint32_
 /* Fill data with size bytes, or ESP_LOADER_ERROR_TIMEOUT when they have
  * not all arrived within timeout ms (the Pi Pico port's semantics). The
  * deadline is absolute on millis(); a short read yields and retries until
- * the deadline passes. */
+ * the deadline passes. M2: the comparison is by subtraction, so the
+ * 49.7-day millis() wrap does not make a fresh wait time out at once. */
 esp_loader_error_t loader_port_read(uint8_t *data, uint16_t size, uint32_t timeout) {
   uint32_t deadline = millis() + timeout;
   uint16_t got = 0;
@@ -113,7 +123,7 @@ esp_loader_error_t loader_port_read(uint8_t *data, uint16_t size, uint32_t timeo
       avail--;
     }
     if (got >= size) break;
-    if (millis() >= deadline) return ESP_LOADER_ERROR_TIMEOUT;
+    if ((int32_t)(millis() - deadline) >= 0) return ESP_LOADER_ERROR_TIMEOUT;
     yield();
   }
   return ESP_LOADER_SUCCESS;
@@ -127,11 +137,14 @@ void loader_port_start_timer(uint32_t ms) {
   s_timer_deadline = millis() + ms;
 }
 
-/* Remaining time since start_timer, 0 once past, never wrapping. */
+/* Remaining time since start_timer, 0 once past, never wrapping (M2: the
+ * subtraction is signed, so the millis() wrap does not read as a huge
+ * remaining time or an instant expiry). */
 uint32_t loader_port_remaining_time(void) {
   uint32_t now = millis();
-  if (now >= s_timer_deadline) return 0;
-  return s_timer_deadline - now;
+  int32_t rem = (int32_t)(s_timer_deadline - now);
+  if (rem <= 0) return 0;
+  return (uint32_t)rem;
 }
 
 /* Assert the strap, pulse the reset, hold, release the strap. IO9 is
@@ -157,10 +170,14 @@ void loader_port_debug_print(const char *str) {
 
 /* Re-clock the port to the ROM's fast rate. Only the AT link's port can
  * follow the ROM; anywhere else the function is unsupported, and the
- * caller (flash()) then never asks the ROM to change rate. */
+ * caller (flash()) then never asks the ROM to change rate. M9: the
+ * re-clock also requires the bound stream to BE that port, so a
+ * sketch-owned Stream (Hearth.begin(Stream&)) is never re-clocked. */
 esp_loader_error_t loader_port_change_transmission_rate(uint32_t transmission_rate) {
 #if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
-  (void)transmission_rate;
+  if (s_uart != (Stream *)&HEARTH_SERIAL_PORT) {
+    return ESP_LOADER_ERROR_UNSUPPORTED_FUNC;
+  }
   HEARTH_SERIAL_PORT.begin(transmission_rate);
   return ESP_LOADER_SUCCESS;
 #else
@@ -196,8 +213,12 @@ int HearthFlasherEsp::flash(Stream &uart, const HearthCoprocPins &pins, HearthBy
   (void)sha256;   /* the bundle verified it; the ROM's MD5 verifies the written flash */
 
   /* A pin of -1 is refused before anything is written, exactly as the
-   * XMODEM client does at the top of its flash(). */
-  if (!hearthCoprocStrap(pins, false) || !hearthCoprocReset(pins, 1)) {
+   * XMODEM client does at the top of its flash(). M3: the availability
+   * is checked by the pin numbers, not by driving the lines (the old
+   * check pulsed the reset for a real 1 ms on the device just to test
+   * availability). The ESP flasher's existing semantics stay: refuse
+   * when either pin is -1. */
+  if (pins.reset < 0 || pins.strap < 0) {
     return HEARTH_FLASH_ERR_ENTER;
   }
 

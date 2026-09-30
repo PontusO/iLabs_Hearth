@@ -200,6 +200,51 @@ int main() {
     }
   }
 
+  /* ---- M2: the deadlines are wrap-safe at the millis() wrap ----
+   * The fake clock starts 500 ms short of the 49.7-day wrap. A connect
+   * against a silent target times out (the port read burns the clock in
+   * yield quanta across the wrap), so the timeout must fire by the
+   * elapsed time, not by comparing against an absolute deadline that
+   * wrapped. The timer pair (start_timer / remaining_time) is also
+   * wrap-checked. */
+  {
+    std::vector<uint8_t> sync, silent;
+    bool ok = loadOracles(sync, silent);
+    check("M2: the silent-target oracles load (recheck)", ok);
+    if (ok) {
+      std::vector<uint8_t> img(3000);
+      for (int i = 0; i < 3000; i++) img[i] = (uint8_t)(i & 0xFF);
+      ImgSource src;
+      src.d = img;
+      const uint8_t sha[32] = {0};
+
+      ByteStream bs;
+      HearthFlasherEsp f;
+      g_millis = 0xFFFFFFFFu - 500;
+      g_yieldAdvanceMs = 50;
+      int r = f.flash(bs, espPins(), src, 0, 3000, sha);
+      g_yieldAdvanceMs = 0;
+      check("M2: the clock advanced past the millis() wrap", g_millis < (0xFFFFFFFFu - 500));
+      check("M2: a silent connect started near the wrap still times out (not instantly, not never)",
+            r == HEARTH_FLASH_ERR_ENTER && bs.tx() == silent);
+
+      /* The timer pair across the wrap: a deadline 1000 ms out, the
+       * clock started 500 ms short of the wrap, must read ~1000 at first,
+       * fall to ~500 after delay(500) (now at the wrap), and 0 past it. */
+      hearthEspPortBind(&bs, espPins());
+      g_millis = 0xFFFFFFFFu - 500;
+      loader_port_start_timer(1000);
+      check("M2: remaining right after start_timer(1000) near the wrap is 1000",
+            loader_port_remaining_time() == 1000);
+      delay(500);   /* now g_millis is 0 (the wrap) */
+      check("M2: remaining after delay(500) across the wrap is 500",
+            loader_port_remaining_time() == 500);
+      delay(600);   /* 600 ms past the deadline */
+      check("M2: remaining past the deadline across the wrap is 0",
+            loader_port_remaining_time() == 0);
+    }
+  }
+
   /* ---- 6. the sync line: the first frame of the silent tx equals it ---- */
   {
     std::vector<uint8_t> sync, silent;

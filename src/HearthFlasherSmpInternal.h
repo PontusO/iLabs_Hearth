@@ -26,9 +26,12 @@ void smpWriteFrameLines(Stream &uart, const uint8_t *frame, size_t frameLen);
 /*
  * The line-based receive side of the framing (smp.py's SerialDecoder /
  * boot_serial_in_dec): feed raw bytes and a complete, CRC-valid packet
- * yields its decoded frame (header + payload). The class is defined here
- * and used by both the client (HearthFlasherSmp.cpp) and the host test,
- * so there is a single definition, not a duplicate.
+ * yields its decoded frame (header + payload). feed() must produce the
+ * same frame whatever the chunking, one byte at a time, a few at a time
+ * or the whole packet at once: on the device the UART hands the bytes
+ * over in batches of 1 or 2 as they arrive (B673). The class is defined
+ * here and used by both the client (HearthFlasherSmp.cpp) and the host
+ * test, so there is a single definition, not a duplicate.
  */
 #define HEARTH_SMP_FRAME_MTU 124    /* base64 chars per line */
 #define HEARTH_SMP_PKT_START_1 0x06
@@ -46,7 +49,13 @@ public:
 
 private:
   bool feedLine(uint8_t *out, size_t outCap);
-  uint8_t line[2 + HEARTH_SMP_FRAME_MTU + 8];
+  /* One in-flight line: the 2-byte marker plus at most
+   * HEARTH_SMP_FRAME_MTU base64 characters, so 2 + MTU (+1 slack) bytes.
+   * The line is rebuilt from the pending bytes on every feed, so it must
+   * be reset before the bytes are examined (the old two-pass code
+   * re-appended the pending line to the one already in hand and
+   * corrupted it, B673). */
+  uint8_t line[2 + HEARTH_SMP_FRAME_MTU + 1];
   size_t lineLen;
   uint8_t acc[HEARTH_SMP_PACKET_MAX];
   size_t accLen;

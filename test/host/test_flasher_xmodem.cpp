@@ -346,6 +346,35 @@ int main() {
     }
   }
 
+  /* ---- M2: the deadlines are wrap-safe at the millis() wrap ----
+   * The fake clock starts 500 ms short of the 49.7-day wrap; the entry
+   * settle, reset pulse and the block-reply waits advance it across 0,
+   * so a wait that completes or times out must do so by the elapsed
+   * time, not by comparing against an absolute deadline that wrapped. */
+  {
+    std::vector<uint8_t> img300(300);
+    for (int i = 0; i < 300; i++) img300[i] = (uint8_t)(i & 0xFF);
+    ImgSource src;
+    src.d = img300;
+    const uint8_t sha[32] = {0};
+    HearthCoprocPins pins = mg24Pins();
+
+    GeckoBootloaderFake fake;
+    HearthFlasherXmodem f;
+    g_millis = 0xFFFFFFFFu - 500;
+    g_yieldAdvanceMs = 50;
+    int r = f.flash(fake, pins, src, 0, 300, sha);
+    g_yieldAdvanceMs = 0;
+    /* The entry settle and the block-reply waits run from 500 ms short
+     * of the wrap, so the waits sit in the wrap region; the flash must
+     * still complete (the old `millis() >= deadline` compared against a
+     * wrapped deadline and timed out at once). */
+    check("M2: the clock advanced into the wrap region", g_millis != (0xFFFFFFFFu - 500));
+    check("M2: a flash started 500 ms short of the wrap still completes", r == 0);
+    check("M2: all 3 blocks were accepted and the app ran",
+          fake.blocksAccepted() == 3 && fake.ran());
+  }
+
   /* ---- 4a. a NAK once: one resend, then the transfer completes ---- */
   {
     std::vector<uint8_t> img300(300);

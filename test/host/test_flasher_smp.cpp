@@ -91,6 +91,27 @@ public:
   uint32_t size() const override { return d.size(); }
 };
 
+/*
+ * A HearthByteSource that records every read's [off, off+n) span, for
+ * the C1 check that an offset upload reads only the part's bytes and
+ * nothing outside them.
+ */
+class TrackSource : public HearthByteSource {
+public:
+  std::vector<uint8_t> d;
+  uint32_t minOff = 0xFFFFFFFFu;
+  uint32_t maxEnd = 0;
+  bool read(uint32_t off, uint8_t *buf, size_t n) override {
+    if ((size_t)off + n > d.size()) return false;
+    if (off < minOff) minOff = off;
+    uint32_t end = off + (uint32_t)n;
+    if (end > maxEnd) maxEnd = end;
+    memcpy(buf, &d[off], n);
+    return true;
+  }
+  uint32_t size() const override { return d.size(); }
+};
+
 /* base64 char -> 6-bit value, -1 outside the alphabet (the standard
  * A-Za-z0-9+/ alphabet the SMP packet framing uses). */
 static int smpB64CharValue(char c) {
@@ -542,6 +563,191 @@ int main() {
     g_yieldAdvanceMs = 0;
 
     check("definite rc/off maps parse too", r == 0);
+  }
+
+  /* ---- B673: the bench echo reply must decode under any chunking ----
+   * On the device these bytes arrived in batches of 1 and 2 (the
+   * fixture's header), and the old decoder produced the frame only
+   * when the whole reply was fed at once. */
+  {
+    std::string fx;
+    check("fixture smp_bench_echo_reply.txt loads", loadFixture("fixtures/smp_bench_echo_reply.txt", fx));
+    std::string replyHex;
+    {
+      size_t p = fx.find("reply ");
+      if (p != std::string::npos) {
+        p += 6;
+        size_t e = fx.find('\n', p);   /* the hex field ends at the newline */
+        if (e == std::string::npos) e = fx.size();
+        replyHex = fx.substr(p, e - p);
+      }
+    }
+    std::vector<uint8_t> reply;
+    check("the bench reply's hex field parses", !replyHex.empty() && parseHex(replyHex, reply));
+    if (!reply.empty()) {
+      /* Feed the reply whole, in 2-byte chunks, and one byte at a time
+       * (a few empty feeds after, the way smpReadFrame keeps feeding on
+       * an empty stream); each run must yield the same frame. */
+      std::vector<uint8_t> whole;
+      {
+        SmpSerialDecoder d;
+        uint8_t out[HEARTH_SMP_PACKET_MAX];
+        whole.assign(out, out + d.feed(reply.data(), reply.size(), out, sizeof(out)));
+        for (int k = 0; k < 4; k++) {
+          d.feed(nullptr, 0, out, sizeof(out));   /* empty feed: nothing more */
+        }
+      }
+      std::vector<uint8_t> chunk2;
+      {
+        SmpSerialDecoder d;
+        uint8_t out[HEARTH_SMP_PACKET_MAX];
+        for (size_t i = 0; i + 2 <= reply.size(); i += 2) {
+          size_t got = d.feed(reply.data() + i, 2, out, sizeof(out));
+          if (got) chunk2.assign(out, out + got);
+        }
+        if (reply.size() % 2 == 1) {
+          size_t got = d.feed(reply.data() + reply.size() - 1, 1, out, sizeof(out));
+          if (got) chunk2.assign(out, out + got);
+        }
+        for (int k = 0; k < 4; k++) {
+          d.feed(nullptr, 0, out, sizeof(out));
+        }
+      }
+      std::vector<uint8_t> one;
+      {
+        SmpSerialDecoder d;
+        uint8_t out[HEARTH_SMP_PACKET_MAX];
+        for (size_t i = 0; i < reply.size(); i++) {
+          size_t got = d.feed(reply.data() + i, 1, out, sizeof(out));
+          if (got) one.assign(out, out + got);
+        }
+        for (int k = 0; k < 4; k++) {
+          d.feed(nullptr, 0, out, sizeof(out));
+        }
+      }
+      check("the bench echo reply fed whole yields its 14-byte frame", whole.size() == 14);
+      check("the bench echo reply fed in 2-byte chunks yields the same frame",
+            chunk2 == whole && chunk2.size() == 14);
+      check("the bench echo reply fed 1 byte at a time yields the same frame",
+            one == whole && one.size() == 14);
+      if (whole.size() == 14) {
+        check("the frame header is op 3, len 6, seq 3",
+              whole[0] == 3 && (whole[2] == 0 && whole[3] == 6) && whole[6] == 3);
+        int32_t rc; bool hasOff; uint32_t off;
+        const size_t SMP_HDR = 8;   /* sizeof(struct nmgr_hdr), the 8-byte SMP frame header */
+        check("the frame payload decodes as rc 8",
+              smpDecodeResponse(whole.data() + SMP_HDR, whole.size() - SMP_HDR, rc, hasOff, off)
+              && rc == 8 && !hasOff);
+      }
+      /* Two replies back to back, fed 1 byte at a time, give two frames
+       * in order. */
+      std::vector<uint8_t> frames[2];
+      {
+        SmpSerialDecoder d;
+        uint8_t out[HEARTH_SMP_PACKET_MAX];
+        int gotFrames = 0;
+        for (size_t i = 0; i < reply.size() * 2 && gotFrames < 2; i++) {
+          size_t got = d.feed(reply.data() + (i % reply.size()), 1, out, sizeof(out));
+          if (got) {
+            frames[gotFrames].assign(out, out + got);
+            gotFrames++;
+          }
+        }
+      }
+      check("two replies back to back fed 1 byte at a time give two frames in order",
+            frames[0] == whole && frames[1] == whole);
+    }
+  }
+
+  /* ---- C1: an upload at a non-zero bundle offset sends the IMAGE offset ----
+   * The source holds the 600-byte test image AFTER 1000 bytes of padding;
+   * flash() is called with off = 1000, len = 600. The wire frames must be
+   * exactly the same as the offset-0 upload (the image offset, not the
+   * bundle offset, goes on the wire), and the source must be read only
+   * within [1000, 1600). The scripted replies are the same ones the
+   * offset-0 end-to-end test uses (echo ENOTSUP, then off 448, then off
+   * 600), so the frame-keeping read loop is driven exactly as there. */
+  {
+    std::string echo, up0;
+    loadFixture("fixtures/smp_echo.txt", echo);
+    loadFixture("fixtures/smp_upload0.txt", up0);
+    const uint8_t sha[32] = {0};
+    HearthCoprocPins pins;
+    pins.reset = 2; pins.resetActiveLow = true;
+    pins.strap = 3; pins.strapActiveLow = true;
+
+    /* The offset-0 reference run: the same image at off 0. */
+    ScriptedSmpStream ref;
+    ref.queueReply(encodeReplyLines(3, 0, 1, 0, REPLY_ECHO_INDEF, REPLY_ECHO_INDEF_LEN));
+    ref.queueReply(encodeReplyLines(3, 1, 2, 1, REPLY_UP_OFF448_INDEF, REPLY_UP_OFF448_INDEF_LEN));
+    ref.queueReply(encodeReplyLines(3, 1, 3, 1, REPLY_UP_OFF600_INDEF, REPLY_UP_OFF600_INDEF_LEN));
+    ImgSource refSrc;
+    refSrc.d = makeImage(600);
+    g_yieldAdvanceMs = 50;
+    HearthFlasherSmp refF;
+    int refR = refF.flash(ref, pins, refSrc, 0, 600, sha);
+    g_yieldAdvanceMs = 0;
+    check("C1 reference: the offset-0 upload completes", refR == 0);
+
+    /* The offset-1000 run: 1000 bytes of padding, then the same image. */
+    std::vector<uint8_t> padded(1600);
+    memset(padded.data(), 0xA5, padded.size());   /* a distinct padding byte */
+    std::vector<uint8_t> img = makeImage(600);
+    memcpy(padded.data() + 1000, img.data(), img.size());
+    TrackSource src;
+    src.d = padded;
+    ScriptedSmpStream s;
+    s.queueReply(encodeReplyLines(3, 0, 1, 0, REPLY_ECHO_INDEF, REPLY_ECHO_INDEF_LEN));
+    s.queueReply(encodeReplyLines(3, 1, 2, 1, REPLY_UP_OFF448_INDEF, REPLY_UP_OFF448_INDEF_LEN));
+    s.queueReply(encodeReplyLines(3, 1, 3, 1, REPLY_UP_OFF600_INDEF, REPLY_UP_OFF600_INDEF_LEN));
+    g_yieldAdvanceMs = 50;
+    HearthFlasherSmp f;
+    int r = f.flash(s, pins, src, 1000, 600, sha);
+    g_yieldAdvanceMs = 0;
+    check("C1: the offset-1000 upload completes", r == 0);
+    check("C1: the wire frames are identical to the offset-0 upload", s.tx() == ref.tx());
+    /* The image offset (not the bundle offset) went on the wire: the
+     * first upload line is byte-identical to smp.py's offset-0 fixture. */
+    check("C1: the first upload line is byte-identical to smp.py's (image offset 0)",
+          s.tx().size() > 1 && s.tx()[1] == up0.substr(0, up0.find('\n')));
+    /* The source was read only within [1000, 1600), never outside. */
+    check("C1: the source was read only within [1000, 1600)",
+          src.minOff >= 1000 && src.maxEnd <= 1600 && src.maxEnd > 1000);
+  }
+
+  /* ---- M2: the deadlines are wrap-safe at the millis() wrap ----
+   * The fake clock starts 500 ms short of the 49.7-day wrap; the entry
+   * delays and the chunk waits advance it across 0, so a wait that times
+   * out (or completes) must do so by the elapsed time, not by comparing
+   * against an absolute deadline that wrapped. */
+  {
+    std::string echo, up0;
+    loadFixture("fixtures/smp_echo.txt", echo);
+    loadFixture("fixtures/smp_upload0.txt", up0);
+    const uint8_t sha[32] = {0};
+    HearthCoprocPins pins;
+    pins.reset = 2; pins.resetActiveLow = true;
+    pins.strap = 3; pins.strapActiveLow = true;
+
+    ImgSource src;
+    src.d = makeImage(600);
+    ScriptedSmpStream s;
+    s.queueReply(encodeReplyLines(3, 0, 1, 0, REPLY_ECHO_INDEF, REPLY_ECHO_INDEF_LEN));
+    s.queueReply(encodeReplyLines(3, 1, 2, 1, REPLY_UP_OFF448_INDEF, REPLY_UP_OFF448_INDEF_LEN));
+    s.queueReply(encodeReplyLines(3, 1, 3, 1, REPLY_UP_OFF600_INDEF, REPLY_UP_OFF600_INDEF_LEN));
+
+    g_millis = 0xFFFFFFFFu - 500;
+    g_yieldAdvanceMs = 50;
+    HearthFlasherSmp f;
+    int r = f.flash(s, pins, src, 0, 600, sha);
+    g_yieldAdvanceMs = 0;
+    /* The entry's settle and hold delays (500 ms) run from 500 ms short
+     * of the wrap, so the waits sit in the wrap region; the flash must
+     * still complete (the old `millis() >= deadline` compared against a
+     * wrapped deadline and timed out at once). */
+    check("M2: the clock advanced into the wrap region", g_millis != (0xFFFFFFFFu - 500));
+    check("M2: a flash started 500 ms short of the wrap still completes", r == 0);
+    check("M2: the wire frames are identical to the offset-0 upload", s.lines() == 10);
   }
 
   /* ---- a non-OK rc aborts with HEARTH_FLASH_ERR_PROTOCOL ---- */
