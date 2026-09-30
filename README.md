@@ -272,8 +272,9 @@ class has.
 
 Then, in rough order of when you will need them: [driving the event
 loop](#driving-the-event-loop) (the one way this library genuinely differs
-from `arduino-esp32`), [the supported device types](#supported-device-types),
-and [the limitations](#limitations).
+from `arduino-esp32`), [updating firmware over the
+air](#updating-firmware-over-the-air), [the supported device
+types](#supported-device-types), and [the limitations](#limitations).
 
 ## Firmware and library versions
 
@@ -291,6 +292,7 @@ rather than a combination known to work.
 
 | Library | Firmware | Notes |
 |---|---|---|
+| 1.2.0 | 1.2.0 | The 1.2.0 firmware images: the C6 pays per composition, and the combined image serves the full 28-endpoint table with WiFi active. |
 | 1.1.0 | 1.1.0 | Adds `Matter.openCommissioningWindow()` and `Matter.deviceState()`. Ships the matching images in `fw/`. |
 | 1.0.0 | 1.0.0 | The feature-completeness milestone. |
 | 0.12.1 | 0.12.0 | EVSE stack margin fix; library-only, no firmware change. |
@@ -796,6 +798,166 @@ See `examples/FullAPI/HearthThreadRole/` for a full reference, and note
 that sketch's own banner on why it does not call `Matter.begin()`: this
 surface is not scoped to any declared endpoint, and the sketch declares
 none.
+
+## Updating firmware over the air
+
+A Matter controller can update both the co-processor and the sketch over
+the air. The co-processor's OTA requestor relays the offer, and your sketch
+downloads the signed bundle to the filesystem,
+checks it against your key, asks your code for consent, then applies the
+Hearth part by flashing the co-processor over the same UART the AT link
+runs on, and applies its own part by staging the new sketch through
+PicoOTA and rebooting into it. The parts that fail along the way are retried
+and rolled back, described below.
+
+### Requirements
+
+Firmware 1.2.0 and earlier does not carry the OTA requestor. Against one of
+them `begin()` returns `true` and the status callback reports
+`HEARTH_UPDATE_UNAVAILABLE`; nothing else happens. The next firmware
+release carries the requestor.
+
+The filesystem must hold the staged bundle plus the retained Hearth image,
+and the need is per co-processor:
+
+| Co-processor | Filesystem need |
+|---|---|
+| ESP32-C6 | 6,815,744 bytes (6.5 MiB) |
+| nRF54L15, nRF54LM20A, MGM240P | 3,670,016 bytes (3.5 MiB) |
+
+The Flash Size layouts that meet it: for the C6, the Challenger 2350
+(8 MB) with "8MB (Sketch: 1MB, FS: 7MB)", as long as the sketch fits in
+1 MB (the example is about 156 KB), and otherwise a 16 MB board with
+"16MB (Sketch: 8MB, FS: 8MB)"; for the nRF and the MG24, the CPico 2350
+carrier (8 MB) with "8MB (Sketch: 4MB, FS: 4MB)". `begin()` checks the partition
+against the running co-processor's need and fails with
+`HEARTH_UPDATE_ERR_NO_SPACE` when it is short, with a Serial line naming
+both figures; a layout with no filesystem at all fails with
+`HEARTH_UPDATE_ERR_NO_FS`. In either case `begin()` returns false and the
+sketch runs as before.
+
+### Starting it
+
+The [example](examples/HearthFirmwareUpdate/) turns it on after
+`Matter.begin()`, with a status callback that prints every state and a
+consent hook that refuses while the light is on:
+
+```cpp
+Hearth.update.onStatus(onUpdateStatus);
+Hearth.update.onApplyRequest(onApplyRequest);
+Hearth.update.begin(0x00010000, "1.0.0", updateCfg);
+```
+
+FOTA is off unless `begin()` is called: a sketch that never calls it
+behaves exactly as before. A `false` return means FOTA is off for this
+boot (no filesystem, no space, no link) and the sketch keeps running as
+the plain light.
+
+### The pins and the UART
+
+The Challenger 2350's variant supplies the co-processor's reset and
+boot-mode lines (`PIN_ESP_RST` and `PIN_ESP_MODE`) and the defaults use
+them, so nothing to set there. The CPico 2350 carrier wires the reset to
+GP2 and the boot strap to GP3 (both active low) and the AT UART to
+GP0/GP1, so the sketch sets `cfg.resetPin = 2; cfg.strapPin = 3;` and is
+built with `-DHEARTH_SERIAL_PORT=Serial1`. A flasher handed a pin of -1
+refuses rather than guessing; the apply then ends in
+`HEARTH_UPDATE_ERR_FLASH` after its attempts.
+
+### The status callback
+
+`onStatus()` fires on every state change. The states are
+`HearthUpdateStateEnum` in `src/HearthUpdate.h`:
+
+| State | Entered when |
+|---|---|
+| `HEARTH_UPDATE_UNAVAILABLE` | the firmware answers no requestor; nothing else will happen |
+| `HEARTH_UPDATE_DISABLED` | `begin()` was never called, or `end()` was, or it failed to start |
+| `HEARTH_UPDATE_IDLE` | the requestor is on and nothing is in flight |
+| `HEARTH_UPDATE_DOWNLOADING` | blocks are being pulled from the provider |
+| `HEARTH_UPDATE_VERIFYING` | the bundle is checked and judged |
+| `HEARTH_UPDATE_WAIT_APPLY` | the bundle is staged and the apply is asked for |
+| `HEARTH_UPDATE_APPLYING_FW` | the Hearth part is being flashed |
+| `HEARTH_UPDATE_APPLYING_HOST` | the host part is being staged and the board reboots into it |
+| `HEARTH_UPDATE_FAILED` | the last attempt ended in error |
+
+The fields worth printing: `percent` while downloading, `offeredVersion`
+on an offer, `error` and `reason` on a failure, `detail` when the
+co-processor ends the transfer itself, and `deferredSeconds` when the
+provider defers. There is no LED indication in the library: the light's
+LED is the sketch's.
+
+### The versions
+
+The sketch declares a baseline, the first argument to `begin()`
+(`0x00010000`, "1.0.0" in the example), and the library keeps a manifest
+of the last product version it applied. The effective product version is
+the greater of the two, and it is what the co-processor reports to the
+controller. A bundle whose product version is lower is refused with
+reason 4 unless `cfg.allowDowngrade` is set.
+
+Inside a bundle, the Hearth part applies only when its version differs
+from what `AT+MTVER?` reports and its target (the model string
+`AT+CGMM` answers) and variant match the running co-processor; a part
+that does not match refuses the whole bundle. The host part applies when
+its version differs from the manifest's. A bundle that carries only a
+Hearth part still raises the product version. A bundle where nothing
+applies is answered "nothing to do" (reason 4) and its product version
+recorded, so the provider stops offering it.
+
+### The consent hook and the blocking apply
+
+The hook runs when the verdict is in and the bundle is staged. A refusal
+is not a no on the wire: the bundle stays staged and the hook is re-run
+on every poll until `cfg.consentWindowMs` runs out (ten minutes by
+default), and then the offer is abandoned. The download raises the AT
+link to `cfg.downloadBaud` (921600) and restores it when the transfer
+ends.
+
+The apply blocks `loop()`. A C6 application at 921600 baud takes well
+under a minute. An nRF signed image or an MG24 `.gbl` of about 1 MB at
+115200 takes about two minutes per attempt, so three attempts plus a
+rollback can hold the loop for about eight minutes on those ports.
+
+### The order, and what happens on failure
+
+The Hearth part applies first, the host part second. The new version is
+declared to the co-processor before any reset, so its requestor reports
+the update to the controller when it boots.
+
+The Hearth part has up to three flash attempts, and each one is checked
+by the co-processor's own `AT+MTVER?` after it comes back up. After
+three failures the previous Hearth image, kept from the last successful
+update as `/hearth/fw-retained.bin`, is flashed back and the failure is
+reported. The first update has no retained image, so its rollback is USB
+recovery with `fw/flash.py`; from the second update on, rollback is
+automatic.
+
+The host part saves the running sketch as `/hearth/host-prev.bin`,
+stages the new one through PicoOTA and reboots the board. The new
+sketch confirms itself on its first boot once the link answers; if it
+cannot reach Hearth it puts the saved sketch back and reboots, once. A
+crash before the library runs is not covered, the limit every Arduino
+OTA has; a product that needs more adds the hardware watchdog.
+
+A power loss while the co-processor is being flashed is resumed on the
+next boot, before anything else talks to the co-processor. The recovery
+bootloaders (the C6's ROM, the nRF's MCUboot, the MG24's Gecko
+bootloader) are never written by an update.
+
+### The MG24 and commissioning
+
+The MG24's key store saves the key map two seconds after a write. The
+library records when a commissioning completes and waits until 2 s have
+passed since it before any co-processor reset it drives, so a reset
+inside that window cannot lose the new fabric.
+
+### Building and offering a bundle
+
+A bundle is built and signed with `fw/make_bundle.py` and offered from
+Home Assistant's Matter server or from the SDK's `chip-ota-provider-app`
+on a bench. [fw/README.md](fw/README.md#firmware-update-bundles) has
+both flows, step by step, with the exact commands.
 
 ## Supported device types
 

@@ -77,8 +77,8 @@
  *
  * in the Matter server's provider directory, and the device shows an
  * update entity. (b) A bench: run the SDK's chip-ota-provider-app with
- * the bundle, commission the provider, write the device's ACL so the
- * provider may be reached, then
+ * the bundle, commission the provider, write the provider's ACL so the
+ * device's QueryImage may reach it, then
  *
  *   chip-tool otasoftwareupdaterequestor announce-otaprovider <provider-node> 0 0 0 <device-node> 0
  */

@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Emit the Home Assistant provider-directory descriptor for a Hearth bundle.
 
-Field names checked against python-matter-server's
-matter/server/ota/dcl.py at 2026-09-29 (offline; no network access in this
-environment, so the check is by the project's own copy of the model):
-OtaProviderFileEntry uses vid, pid, softwareVersion, softwareVersionString,
+The field names are those of python-matter-server's OtaProviderFileEntry
+(matter/server/ota/dcl.py): vid, pid, softwareVersion, softwareVersionString,
 otaUrl, otaChecksum, otaChecksumType, minApplicableSoftwareVersion,
-maxApplicableSoftwareVersion, releaseNotesUrl.
+maxApplicableSoftwareVersion, releaseNotesUrl. The descriptor has not yet
+been loaded by a running Matter server on the project's bench.
 
-  python3 fw/ota_descriptor.py <file.ota> [--url file:///path] -o descriptor.json
+  python3 fw/ota_descriptor.py <file.ota> --url file:///path/to/file.ota -o descriptor.json
 
   otaUrl is required. otaChecksum is the sha256 of the file, base64;
   otaChecksumType is 1 (sha256). maxApplicableSoftwareVersion is the
