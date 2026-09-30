@@ -44,6 +44,9 @@
 
 #ifdef ARDUINO
 #include <Arduino.h>
+#ifdef HEARTH_SERIAL_PORT
+#include "Hearth.h"         /* HEARTH_SERIAL_PORT, the AT link's port object */
+#endif
 #else
 #include "ArduinoShim.h"    /* millis()/yield()/Stream for the host suite */
 #endif
@@ -61,6 +64,7 @@
  * HEARTH_SMP_PACKET_MAX) are defined in HearthFlasherSmpInternal.h,
  * where the decoder class is defined; only the header-only ones stay
  * here. */
+#define HEARTH_SMP_BAUD                115200UL /* MCUboot's serial-recovery rate: CONFIG_BOOT_SERIAL_UART is fixed at this, so the host port is set to it before the entry (smp.py's BAUD) */
 #define HEARTH_SMP_HDR_LEN             8   /* sizeof(struct nmgr_hdr) */
 #define HEARTH_SMP_CHUNK               512 /* flash.py CHUNK, under CONFIG_BOOT_SERIAL_MAX_RECEIVE_SIZE 1024 */
 #define HEARTH_SMP_IMAGE_MAGIC         0x96F3B83DU /* bootutil/image.h:51, ih_magic little-endian on disk */
@@ -829,6 +833,21 @@ static void smpExitRecovery(const HearthCoprocPins &pins) {
 
 HearthFlasherSmp::HearthFlasherSmp() {}
 
+/*
+ * B668: a failure AFTER the entry reset (the strap was held across it)
+ * leaves the co-processor in its bootloader. Release the strap and pulse
+ * the reset, so it restarts into its application (or, if the application
+ * slot was partly written, into whatever its bootloader then does; the
+ * apply's retry and rollback handle that). The pin checks and the image
+ * magic check run before any entry reset, so they keep their plain
+ * returns.
+ */
+static int smpFail(const HearthCoprocPins &pins, int err) {
+  hearthCoprocStrap(pins, false);
+  hearthCoprocReset(pins, 50);
+  return err;
+}
+
 int HearthFlasherSmp::flash(Stream &uart, const HearthCoprocPins &pins, HearthByteSource &src, uint32_t off, uint32_t len,
                             const uint8_t sha256[32]) {
   /* The pins are the whole entry story: no strap and no reset means
@@ -851,16 +870,28 @@ int HearthFlasherSmp::flash(Stream &uart, const HearthCoprocPins &pins, HearthBy
     return HEARTH_FLASH_ERR_SOURCE;
   }
 
+#if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
+  /* B669: serial recovery always runs at HEARTH_SMP_BAUD (MCUboot's
+   * CONFIG_BOOT_SERIAL_UART rate); the link may have been left at
+   * another rate, and every echo vanishes at a wrong one. The AT
+   * link's port is the object the caller's begin() re-clocks after
+   * this returns; the same pattern HearthFlasherXmodem.cpp uses. */
+  HEARTH_SERIAL_PORT.begin(HEARTH_SMP_BAUD);
+#endif
+
   SmpSerialDecoder dec;
   SmpSeq seq;
   uint8_t frameBuf[HEARTH_SMP_PACKET_MAX];
   if (smpEnterRecovery(uart, pins, dec, seq, frameBuf) != HEARTH_FLASH_OK) {
-    hearthCoprocStrap(pins, false);
-    return HEARTH_FLASH_ERR_ENTER;
+    return smpFail(pins, HEARTH_FLASH_ERR_ENTER);
   }
 
   int err = smpUpload(uart, dec, seq, src, off, len, sha256, frameBuf);
 
+  /* smpExitRecovery() (success and failure alike) already is the strap
+   * release plus the reset pulse, so the co-processor restarts into its
+   * application (or its bootloader's own verdict of a partly written
+   * slot) even when the upload failed. */
   smpExitRecovery(pins);
   return err;
 }

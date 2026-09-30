@@ -18,8 +18,9 @@
  *   2. flash(), the sequence on top of the library. It owns the whole
  *      recovery window, exactly as the other two families: the strap is
  *      asserted on entry and released on every exit, so a failed flash
- *      never leaves IO9 asserted. The caller re-clocks the AT link after
- *      it returns.
+ *      never leaves IO9 asserted, and a failure after the entry reset
+ *      also resets the target (B668), so it restarts into its
+ *      application. The caller re-clocks the AT link after it returns.
  *
  * The library is compiled through esp_loader_build.c under
  * esp_loader_hearth_config.h (UART, MD5_ENABLED, 3 write retries). C++
@@ -174,6 +175,22 @@ esp_loader_error_t loader_port_change_transmission_rate(uint32_t transmission_ra
 
 HearthFlasherEsp::HearthFlasherEsp() {}
 
+/*
+ * B668: a failure AFTER the entry reset (the ROM connection asserted the
+ * strap across a reset pulse) leaves the co-processor in its ROM
+ * download mode. Release the strap and pulse the reset, so it restarts
+ * into its application (or, if the application slot was partly written,
+ * into whatever its bootloader then does; the apply's retry and rollback
+ * handle that). The pin check and the port re-clock that refused before
+ * the entry run before any entry reset, so they keep their plain
+ * returns.
+ */
+static int espFail(const HearthCoprocPins &pins, int err) {
+  hearthCoprocStrap(pins, false);
+  hearthCoprocReset(pins, 50);
+  return err;
+}
+
 int HearthFlasherEsp::flash(Stream &uart, const HearthCoprocPins &pins, HearthByteSource &src, uint32_t off, uint32_t len,
                             const uint8_t sha256[32]) {
   (void)sha256;   /* the bundle verified it; the ROM's MD5 verifies the written flash */
@@ -200,12 +217,10 @@ int HearthFlasherEsp::flash(Stream &uart, const HearthCoprocPins &pins, HearthBy
   esp_loader_connect_args_t args = ESP_LOADER_CONNECT_DEFAULT();
   esp_loader_error_t cerr = esp_loader_connect(&args);
   if (cerr != ESP_LOADER_SUCCESS) {
-    hearthCoprocStrap(pins, false);
-    return cerr == ESP_LOADER_ERROR_TIMEOUT ? HEARTH_FLASH_ERR_ENTER : HEARTH_FLASH_ERR_PROTOCOL;
+    return espFail(pins, cerr == ESP_LOADER_ERROR_TIMEOUT ? HEARTH_FLASH_ERR_ENTER : HEARTH_FLASH_ERR_PROTOCOL);
   }
   if (esp_loader_get_target() != ESP32C6_CHIP) {
-    hearthCoprocStrap(pins, false);
-    return HEARTH_FLASH_ERR_PROTOCOL;
+    return espFail(pins, HEARTH_FLASH_ERR_PROTOCOL);
   }
 
   /* Step 5: only where the port can follow, ask the ROM for the fast
@@ -234,8 +249,7 @@ int HearthFlasherEsp::flash(Stream &uart, const HearthCoprocPins &pins, HearthBy
     }
   }
   if (ferr != ESP_LOADER_SUCCESS) {
-    hearthCoprocStrap(pins, false);
-    return HEARTH_FLASH_ERR_WRITE;
+    return espFail(pins, HEARTH_FLASH_ERR_WRITE);
   }
 
   /* Step 7: the image in 1024-byte chunks from one file-static buffer. */
@@ -244,20 +258,17 @@ int HearthFlasherEsp::flash(Stream &uart, const HearthCoprocPins &pins, HearthBy
     uint32_t n = len - pos;
     if (n > HEARTH_ESP_BLOCK) n = HEARTH_ESP_BLOCK;
     if (!src.read(off + pos, block, n)) {
-      hearthCoprocStrap(pins, false);
-      return HEARTH_FLASH_ERR_SOURCE;
+      return espFail(pins, HEARTH_FLASH_ERR_SOURCE);
     }
     if (esp_loader_flash_write(block, n) != ESP_LOADER_SUCCESS) {
-      hearthCoprocStrap(pins, false);
-      return HEARTH_FLASH_ERR_WRITE;
+      return espFail(pins, HEARTH_FLASH_ERR_WRITE);
     }
   }
 
   /* Step 8: the ROM's MD5 check of the written region. */
   esp_loader_error_t verr = esp_loader_flash_verify();
   if (verr != ESP_LOADER_SUCCESS) {
-    hearthCoprocStrap(pins, false);
-    return HEARTH_FLASH_ERR_VERIFY;
+    return espFail(pins, HEARTH_FLASH_ERR_VERIFY);
   }
 
   /* Step 9: reset the co-processor into the new application. Every path

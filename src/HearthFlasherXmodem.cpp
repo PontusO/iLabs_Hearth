@@ -180,6 +180,20 @@ static bool xmodemReadUntil(Stream &uart, const char *marker, uint32_t timeoutMs
 
 HearthFlasherXmodem::HearthFlasherXmodem() {}
 
+/*
+ * B668: a failure AFTER the entry reset (the strap was held across it)
+ * leaves the co-processor in its bootloader (the Gecko menu). Release
+ * the strap and pulse the reset, so it restarts into its application
+ * (or, if the application slot was partly written, into whatever its
+ * bootloader then does; the apply's retry and rollback handle that). The
+ * pin check runs before any entry reset, so it keeps its plain return.
+ */
+static int xmodemFail(const HearthCoprocPins &pins, int err) {
+  hearthCoprocStrap(pins, false);
+  hearthCoprocReset(pins, 50);
+  return err;
+}
+
 int HearthFlasherXmodem::flash(Stream &uart, const HearthCoprocPins &pins, HearthByteSource &src, uint32_t off, uint32_t len,
                                const uint8_t sha256[32]) {
   if (!hearthCoprocStrap(pins, false) || !hearthCoprocReset(pins, 1)) {
@@ -204,8 +218,7 @@ int HearthFlasherXmodem::flash(Stream &uart, const HearthCoprocPins &pins, Heart
   delay(HEARTH_XMODEM_SETTLE_MS);
   hearthCoprocReset(pins, HEARTH_XMODEM_PULSE_MS);
   if (!xmodemReadUntil(uart, "BL >", HEARTH_XMODEM_MENU_TIMEOUT_MS)) {
-    hearthCoprocStrap(pins, false);
-    return HEARTH_FLASH_ERR_ENTER;
+    return xmodemFail(pins, HEARTH_FLASH_ERR_ENTER);   /* the strap is still held: release it and reset */
   }
   hearthCoprocStrap(pins, false);
 
@@ -215,12 +228,12 @@ int HearthFlasherXmodem::flash(Stream &uart, const HearthCoprocPins &pins, Heart
    * lands on a receiver that has asked for the CRC variant. */
   uart.write('1');
   if (!xmodemReadUntil(uart, "\r\nbegin upload\r\n", HEARTH_XMODEM_HANDSHAKE_MS)) {
-    return HEARTH_FLASH_ERR_ENTER;   /* no preamble: the menu did not take the upload */
+    return xmodemFail(pins, HEARTH_FLASH_ERR_ENTER);   /* no preamble: the menu did not take the upload */
   }
   {
     static const uint8_t C[] = {HEARTH_XMODEM_CRC_C, HEARTH_XMODEM_NAK};
     if (xmodemWaitFor(uart, C, 2, HEARTH_XMODEM_HANDSHAKE_MS, 1) == 0) {
-      return HEARTH_FLASH_ERR_ENTER;
+      return xmodemFail(pins, HEARTH_FLASH_ERR_ENTER);
     }
   }
 
@@ -236,7 +249,7 @@ int HearthFlasherXmodem::flash(Stream &uart, const HearthCoprocPins &pins, Heart
     if (n > HEARTH_XMODEM_BLOCK) n = HEARTH_XMODEM_BLOCK;
     uint8_t data[HEARTH_XMODEM_BLOCK];
     if (!src.read(off + o, data, n)) {
-      return HEARTH_FLASH_ERR_SOURCE;
+      return xmodemFail(pins, HEARTH_FLASH_ERR_SOURCE);
     }
     xmodemBuildBlock(frame, seq, data, n);
     int attempt;
@@ -246,7 +259,7 @@ int HearthFlasherXmodem::flash(Stream &uart, const HearthCoprocPins &pins, Heart
       int r = xmodemWaitFor(uart, REPLIES, 3, HEARTH_XMODEM_REPLY_WAIT_MS, HEARTH_XMODEM_REPLY_TRIES);
       if (r == HEARTH_XMODEM_ACK) break;
       if (r == HEARTH_XMODEM_CAN) {
-        return HEARTH_FLASH_ERR_PROTOCOL;   /* the receiver cancelled this block */
+        return xmodemFail(pins, HEARTH_FLASH_ERR_PROTOCOL);   /* the receiver cancelled this block */
       }
       if (r == 0) {
         err = HEARTH_FLASH_ERR_PROTOCOL;    /* a missing reply is fatal: no retransmit */
@@ -257,19 +270,19 @@ int HearthFlasherXmodem::flash(Stream &uart, const HearthCoprocPins &pins, Heart
     if (err != HEARTH_FLASH_OK) break;
     seq = (uint8_t)((seq + 1) & 0xFF);
   }
-  if (err != HEARTH_FLASH_OK) return err;
+  if (err != HEARTH_FLASH_OK) return xmodemFail(pins, err);
 
   /* EOT, expecting ACK (xmodem.py's _wait_for(ACK, tries=retries)). */
   uart.write(HEARTH_XMODEM_EOT);
   {
     static const uint8_t ACK[] = {HEARTH_XMODEM_ACK};
     if (xmodemWaitFor(uart, ACK, 1, HEARTH_XMODEM_REPLY_WAIT_MS, HEARTH_XMODEM_REPLY_TRIES) != HEARTH_XMODEM_ACK) {
-      return HEARTH_FLASH_ERR_PROTOCOL;
+      return xmodemFail(pins, HEARTH_FLASH_ERR_PROTOCOL);
     }
   }
   /* The menu's own report of a good transfer, within 5 s (flash.py). */
   if (!xmodemReadUntil(uart, "Serial upload complete", HEARTH_XMODEM_DONE_TIMEOUT_MS)) {
-    return HEARTH_FLASH_ERR_PROTOCOL;
+    return xmodemFail(pins, HEARTH_FLASH_ERR_PROTOCOL);
   }
 
   /* "2" from the menu runs the application; no reset pulse is needed

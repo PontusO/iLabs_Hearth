@@ -938,10 +938,16 @@ void HearthUpdate::hearthFwFailed() {
         uint8_t zeros[32];
         memset(zeros, 0, sizeof(zeros));
         hearthSettleAfterCommissioning();
-        fl->flash(*((HearthClass *)_owner)->link().stream(), pins, rsrc, 0, rlen, zeros);
+        int rc = fl->flash(*((HearthClass *)_owner)->link().stream(), pins, rsrc, 0, rlen, zeros);
+        (void)rc;
 #if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
         /* The flasher left the port at its own rate; re-clock it. */
         HEARTH_SERIAL_PORT.begin(HEARTH_LINK_BAUD);
+#endif
+#ifdef ARDUINO
+        if (rc != HEARTH_FLASH_OK) {
+          Serial.printf("Hearth.update: the rollback flash of the retained image failed: flasher error %d\n", rc);
+        }
 #endif
         ((HearthClass *)_owner)->hearthArmExpectedReboot();
         if (((HearthClass *)_owner)->link().waitReady(HEARTH_READY_TIMEOUT_MS)) {
@@ -1051,6 +1057,9 @@ int HearthUpdate::hearthApplyFw(HearthUpdateState &st, int firstAttempt) {
     if (rc != HEARTH_FLASH_OK) {
       /* The flasher failed: the next attempt, with no wait and no
        * AT+MTVER? (the co-processor never rebooted). */
+#ifdef ARDUINO
+      Serial.printf("Hearth.update: flash attempt %d of 3 failed: flasher error %d\n", attempt, rc);
+#endif
       continue;
     }
     /* The flash landed: the co-processor is rebooting into the new image.
@@ -1061,6 +1070,10 @@ int HearthUpdate::hearthApplyFw(HearthUpdateState &st, int firstAttempt) {
       /* No +MTREADY in time: the attempt failed, disarm so the next
        * spontaneous reboot is still reported. */
       owner->hearthDisarmExpectedReboot();
+#ifdef ARDUINO
+      Serial.printf("Hearth.update: flash attempt %d of 3 failed: no +MTREADY in %lu ms\n",
+                    attempt, (unsigned long)HEARTH_READY_TIMEOUT_MS);
+#endif
       continue;
     }
     VerQuery vq;
@@ -1072,6 +1085,10 @@ int HearthUpdate::hearthApplyFw(HearthUpdateState &st, int firstAttempt) {
       return 0;  /* the new image is confirmed running */
     }
     /* A boot that reports another version: the attempt failed. */
+#ifdef ARDUINO
+    Serial.printf("Hearth.update: flash attempt %d of 3 failed: the co-processor runs %s, the bundle says %s\n",
+                  attempt, vq.got ? vq.version : "?", p.version);
+#endif
   }
   delete staged;
   return 1;
