@@ -3,7 +3,7 @@
 
   python3 fw/make_bundle.py --vendor 0xFFF1 --product 0x8000 --version 0x00010400 \
       --version-string 1.4.0 --key fw/keys/hearth_bundle_dev_p256.pem \
-      [--host sketch.bin --host-gz] \
+      [--host sketch.bin] \
       [--fw hearth-wifi-1.3.0.bin --target "ESP32-C6 Hearth" --variant wifi --fw-version 1.3.0] \
       -o product-1.4.0.ota
 """
@@ -20,7 +20,11 @@ def main():
     ap.add_argument("--version-string", required=True)
     ap.add_argument("--key", required=True, help="ECDSA P-256 private key, PEM")
     ap.add_argument("--host", help="the host sketch image (arduino-cli export)")
-    ap.add_argument("--host-gz", action="store_true", help="the host image is gzip (PicoOTA inflates)")
+    ap.add_argument("--host-gz", action="store_true",
+                    help="refused: the OTA bootloader inflates only a file that begins with "
+                         "the gzip magic and the host part is staged in place inside the "
+                         "bundle, so the image would be flashed still compressed; give the "
+                         "uncompressed .bin")
     ap.add_argument("--fw", help="the Hearth image for the co-processor")
     ap.add_argument("--target", help="the model string AT+CGMM answers, e.g. 'ESP32-C6 Hearth'")
     ap.add_argument("--variant", choices=list(hb.VARIANT), default="none")
@@ -34,7 +38,11 @@ def main():
         parts.append({"type": hb.PART_HEARTH, "variant": hb.VARIANT[a.variant], "target": a.target,
                       "version": a.fw_version, "data": open(a.fw, "rb").read()})
     if a.host:
-        parts.append({"type": hb.PART_HOST, "variant": 0, "flags": 1 if a.host_gz else 0,
+        if a.host_gz:
+            ap.error("--host-gz is refused: the OTA bootloader inflates only a file that begins "
+                     "with the gzip magic and the host part is staged in place inside the bundle, "
+                     "so the image would be flashed still compressed; give the uncompressed .bin")
+        parts.append({"type": hb.PART_HOST, "variant": 0, "flags": 0,
                       "target": "product", "version": a.version_string, "data": open(a.host, "rb").read()})
     if not parts:
         ap.error("nothing to bundle: give --fw and/or --host")

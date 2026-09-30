@@ -1226,6 +1226,19 @@ void HearthUpdate::hearthVerifyAndVerdict() {
     }
   }
 
+  /* A gzip host part cannot be applied: the OTA bootloader inflates only a
+   * file that begins with the gzip magic at byte 0, but the host part is
+   * staged in place inside the bundle, whose byte 0 is the Matter OTA
+   * header. Flashed as staged, the image would stay compressed and the
+   * host would not boot, so a selected gzip part refuses the bundle. A
+   * host part that is not selected (its version equals the manifest's)
+   * does not refuse. */
+  if (hostPart != 0xFF && (info.parts[hostPart].flags & 1)) {
+    delete staged;
+    hearthRefuse(HEARTH_BUNDLE_ERR_FORMAT);
+    return;
+  }
+
   /* Verify each selected part's digest. */
   if (fwPart != 0xFF && HearthBundle::verifyPart(src, info, fwPart) != HEARTH_BUNDLE_OK) {
     delete staged;

@@ -1320,6 +1320,88 @@ static void test_resume_no_staged(void) {
   check("nothing unexpected on the wire (resume none)", s.unexpected().empty());
 }
 
+/*
+ * Task 7a2 (bug B662): the refusal of a gzip host part. The RP2350 OTA
+ * bootloader inflates only a file that begins with the gzip magic at byte
+ * 0, but the host part is staged in place inside the bundle, whose byte 0
+ * is the Matter OTA header. A selected gzip host part would be flashed
+ * still compressed and the host would not boot, so the library refuses it
+ * (verdict 0, reason 6) before any part digest is verified. The fixture
+ * host-gz.ota is good.ota's two parts, byte for byte and signed, with the
+ * host part's flags bit 0 set.
+ */
+
+/* Case a: the bundle's host part is selected (no manifest) and refuses. */
+static void test_host_gz_refused(void) {
+  std::string fx;
+  check("host-gz fixture loads (gz refused)",
+        loadFixture("fixtures/host-gz.ota", fx));
+  HearthFsMem fs;
+  MockStream s;
+  HearthClass hearth;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  scriptBeginFor(s, "AT+MTSWVER=66560,\"1.4.0\"", "ESP32-C6 Hearth", "1.2.0", "wifi");
+  HearthUpdateConfig cfg;
+  cfg.resetPin = 15;
+  cfg.resetActiveLow = true;
+  cfg.strapPin = 14;
+  cfg.strapActiveLow = true;
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (gz refused)", hearth.update.begin(0x10400, "1.4.0", cfg));
+  g_yieldAdvanceMs = 0;
+  runDownload(s, hearth, fx, "AT+MTOTASTAGED=0,6");
+
+  check("the status is FAILED (gz refused)",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  check("the error is HEARTH_UPDATE_ERR_BUNDLE (gz refused)",
+        hearth.update.status().error == HEARTH_UPDATE_ERR_BUNDLE);
+  check("the reason is 6 (gz refused)", hearth.update.status().reason == 6);
+  check("no staged bundle (gz refused)", !hearth.update.stage().stagedExists());
+  check("the script is drained (gz refused)", s.scriptDrained());
+  check("nothing unexpected on the wire (gz refused)", s.unexpected().empty());
+}
+
+/* Case b: the same bundle with the manifest's host version 1.4.0, the host
+ * part not selected: the Hearth part alone is staged and the apply proceeds
+ * (the verdict is 1, the state WAIT_APPLY, as in good.ota's fw-only apply). */
+static void test_host_gz_not_selected_applies(void) {
+  std::string fx;
+  check("host-gz fixture loads (gz not selected)",
+        loadFixture("fixtures/host-gz.ota", fx));
+  HearthFsMem fs;
+  HearthUpdateStage stg;
+  check("stage begin for the manifest seed (gz not selected)", stg.begin(fs));
+  HearthManifest m;
+  m.productVersion = 66304;
+  snprintf(m.productVersionString, sizeof(m.productVersionString), "%s", "1.3.0");
+  snprintf(m.hostVersion, sizeof(m.hostVersion), "%s", "1.4.0");
+  check("the manifest is saved (gz not selected)", stg.saveManifest(m));
+
+  MockStream s;
+  HearthClass hearth;
+  FlasherFake fake;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  hearth.update.hearthSetFlasher(&fake);
+  scriptBeginFor(s, "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "1.2.0", "wifi");
+  HearthUpdateConfig cfg;
+  cfg.resetPin = 15;
+  cfg.resetActiveLow = true;
+  cfg.strapPin = 14;
+  cfg.strapActiveLow = true;
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (gz not selected)", hearth.update.begin(0x10300, "1.3.0", cfg));
+  g_yieldAdvanceMs = 0;
+  runDownload(s, hearth, fx, "AT+MTOTASTAGED=1");
+
+  check("the verdict is 1 and the state is WAIT_APPLY (gz not selected)",
+        hearth.update.status().state == HEARTH_UPDATE_WAIT_APPLY);
+  check("the staged bundle is kept (gz not selected)", hearth.update.stage().stagedExists());
+  check("the script is drained (gz not selected)", s.scriptDrained());
+  check("nothing unexpected on the wire (gz not selected)", s.unexpected().empty());
+}
+
 int main(void) {
   printf("\n===== HearthUpdate apply (task 6a) tests =====\n");
   test_order_and_arguments();
@@ -1344,6 +1426,9 @@ int main(void) {
   test_resume_remaining_fail_rollback();
   test_resume_with_host_part();
   test_resume_no_staged();
+  printf("\n===== HearthUpdate apply (task 7a2) tests =====\n");
+  test_host_gz_refused();
+  test_host_gz_not_selected_applies();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

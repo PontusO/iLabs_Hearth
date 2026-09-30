@@ -100,6 +100,19 @@ class TestBundle(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn(b"version 0", r.stderr)
 
+    def test_make_bundle_refuses_host_gz(self):
+        host = os.path.join(self.d, "sketch.bin")
+        with open(host, "wb") as f:
+            f.write(b"P" * 777)
+        out = os.path.join(self.d, "hostgz.ota")
+        r = subprocess.run([sys.executable, os.path.join(FW, "make_bundle.py"),
+                            "--vendor", "0xFFF1", "--product", "0x8000",
+                            "--version", "0x00010400", "--version-string", "1.4.0",
+                            "--key", self.key, "--host", host, "--host-gz", "-o", out],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(os.path.exists(out))
+
 
 if __name__ == "__main__":
     unittest.main()
