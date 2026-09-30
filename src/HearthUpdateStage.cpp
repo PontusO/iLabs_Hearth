@@ -132,6 +132,14 @@ bool HearthUpdateStage::stagedBeginWrite() {
   path(staged, sizeof(staged), "staged.ota");
   snprintf(tmp, sizeof(tmp), "%s.tmp", staged);
   _fs->remove(tmp);
+  /* Final review M7: the staged bundle kept for a manual retry used to
+   * sit here for the whole next download, so the old staged.ota and the
+   * new .tmp coexisted (on a C6 that is about 2.06 + 2.06 + 1.88
+   * (retained) + host-prev MB against the 6.5 MiB need, enough to fill
+   * the partition and fail the append). Remove it first: two bundles
+   * never coexist on the filesystem, and the next download's rename at
+   * the end still overwrites it exactly as before. */
+  _fs->remove(staged);
   _w = _fs->open(tmp, "w");
   _wFailed = false;
   return _w != 0;

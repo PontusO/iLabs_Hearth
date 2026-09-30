@@ -2075,6 +2075,456 @@ static void test_b671_no_reprobe_before_begin(void) {
   check("7cfix4 b671 nobegin: the script is drained", s.scriptDrained());
 }
 
+/*
+ * Final review robustness round (task F2a): I1, I2, I4, M1, M5, M7, M8.
+ * Each test below is named after the finding it covers.
+ */
+
+/* I1: a pull that aborts (the garbled answer twice, the same setup as
+ * test_update.cpp's test_pull_garbled_twice_aborts) sends AT+MTOTA=0 and
+ * then AT+MTOTA=1: the =0 turns the requestor off, and nothing else
+ * turns it back on, so the abort re-arms it for the next offer. */
+static void test_f2a_i1_abort_rearms_requestor(void) {
+  std::string fx;
+  check("f2a i1: the good.ota fixture loads", loadFixture("fixtures/good.ota", fx));
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("f2a i1: begin returns true", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+
+  std::string bad = blkAnswer(0, 1024, fx, 0);
+  /* The same out-of-sequence offset corruption as the abort test in
+   * test_update.cpp: both pulls fail to parse. */
+  size_t idx = bad.find("MTOTABLK:0,96,");
+  check("f2a i1: the second block line is where the helper put it",
+        idx != std::string::npos);
+  if (idx != std::string::npos) {
+    bad[idx + strlen("MTOTABLK:0,")] = '7';  /* 96 -> 97 */
+  }
+  s.expect("AT+MTOTAGET=0", bad);
+  s.expect("AT+MTOTAGET=0", bad);
+  s.expect("AT+MTBAUD=115200", "OK\r\n");
+  s.expect("AT+MTOTA=0", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  s.injectURC("+MTOTA:BLOCK,0,1024");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2a i1: the abort sent AT+MTOTA=0 then AT+MTOTA=1",
+        s.scriptDrained() && s.unexpected().empty());
+  check("f2a i1: the state is FAILED after the abort",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  check("f2a i1: the error is HEARTH_UPDATE_ERR_LINK",
+        hearth.update.status().error == HEARTH_UPDATE_ERR_LINK);
+  check("f2a i1: the partial staged file is removed",
+        !fs.exists("/hearth/staged.ota") && !fs.exists("/hearth/staged.ota.tmp"));
+}
+
+/* I2a: a transfer the co-processor ends with +MTOTA:ERROR between pulls
+ * leaves the staged write open. On the next poll the drain ends and
+ * discards it (the partial .tmp is gone), and the next transfer's BLOCK 0
+ * begins a FRESH file whose content equals only the new transfer's bytes.
+ * The transfer here is a byte string the co-processor serves, not a signed
+ * bundle, so nothing is verified on DOWNLOADED: the download stops after
+ * the last block and the file content is read straight from the fs. */
+static void test_f2a_i2a_error_discards_partial(void) {
+  std::string fx;
+  check("f2a i2a: the good.ota fixture loads", loadFixture("fixtures/good.ota", fx));
+  /* A 3000-byte payload: three 1024-byte blocks of the first transfer,
+   * then 999 + 500 for the second, so the two transfers have different
+   * content at the same file offset. */
+  std::string p1, p2;
+  p1.resize(3000);
+  for (size_t i = 0; i < p1.size(); i++) p1[i] = (char)(i * 3 + 1);
+  p2.resize(1499);
+  for (size_t i = 0; i < p2.size(); i++) p2[i] = (char)(i * 7 + 5);
+
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("f2a i2a: begin returns true", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+
+  /* The first transfer, two full blocks, then it stops (no DOWNLOADED):
+   * the staged write is still open after the third block. */
+  s.expect("AT+MTBAUD=921600", "OK\r\n");
+  s.injectURC("+MTOTA:AVAILABLE,66561");
+  s.injectURC("+MTOTA:DOWNLOADING,0");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  for (uint32_t seq = 0; seq < 3; seq++) {
+    s.expect("AT+MTOTAGET=" + std::to_string((unsigned)seq),
+             blkAnswer(seq, 1024, p1, 1024 * (size_t)seq));
+    s.expect("AT+MTOTAACK=" + std::to_string((unsigned)seq), "OK\r\n");
+    s.injectURC("+MTOTA:BLOCK," + std::to_string((unsigned)seq) + ",1024");
+    g_yieldAdvanceMs = 50;
+    hearth.poll();
+    g_yieldAdvanceMs = 0;
+  }
+  check("f2a i2a: the partial .tmp is open mid-download",
+        fs.exists("/hearth/staged.ota.tmp"));
+  check("f2a i2a: the state is DOWNLOADING mid-download",
+        hearth.update.status().state == HEARTH_UPDATE_DOWNLOADING);
+
+  /* The co-processor ends the transfer between pulls. The ERROR clears
+   * the download-baud want, so the drain also switches the link back to
+   * the default rate before it discards the partial write. */
+  s.expect("AT+MTBAUD=115200", "OK\r\n");
+  s.injectURC("+MTOTA:ERROR,session");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2a i2a: the state is FAILED after the ERROR line",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  check("f2a i2a: the detail is session",
+        strcmp(hearth.update.status().detail, "session") == 0);
+  check("f2a i2a: the partial .tmp is gone after the poll",
+        !fs.exists("/hearth/staged.ota.tmp"));
+  check("f2a i2a: the staged file was not renamed",
+        !fs.exists("/hearth/staged.ota"));
+
+  /* The next offer, 1499 bytes: its BLOCK 0 begins a fresh file holding
+   * only the new transfer's bytes. */
+  s.expect("AT+MTBAUD=921600", "OK\r\n");
+  s.injectURC("+MTOTA:AVAILABLE,66562");
+  s.injectURC("+MTOTA:DOWNLOADING,0");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  s.expect("AT+MTOTAGET=0", blkAnswer(0, 999, p2, 0));
+  s.expect("AT+MTOTAACK=0", "OK\r\n");
+  s.injectURC("+MTOTA:BLOCK,0,999");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  s.expect("AT+MTOTAGET=1", blkAnswer(1, 500, p2, 999));
+  s.expect("AT+MTOTAACK=1", "OK\r\n");
+  s.injectURC("+MTOTA:BLOCK,1,500");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2a i2a: the script is drained", s.scriptDrained());
+  check("f2a i2a: nothing unexpected on the wire", s.unexpected().empty());
+  check("f2a i2a: the staged file exists and holds exactly the new bytes",
+        fs.files.count("/hearth/staged.ota.tmp") == 1
+        && 0 == memcmp(fs.files["/hearth/staged.ota.tmp"].data(), p2.data(), p2.size()) && fs.files["/hearth/staged.ota.tmp"].size() == p2.size());
+  check("f2a i2a: the state is DOWNLOADING in the second transfer",
+        hearth.update.status().state == HEARTH_UPDATE_DOWNLOADING);
+}
+
+/* I2b: a new transfer's BLOCK 0 while a write is open restarts it. The
+ * old transfer's partial .tmp is discarded, the new transfer's first block
+ * is pulled into a fresh file, and afterwards the staged file holds only
+ * the bytes from the restart on. The transfer is a byte string (as I2a),
+ * so nothing is verified on DOWNLOADED. */
+static void test_f2a_i2b_block_zero_restarts_write(void) {
+  std::string fx;
+  check("f2a i2b: the good.ota fixture loads", loadFixture("fixtures/good.ota", fx));
+  std::string p1, p2;
+  p1.resize(1500);
+  for (size_t i = 0; i < p1.size(); i++) p1[i] = (char)(i * 3 + 1);
+  /* The new transfer's payload, 1900 bytes: block 0 (900) and block 1
+   * (1000), both within the 1024-byte block max. */
+  p2.resize(1900);
+  for (size_t i = 0; i < p2.size(); i++) p2[i] = (char)(i * 7 + 5);
+
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("f2a i2b: begin returns true", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+
+  /* The first transfer: AVAILABLE, DOWNLOADING, then block 0 (1024 bytes)
+   * pulled, the write open, the transfer stops. */
+  s.expect("AT+MTBAUD=921600", "OK\r\n");
+  s.injectURC("+MTOTA:AVAILABLE,66561");
+  s.injectURC("+MTOTA:DOWNLOADING,0");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  s.expect("AT+MTOTAGET=0", blkAnswer(0, 1024, p1, 0));
+  s.expect("AT+MTOTAACK=0", "OK\r\n");
+  s.injectURC("+MTOTA:BLOCK,0,1024");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2a i2b: the partial .tmp is open mid-download",
+        fs.exists("/hearth/staged.ota.tmp"));
+
+  /* The new transfer: AVAILABLE (no baud switch, the link is at the
+   * download baud already), and its BLOCK 0 (900 bytes of p2). The drain
+   * discards the old .tmp and pulls the new block into a fresh file. */
+  s.injectURC("+MTOTA:AVAILABLE,66562");
+  s.expect("AT+MTOTAGET=0", blkAnswer(0, 900, p2, 0));
+  s.expect("AT+MTOTAACK=0", "OK\r\n");
+  s.injectURC("+MTOTA:BLOCK,0,900");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  uint32_t tailLen = (uint32_t)(p2.size() - 900);
+  s.expect("AT+MTOTAGET=1", blkAnswer(1, tailLen, p2, 900));
+  s.expect("AT+MTOTAACK=1", "OK\r\n");
+  s.injectURC("+MTOTA:BLOCK,1," + std::to_string((unsigned)tailLen));
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2a i2b: the script is drained", s.scriptDrained());
+  check("f2a i2b: nothing unexpected on the wire", s.unexpected().empty());
+  check("f2a i2b: the staged file holds exactly the new transfer's bytes",
+        fs.files.count("/hearth/staged.ota.tmp") == 1
+        && fs.files["/hearth/staged.ota.tmp"].size() == p2.size()
+        && 0 == memcmp(fs.files["/hearth/staged.ota.tmp"].data(), p2.data(), p2.size()));
+  check("f2a i2b: the state is DOWNLOADING in the second transfer",
+        hearth.update.status().state == HEARTH_UPDATE_DOWNLOADING);
+}
+
+/* I4: a drain while the link's busy gate is held returns at once, before
+ * it touches the wire or the stage. The gate is held the way the tests do
+ * for re-entrancy: HearthLink refuses a re-entrant command with
+ * HEARTH_CMD_REENTRANT and a re-entrant poll is a no-op (test_hearthlink),
+ * and the host build's MockStream busyHeld flag is part of that gate, so
+ * a test holds it across a HearthLink exchange. With a block pending, the
+ * nested drain pulls nothing (the flag survives), and the next poll pulls
+ * it. */
+static void test_f2a_i4_busy_link_skips_drain(void) {
+  std::string fx;
+  check("f2a i4: the good.ota fixture loads", loadFixture("fixtures/good.ota", fx));
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("f2a i4: begin returns true", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+
+  /* Start a download and pull block 0 (the staged write is open now). */
+  s.expect("AT+MTBAUD=921600", "OK\r\n");
+  s.injectURC("+MTOTA:AVAILABLE,66561");
+  s.injectURC("+MTOTA:DOWNLOADING,0");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  s.expect("AT+MTOTAGET=0", blkAnswer(0, 1024, fx, 0));
+  s.expect("AT+MTOTAACK=0", "OK\r\n");
+  s.injectURC("+MTOTA:BLOCK,0,1024");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2a i4: the first block was pulled", s.scriptDrained());
+
+  /* The block is pending, the link is busy (the gate held across the
+   * exchange). A nested drain returns at once: the gate is busy, so it
+   * does not pull the block, and the flag survives. */
+  size_t blen = fx.size() - 1024;
+  if (blen > 1024) blen = 1024;
+  /* The block is announced; the gate is held for the whole poll, so the
+   * URC is dispatched (setting the pending flag) but the poll's own tail
+   * drain finds the link busy and returns before it pulls the block. */
+  s.injectURC("+MTOTA:BLOCK,1," + std::to_string((unsigned)blen));
+  g_linkBusyHeld = true;
+  g_yieldAdvanceMs = 50;
+  hearth.poll();  /* dispatches the URC; its tail drain bails on busy() */
+  g_linkBusyHeld = false;
+  g_yieldAdvanceMs = 0;
+  /* The URC set the pending flag, but the drain bailed on busy(), so no
+   * AT+MTOTAGET went out: the script is still drained (nothing consumed)
+   * and nothing unexpected. */
+  check("f2a i4: the block is pending but not pulled (the drain bailed)",
+        hearth.update.status().state == HEARTH_UPDATE_DOWNLOADING
+        && s.scriptDrained() && s.unexpected().empty());
+
+  /* The exchange ends (the latch released, the gate down). The next poll
+  * pulls the pending block. */
+  s.expect("AT+MTOTAGET=1", blkAnswer(1, (uint32_t)blen, fx, 1024));
+  s.expect("AT+MTOTAACK=1", "OK\r\n");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2a i4: the next poll pulled the pending block", s.scriptDrained());
+  check("f2a i4: nothing unexpected on the wire", s.unexpected().empty());
+}
+
+/* M5: a +MTOTA:APPLY in any state but HEARTH_UPDATE_WAIT_APPLY is
+ * ignored: no flasher call, no command sent, the state unchanged. The
+ * state here is IDLE (no verdict, no staged bundle), the only state an
+ * APPLY with no verdict in this boot can arrive in (the co-processor
+ * survived a host reboot). */
+static void test_f2a_m5_apply_ignored_outside_wait_apply(void) {
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  hearth.update.hearthSetFlasher(&fake);
+  g_yieldAdvanceMs = 50;
+  check("f2a m5: begin returns true", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+  check("f2a m5: the state is IDLE", hearth.update.status().state == HEARTH_UPDATE_IDLE);
+
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2a m5: no flasher call", fake.calls().size() == 0);
+  check("f2a m5: nothing went on the wire", s.unexpected().empty());
+  check("f2a m5: the script is drained", s.scriptDrained());
+  check("f2a m5: the state is unchanged (still IDLE)",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("f2a m5: no error", hearth.update.status().error == HEARTH_UPDATE_OK);
+}
+
+/* M7: a stagedBeginWrite() while a staged.ota exists removes the staged
+ * file first, so two bundles never coexist on the filesystem. The stage
+ * is used directly (the fs is attached to a HearthClass so the stage's
+ * paths resolve), and the .tmp is the only file present while the write
+ * is open. */
+static void test_f2a_m7_begin_write_removes_staged(void) {
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  check("f2a m7: the stage begins", hearth.update.stage().begin(fs));
+
+  /* A staged.ota already there (the bundle kept for a manual retry). */
+  std::string old(2048, '\0');
+  for (size_t i = 0; i < old.size(); i++) old[i] = (char)(i + 1);
+  {
+    HearthFile *f = fs.open("/hearth/staged.ota", "w");
+    check("f2a m7: the staged file opens", f != 0);
+    if (f) {
+      check("f2a m7: the 2048 bytes are written",
+            f->write((const uint8_t *)old.data(), old.size()) == old.size());
+      delete f;
+    }
+  }
+  check("f2a m7: the staged file exists before the write",
+        fs.exists("/hearth/staged.ota"));
+
+  check("f2a m7: the staged write begins", hearth.update.stage().stagedBeginWrite());
+  check("f2a m7: the staged file is removed by the beginWrite",
+        !fs.exists("/hearth/staged.ota"));
+  check("f2a m7: the .tmp is the only file present while the write is open",
+        fs.exists("/hearth/staged.ota.tmp"));
+
+  /* Append a few bytes and end the write: the rename puts the new bytes
+   * over the old path, the old content gone. */
+  uint8_t few[3] = {1, 2, 3};
+  check("f2a m7: the append lands", hearth.update.stage().stagedAppend(few, 3));
+  hearth.update.stage().stagedEndWrite();
+  check("f2a m7: the staged file is the new 3 bytes after the endWrite",
+        fs.files.count("/hearth/staged.ota") == 1
+        && fs.files["/hearth/staged.ota"].size() == 3
+        && memcmp(fs.files["/hearth/staged.ota"].data(), few, 3) == 0);
+  check("f2a m7: the .tmp is gone after the endWrite",
+        !fs.exists("/hearth/staged.ota.tmp"));
+}
+
+/* M8: a +MTOTA:BLOCK without a comma, or without the length after the
+ * seq, is ignored: no NULL dereference, no read past the terminator, no
+ * state change, nothing on the wire. */
+static void test_f2a_m8_block_malformed_ignored(void) {
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("f2a m8: begin returns true", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+  check("f2a m8: the state is IDLE", hearth.update.status().state == HEARTH_UPDATE_IDLE);
+
+  /* No comma at all: the old code dereferenced NULL + 1. */
+  s.injectURC("+MTOTA:BLOCK");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2a m8: BLOCK with no comma is ignored (state unchanged)",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("f2a m8: nothing went on the wire (no comma)", s.unexpected().empty());
+  check("f2a m8: no staged file (no comma)",
+        !fs.exists("/hearth/staged.ota.tmp") && !fs.exists("/hearth/staged.ota"));
+
+  /* No length after the seq: the old code read past the terminator. */
+  s.injectURC("+MTOTA:BLOCK,5");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2a m8: BLOCK with no length is ignored (state unchanged)",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("f2a m8: nothing went on the wire (no length)", s.unexpected().empty());
+  check("f2a m8: no staged file (no length)",
+        !fs.exists("/hearth/staged.ota.tmp") && !fs.exists("/hearth/staged.ota"));
+}
+
+/* M1: a failed apply (6a's three-failures case, the flasher's verify
+ * answers the old version all three times) leaves no open staged handle:
+ * the stagedRemove() after the failure succeeds and the file is gone.
+ * HearthFsMem does not track open handles, so the proof is the file's
+ * absence plus the stagedRemove() succeeding. */
+static void test_f2a_m1_failed_apply_no_open_handle(void) {
+  std::string fx;
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  check("f2a m1: setup reaches WAIT_APPLY", setupToApply(s, hearth, fs, fake, fx, "good",
+        "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "wifi", 0x10300, "1.3.0", 0x10300, true));
+
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  fake.onFlash = [&](int i) {
+    (void)i;
+    s.injectURC("+MTREADY");
+  };
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+
+  check("f2a m1: exactly three flash calls", fake.calls().size() == 3);
+  check("f2a m1: the script is drained", s.scriptDrained());
+  check("f2a m1: nothing unexpected on the wire", s.unexpected().empty());
+  check("f2a m1: the state is FAILED",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  check("f2a m1: the error is HEARTH_UPDATE_ERR_FLASH",
+        hearth.update.status().error == HEARTH_UPDATE_ERR_FLASH);
+  /* The failure tail keeps the staged bundle (for a manual retry), so the
+   * file is there, but the handle hearthApply() held is closed and
+   * deleted: a stagedRemove() after the failure runs without the file
+   * being locked by a still-open handle, and the file is gone. */
+  check("f2a m1: the staged bundle is kept (manual retry)",
+        hearth.update.stage().stagedExists());
+  hearth.update.stage().stagedRemove();
+  check("f2a m1: the stagedRemove() after the failure succeeded",
+        !hearth.update.stage().stagedExists());
+  check("f2a m1: the file is gone after the stagedRemove()",
+        !hearth.update.stage().stagedExists());
+}
+
 int main(void) {
   printf("\n===== HearthUpdate apply (task 6a) tests =====\n");
   test_order_and_arguments();
@@ -2122,6 +2572,15 @@ int main(void) {
   test_b671_reprobe_arms_b667_retry();
   test_b671_no_reprobe_mid_transfer();
   test_b671_no_reprobe_before_begin();
+  printf("\n===== HearthUpdate apply (final review F2a: I1, I2, I4, M1, M5, M7, M8) tests =====\n");
+  test_f2a_i1_abort_rearms_requestor();
+  test_f2a_i2a_error_discards_partial();
+  test_f2a_i2b_block_zero_restarts_write();
+  test_f2a_i4_busy_link_skips_drain();
+  test_f2a_m5_apply_ignored_outside_wait_apply();
+  test_f2a_m7_begin_write_removes_staged();
+  test_f2a_m8_block_malformed_ignored();
+  test_f2a_m1_failed_apply_no_open_handle();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

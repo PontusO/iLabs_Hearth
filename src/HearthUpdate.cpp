@@ -44,6 +44,7 @@ HearthUpdate::HearthUpdate()
     _lastState(HEARTH_UPDATE_DISABLED),
     _downloadComplete(false),
     _stagedWriteOpen(false),
+    _transferEnded(false),
     _draining(false),
     _applyRequestCB(0),
     _statusCB(0),
@@ -53,6 +54,7 @@ HearthUpdate::HearthUpdate()
     _consentPending(false),
     _consentRefused(false),
     _consentRefusalMs(0),
+    _applyInWaitApply(false),
     _commissioned(false),
     _commissionedMs(0),
     _baud(HEARTH_LINK_BAUD),
@@ -179,14 +181,32 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
      * DOWNLOADING (the co-processor may send the BLOCK before the
      * DOWNLOADING state line, or the state may still be IDLE from a
      * previous transfer). A new transfer also resets the download-complete
-     * flag the last one set, so a later DOWNLOADED ends the write again. */
+     * flag the last one set, so a later DOWNLOADED ends the write again.
+     * Final review M8: the co-processor sends both fields, but a line
+     * without the comma (no seq at all) or without the length after the
+     * seq must be ignored, not parsed: with no comma, comma + 1 is
+     * NULL + 1, and with no length, strtoul reads past the terminator. */
+    if (!comma) {
+      return;
+    }
     char *end;
     uint32_t seq = (uint32_t)strtoul(comma + 1, &end, 10);
+    if (end == comma + 1 || *end != ',') {
+      return;  /* no length after the seq */
+    }
     uint32_t len = (uint32_t)strtoul(end + 1, 0, 10);
     _pendingSeq = seq;
     _pendingLen = len;
     _havePendingBlock = true;
     _downloadComplete = false;
+    /* I2: a BLOCK with seq 0 while a write is open is the next transfer's
+     * first block (the requestor restarts its sequence at 0). The old
+     * transfer's partial .tmp is discarded on the next drain (the flag,
+     * acted on before the pull), and the pull then opens a fresh write,
+     * so this block appends to a new file, not the old partial one. */
+    if (_stagedWriteOpen && seq == 0) {
+      _transferEnded = true;
+    }
     _status.state = HEARTH_UPDATE_DOWNLOADING;
     return;
   }
@@ -199,6 +219,10 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
     _status.state = HEARTH_UPDATE_IDLE;
     _status.percent = 0;
     _havePendingBlock = false;
+    /* I2, second half: an IDLE the co-processor sends after an ERROR
+     * (or instead of it, a provider abort) ends the transfer the same
+     * way; the same drain-side flag acts on it. */
+    _transferEnded = true;
   } else if (strcmp(state, "QUERYING") == 0) {
     /* Leaves the state where it is (IDLE); the callback still fires (case
      * 6b). No link call: this is a parse-only URC route. */
@@ -227,9 +251,16 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
   } else if (strcmp(state, "APPLY") == 0) {
     /* The requestor asked to apply (spec 7.3): set the pending flag only.
      * This is a URC route and may not call the link, so hearthDrain() is
-     * where the apply runs, once, in hearthApply(). */
-    _status.state = HEARTH_UPDATE_APPLYING_FW;
-    _applyPending = true;
+     * where the apply runs, once, in hearthApply(). Final review M5: the
+     * apply is acted on only when the state was WAIT_APPLY before this
+     * line (_lastState holds it); an APPLY in any other state is dropped
+     * with the flag and the state left where it was (the co-processor
+     * survived a host reboot, so the state was not restored here). */
+    if (_lastState == HEARTH_UPDATE_WAIT_APPLY) {
+      _status.state = HEARTH_UPDATE_APPLYING_FW;
+      _applyPending = true;
+      _applyInWaitApply = true;
+    }
   } else if (strcmp(state, "DEFERRED") == 0) {
     _status.state = HEARTH_UPDATE_IDLE;
     _status.deferredSeconds = comma ? (uint32_t)strtoul(comma + 1, 0, 10) : 0;
@@ -240,10 +271,16 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
     /* The co-processor ended the transfer (case 6b): the state is FAILED
      * with HEARTH_UPDATE_ERR_COPROC and the detail, and the link baud goes
      * back to the default. The error and detail stay readable in status()
-     * until the next transfer starts (a BLOCK line). */
+     * until the next transfer starts (a BLOCK line). Final review I2: a
+     * transfer the co-processor ends between blocks used to leave the
+     * staged write open, and the next offer's first block would have
+     * appended to the old partial .tmp (a good bundle then refused as
+     * malformed); the flag below tells the next drain to end and discard
+     * the write there, where the file work is allowed to run. */
     _status.state = HEARTH_UPDATE_FAILED;
     _status.error = HEARTH_UPDATE_ERR_COPROC;
     _baudWantedDownload = false;
+    _transferEnded = true;
     if (comma) {
       const char *d = comma + 1;
       size_t dn = strlen(d);
@@ -274,7 +311,33 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
  * AT+MTOTASTAGED.
  */
 void HearthUpdate::hearthDrain() {
+  /* Final review I4: every other drain in HearthClass returns when
+   * _link.busy() is set (the C3 lesson recorded above
+   * hearthDrainCmdRespQueue), and this one was missing the check. A
+   * sketch callback dispatched from inside a URC (an onChange that sets
+   * another endpoint, the pattern the README documents) calls
+   * hearthCommand(), and that call's tail runs this drain while the outer
+   * exchange still holds the busy latch: without the guard, a pending
+   * block's pull would get HEARTH_CMD_REENTRANT and abort a healthy
+   * transfer, and a pending APPLY would run with every hearthCmd
+   * refused. The pending flags survive the return, and the outer call's
+   * own tail drain runs the work once the latch is released.
+   *
+   * The _draining guard still has to come first, though: _draining is
+   * what stops a drain NESTED INSIDE a running drain (the pull's own
+   * hearthCommand()s each end in a drain, the apply's AT+MTVER? waits do)
+   * from running the pull a second time, and it is not a re-entrancy
+   * guard: every nested caller is already inside this same drain. A
+   * nested caller with the link busy is exactly that inner call, and it
+   * must return on _draining, not on the busy flag: with the busy check
+   * first, a drain that started while the link was busy (a nested
+   * sketch call from inside the outer command, the I4 scenario itself)
+   * would never see the _draining guard, and its nested drain would
+   * re-enter the pull with the flags still set. */
   if (_draining) {
+    return;
+  }
+  if (_owner && ((HearthClass *)_owner)->link().busy()) {
     return;
   }
   DrainGuard guard(_draining);
@@ -358,6 +421,24 @@ void HearthUpdate::hearthDrain() {
   if (wantBaud != _baud) {
     hearthSetBaud(wantBaud);
   }
+  /* I2: the co-processor ended the transfer (an ERROR or IDLE state line,
+   * or a BLOCK with seq 0 while the write was still open), and the staged
+   * write is still open. End and discard it here, on the drain, where the
+   * file work may run (the URC callback only set the flag): the next
+   * transfer's first block then opens a FRESH write instead of appending
+   * to the old partial .tmp. The pending block, when the flag came from a
+   * BLOCK line, survives to the pull below, which begins the fresh write. */
+  if (_transferEnded) {
+    _transferEnded = false;
+    if (_stagedWriteOpen) {
+      _stage.stagedEndWrite();
+      _stage.stagedRemove();
+      _stagedWriteOpen = false;
+      /* _havePendingBlock is left as the URC route left it: an ERROR or
+       * IDLE cleared it (nothing to pull), a BLOCK with seq 0 set it with
+       * the new transfer's first block in hand and the pull below runs. */
+    }
+  }
   if (_havePendingBlock) {
     hearthPullBlock();
     return;
@@ -406,10 +487,22 @@ void HearthUpdate::hearthDrain() {
   /* 6a: the requestor's apply request. It was parsed on the URC route
    * (hearthOnOtaLine set _applyPending), and this is where the flasher
    * runs: the whole apply is blocking by design, so it runs here, on the
-   * drain, and the loop is blocked for its duration. */
+   * drain, and the loop is blocked for its duration. Final review M5: the
+   * apply is acted on only in HEARTH_UPDATE_WAIT_APPLY, the one state in
+   * which the verdict is in and the bundle is staged. An APPLY in any
+   * other state (only possible when the co-processor survived a host
+   * reboot, so the state was not restored here) would take the host-only
+   * path with _hostPart 0xFF, declare a version no apply is running, and
+   * fail without re-declaring, so it is dropped with the flag instead. */
   if (_applyPending) {
     _applyPending = false;
-    hearthApply();
+    /* M5: acted on only when the APPLY arrived in WAIT_APPLY (the flag
+     * hearthOnOtaLine() set, where _lastState still held the pre-APPLY
+     * state); an APPLY in any other state is dropped with the flag. */
+    if (_applyInWaitApply) {
+      _applyInWaitApply = false;
+      hearthApply();
+    }
   }
 }
 
@@ -596,7 +689,12 @@ void HearthUpdate::hearthPullBlock() {
  * parse twice, mid-download at downloadBaud), so the link goes back to the
  * default here, exactly as the DOWNLOADED path does: when the co-processor
  * next reboots it comes up at the default rate and the two ends must still
- * understand each other (plan case 10).
+ * understand each other (plan case 10). Final review I1: the AT+MTOTA=0
+ * turns the requestor OFF for the rest of the co-processor's boot (mode 0
+ * in the firmware's cmd_mtota), and no URC can move the state out of
+ * FAILED, so without a follow-up AT+MTOTA=1 the provider's next offer would
+ * never be heard: the requestor is turned back on right after the =0, as
+ * hearthAbandon() does.
  */
 void HearthUpdate::hearthAbortPull() {
   _havePendingBlock = false;
@@ -605,6 +703,7 @@ void HearthUpdate::hearthAbortPull() {
   _baudWantedDownload = false;
   hearthSetBaud(HEARTH_LINK_BAUD);  /* the download is over, back to the default */
   hearthCmd("AT+MTOTA=0", 0, 0);
+  hearthCmd("AT+MTOTA=1", 0, 0);  /* I1: the requestor on again for the next offer */
   _stage.stagedEndWrite();
   _stage.stagedRemove();
   _status.state = HEARTH_UPDATE_FAILED;
@@ -936,6 +1035,14 @@ void HearthUpdate::hearthApply() {
   } else {
     hearthFwFailed();
   }
+  /* Final review M1: hearthApply() owns the staged file and deletes it on
+   * every path: before this, the failure branch (three flash attempts, the
+   * failure tail keeping the staged bundle for a manual retry) left the
+   * heap object and its open LittleFS handle alive, whose file is later
+   * removed or renamed while still open. hearthFwSucceeded() takes a
+   * reference and does not delete (its callers, including the 6c resume,
+   * own and delete their own handle). */
+  delete staged;
 }
 
 /*
@@ -947,14 +1054,15 @@ void HearthUpdate::hearthApply() {
  * so it is off after the co-processor's reboot) and cache the new running
  * version, then finish fw-only (the manifest, the staged bundle and the
  * state gone, IDLE with the bundle's product version) or go on to the host
- * part (spec 7: the host applies second). The staged file is deleted here,
- * by this function; the caller must not delete it.
+ * part (spec 7: the host applies second). Final review M1: the staged
+ * file is owned by the caller (hearthApply() deletes it on every path,
+ * the 6c resume its own handle); this function reads it through the
+ * reference and does not delete it.
  */
 void HearthUpdate::hearthFwSucceeded(const HearthBundleInfo &info, int part, HearthFile &staged,
                                      const HearthUpdateState &st) {
   const HearthBundlePart &p = info.parts[part];
   _stage.retainFwPart(staged, info.containerOffset + p.offset, p.length, p.target, p.version);
-  delete &staged;
   hearthCmd("AT+MTOTA=1", 0, 0);
   snprintf(_hearthVersion, sizeof(_hearthVersion), "%s", p.version);
   snprintf(_status.hearthVersion, sizeof(_status.hearthVersion), "%s", p.version);
@@ -1706,7 +1814,10 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
             _hostPart = st.hostPart;
             HearthFile *staged2 = _stage.stagedOpenRead();
             if (staged2) {
+              /* M1: hearthFwSucceeded() does not delete; this resume owns
+               * its own handle and deletes it after. */
               hearthFwSucceeded(info, st.fwPart, *staged2, st);
+              delete staged2;
             }
             if (st.hostPart == 0xFF) {
               /* Success, fw-only: the success tail has written the new

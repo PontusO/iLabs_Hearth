@@ -401,8 +401,10 @@ static void test_pull_garbled_retries_once(void) {
 }
 
 /* Case 6, the abort half: the same garbled line twice in a row. The second
- * parse failure aborts the transfer with AT+MTOTA=0, state FAILED and
- * HEARTH_UPDATE_ERR_LINK, and the partial staged file is removed. */
+ * parse failure aborts the transfer with AT+MTOTA=0 then AT+MTOTA=1 (final
+ * review I1: the =0 turns the requestor off, so the abort re-arms it for
+ * the next offer), state FAILED and HEARTH_UPDATE_ERR_LINK, and the
+ * partial staged file is removed. */
 static void test_pull_garbled_twice_aborts(void) {
   std::string fx;
   check("the good.ota fixture loads (abort)", loadFixture("fixtures/good.ota", fx));
@@ -428,6 +430,8 @@ static void test_pull_garbled_twice_aborts(void) {
   s.expect("AT+MTOTAGET=0", bad);
   s.expect("AT+MTBAUD=115200", "OK\r\n");
   s.expect("AT+MTOTA=0", "OK\r\n");
+  /* I1: the abort turns the requestor back on for the next offer. */
+  s.expect("AT+MTOTA=1", "OK\r\n");
   s.injectURC("+MTOTA:BLOCK,0,1024");
   g_yieldAdvanceMs = 50;
   hearth.poll();
@@ -449,7 +453,8 @@ static void test_pull_garbled_twice_aborts(void) {
  * switch back on FAILED: the download ran at the download baud, so the abort
  * restores the link baud (AT+MTBAUD=115200) before the AT+MTOTA=0, or the
  * co-processor's next reboot at the default rate would no longer be
- * understood. */
+ * understood. Final review I1: the abort then sends AT+MTOTA=1, the
+ * requestor back on for the next offer. */
 static void test_pull_timeout_aborts_at_once(void) {
   std::string fx;
   check("the good.ota fixture loads (timeout)", loadFixture("fixtures/good.ota", fx));
@@ -480,6 +485,8 @@ static void test_pull_timeout_aborts_at_once(void) {
   s.expect("AT+MTOTAGET=0", blkLine(0, 0, 96, fx, 0, false));
   s.expect("AT+MTBAUD=115200", "OK\r\n");
   s.expect("AT+MTOTA=0", "OK\r\n");
+  /* I1: the abort turns the requestor back on for the next offer. */
+  s.expect("AT+MTOTA=1", "OK\r\n");
   s.injectURC("+MTOTA:BLOCK,0,1024");
   g_yieldAdvanceMs = 50;
   hearth.poll();
@@ -1212,7 +1219,8 @@ static void test_baud_switch(void) {
 
 /* The folded-from-4b1-review trap (c): one hex digit of a +MTOTABLK line is
  * corrupted (not the offset), driving the parse-failure branch: one re-pull,
- * then the second corrupt answer aborts. */
+ * then the second corrupt answer aborts (final review I1: the abort sends
+ * AT+MTOTA=0 then AT+MTOTA=1, the requestor back on for the next offer). */
 static void test_pull_hexdigit_corrupt_aborts(void) {
   std::string fx;
   check("the good.ota fixture loads (hexdigit)", loadFixture("fixtures/good.ota", fx));
@@ -1243,6 +1251,8 @@ static void test_pull_hexdigit_corrupt_aborts(void) {
   s.expect("AT+MTOTAGET=0", bad);
   s.expect("AT+MTBAUD=115200", "OK\r\n");
   s.expect("AT+MTOTA=0", "OK\r\n");
+  /* I1: the abort turns the requestor back on for the next offer. */
+  s.expect("AT+MTOTA=1", "OK\r\n");
   s.injectURC("+MTOTA:BLOCK,0,1024");
   g_yieldAdvanceMs = 50;
   hearth.poll();

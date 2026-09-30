@@ -178,7 +178,10 @@ private:
     ~DrainGuard() { flag = false; }
   };
   void hearthPullBlock();   /* AT+MTOTAGET/ACK for _pendingSeq, with the retry rules */
-  void hearthAbortPull();   /* AT+MTOTA=0, remove the partial staged file, FAILED/ERR_LINK */
+  /* AT+MTOTA=0 then AT+MTOTA=1 (final review I1: the =0 turns the
+   * requestor off, so the =1 puts it on again for the next offer, as
+   * hearthAbandon() does), remove the partial staged file, FAILED/ERR_LINK */
+  void hearthAbortPull();
   int hearthCmd(const char *cmd, HearthLink::LineCb onLine, void *arg);
   int hearthCmd(const char *cmd, HearthLink::LineCb onLine, void *arg, uint32_t timeout_ms);
   void hearthVerifyAndVerdict();  /* 4b2: on DOWNLOADED, verify the staged bundle, consent, AT+MTOTASTAGED */
@@ -207,7 +210,10 @@ private:
   int hearthApplyFw(HearthUpdateState &st, int firstAttempt = 1);
   void hearthApplyHost();  /* 6b: the host part; stage it through PicoOTA and reboot */
   /* 6c: the success and failure tails of the Hearth-part apply, shared by
-   * hearthApply() (6a) and the resume after a power loss (6c). */
+   * hearthApply() (6a) and the resume after a power loss (6c). Final
+   * review M1: hearthApply() owns the staged file and deletes it on
+   * every path; this tail reads it through the reference and does not
+   * delete it (the resume caller owns and deletes its own handle). */
   void hearthFwSucceeded(const HearthBundleInfo &info, int part, HearthFile &staged, const HearthUpdateState &st);
   void hearthFwFailed();
   /* 6b: the first-boot paths in begin(), after the state file is loaded.
@@ -257,6 +263,15 @@ private:
    * transfer. Set by the first pull (stagedBeginWrite), cleared by
    * stagedEndWrite on DOWNLOADED or by the abort path. */
   bool _stagedWriteOpen;
+  /* Final review I2: the co-processor ended the current transfer while
+   * the staged write was still open. hearthOnOtaLine() sets it on an
+   * ERROR or IDLE state line and on a BLOCK with seq 0 while
+   * _stagedWriteOpen (a new transfer's first block); the next
+   * hearthDrain() ends and discards the write there (stagedEndWrite,
+   * stagedRemove, _stagedWriteOpen false, _havePendingBlock false)
+   * before it runs the pull the flag came in with. Set on the URC
+   * route (record only, no link or file call), acted on on the drain. */
+  bool _transferEnded;
   /* Set on entry to hearthDrain(), cleared by the DrainGuard on every exit
    * path. hearthCommand() runs hearthDrain() at the end of its own call, so
    * without this the pull loop (which sends hearthCommand()s) would drain
@@ -283,6 +298,14 @@ private:
   bool _consentPending;      /* true while the verdict waits on the consent hook */
   bool _consentRefused;      /* true while a refusal is on the clock */
   uint32_t _consentRefusalMs; /* millis() of the refusal, the time only */
+  /* Final review M5: true when a +MTOTA:APPLY arrived while the state was
+   * HEARTH_UPDATE_WAIT_APPLY (the one state in which the verdict is in and
+   * the bundle is staged). Set in hearthOnOtaLine() (record only, where
+   * _lastState still holds the pre-APPLY state), acted on in
+   * hearthDrain() with _applyPending: an APPLY in any other state is
+   * dropped with the flag, so a co-processor that survived a host reboot
+   * cannot take the host-only path with _hostPart 0xFF. */
+  bool _applyInWaitApply;
   /* B632: the last commissioning complete (+MTEVT:3). The flag, not a
    * timestamp sentinel, is what arms the wait: a commissioning recorded at
    * millis() 0 still settles. The settle wait clears the flag once the

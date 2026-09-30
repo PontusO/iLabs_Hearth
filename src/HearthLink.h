@@ -66,7 +66,11 @@ public:
    * nothing outside this class may set the flag.
    */
   bool busy() const {
+#ifndef ARDUINO
+    return _busy || g_linkBusyHeld;
+#else
     return _busy;
+#endif
   }
 
   /*
