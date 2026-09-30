@@ -513,9 +513,13 @@ size_t SmpSerialDecoder::feed(const uint8_t *data, size_t n, uint8_t *out, size_
    * had no pending bytes to re-append and worked).
    *
    * Every line is examined exactly once and its bytes are consumed
-   * whether or not it completes a frame, so a rejected line (bad
-   * marker, bad CRC, a stale reply with a foreign sequence number)
-   * can never be re-examined and never block the bytes behind it.
+   * whether or not it completes a frame: a rejected line (bad marker,
+   * bad CRC, a stale reply with a foreign sequence number) is dropped
+   * when its newline is seen and is not kept in the pending buffer, so
+   * it is never re-examined on a later call, and 1028 bytes of
+   * non-frame lines cannot fill the buffer and truncate the bytes
+   * behind it. Only the bytes after the last newline (the in-flight
+   * line, or a completed frame's tail) are carried forward.
    */
   lineLen = 0;
   size_t total = pendLen + n;
@@ -527,21 +531,37 @@ size_t SmpSerialDecoder::feed(const uint8_t *data, size_t n, uint8_t *out, size_
     uint8_t c = pend[i];
     if (c == '\n') {
       if (feedLine(out, outCap)) {
+        /* A frame completed: keep the bytes after this newline (the
+         * next line, or a whole second reply) and stop: the caller
+         * takes one frame per feed, and the tail comes first on the
+         * next call. */
         lineLen = 0;
         size_t rest = total - (i + 1);
-        if (rest) {
-          memmove(pend, pend + i + 1, rest);
-        }
+        memmove(pend, pend + i + 1, rest);
         pendLen = rest;
         return outLen;
       }
-      lineLen = 0;   /* the line is consumed, even though it was rejected */
+      /* The line is consumed, even though it was rejected: it is not
+       * kept in the pending buffer, so it is never re-examined on a
+       * later call. The bytes after the newline (the in-flight line,
+       * if any) come first on the next call. */
+      lineLen = 0;
       continue;
     }
     if (lineLen < sizeof(line)) line[lineLen++] = c;
     /* an overlong line: drop the extra (the marker check rejects it anyway) */
   }
-  pendLen = total;
+  /* No frame completed: carry only the in-flight line (the bytes after
+   * the last newline, if any), not the rejected lines before it. */
+  size_t last = 0;
+  for (size_t i = 0; i < total; i++) {
+    if (pend[i] == '\n') {
+      last = i + 1;
+    }
+  }
+  size_t rest = total - last;
+  memmove(pend, pend + last, rest);
+  pendLen = rest;
   return 0;
 }
 

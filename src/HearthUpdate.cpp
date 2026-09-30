@@ -45,7 +45,6 @@ HearthUpdate::HearthUpdate()
     _consentPending(false),
     _consentRefused(false),
     _consentRefusalMs(0),
-    _applyInWaitApply(false),
     _commissioned(false),
     _commissionedMs(0),
     _baud(HEARTH_LINK_BAUD),
@@ -77,6 +76,7 @@ HearthUpdate::HearthUpdate()
   _status.hearthVersion[0] = 0;
   _status.detail[0] = 0;
   _status.deferredSeconds = 0;
+  _verdictSent = false;
   _model[0] = 0;
   _variant[0] = 0;
   _hearthVersion[0] = 0;
@@ -236,15 +236,17 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
   } else if (strcmp(state, "APPLY") == 0) {
     /* The requestor asked to apply (spec 7.3): set the pending flag only.
      * This is a URC route and may not call the link, so hearthDrain() is
-     * where the apply runs, once, in hearthApply(). Final review M5: the
-     * apply is acted on only when the state was WAIT_APPLY before this
-     * line (_lastState holds it); an APPLY in any other state is dropped
-     * with the flag and the state left where it was (the co-processor
-     * survived a host reboot, so the state was not restored here). */
-    if (_lastState == HEARTH_UPDATE_WAIT_APPLY) {
+     * where the apply runs, once, in hearthApply(). The re-review M5 gate:
+     * the apply is acted on only when _verdictSent, a verdict (the
+     * AT+MTOTASTAGED=1 for the staged bundle) went out in this boot; an
+     * APPLY with no verdict in this boot (the co-processor survived a
+     * host reboot, so no verdict went out here) is dropped with the flag
+     * and the state left where it was. A DEFERRED between the verdict
+     * and the apply (the provider's AwaitNextAction) keeps the flag, so
+     * the APPLY that follows the delay still applies. */
+    if (_verdictSent) {
       _status.state = HEARTH_UPDATE_APPLYING_FW;
       _applyPending = true;
-      _applyInWaitApply = true;
     }
   } else if (strcmp(state, "DEFERRED") == 0) {
     _status.state = HEARTH_UPDATE_IDLE;
@@ -490,6 +492,9 @@ void HearthUpdate::hearthDrainImpl() {
     char cmd[HEARTH_LINE_MAX];
     snprintf(cmd, sizeof(cmd), "AT+MTOTASTAGED=1");
     hearthCmd(cmd, 0, 0);
+    /* The verdict for the staged bundle is out (re-review M5): the apply
+     * that follows it is the one that may apply. */
+    _verdictSent = true;
     _status.state = HEARTH_UPDATE_WAIT_APPLY;
     if (_statusCB) {
       _statusCB(_status);
@@ -498,22 +503,14 @@ void HearthUpdate::hearthDrainImpl() {
   /* 6a: the requestor's apply request. It was parsed on the URC route
    * (hearthOnOtaLine set _applyPending), and this is where the flasher
    * runs: the whole apply is blocking by design, so it runs here, on the
-   * drain, and the loop is blocked for its duration. Final review M5: the
-   * apply is acted on only in HEARTH_UPDATE_WAIT_APPLY, the one state in
-   * which the verdict is in and the bundle is staged. An APPLY in any
-   * other state (only possible when the co-processor survived a host
-   * reboot, so the state was not restored here) would take the host-only
-   * path with _hostPart 0xFF, declare a version no apply is running, and
-   * fail without re-declaring, so it is dropped with the flag instead. */
+   * drain, and the loop is blocked for its duration. The re-review M5
+   * gate: the apply is acted on only when _verdictSent (the URC route
+   * checked it when it set _applyPending, and nothing in between clears
+   * it); an APPLY with no verdict in this boot is dropped with the flag.
+   * hearthApply() clears the flag, so one verdict gives one apply. */
   if (_applyPending) {
     _applyPending = false;
-    /* M5: acted on only when the APPLY arrived in WAIT_APPLY (the flag
-     * hearthOnOtaLine() set, where _lastState still held the pre-APPLY
-     * state); an APPLY in any other state is dropped with the flag. */
-    if (_applyInWaitApply) {
-      _applyInWaitApply = false;
-      hearthApply();
-    }
+    hearthApply();
   }
 }
 
@@ -619,13 +616,17 @@ void HearthUpdate::hearthPullBlock() {
     hearthAbortPull();
     return;
   }
-  /* Before the first block of a transfer the stage opens its write. */
+  /* Before the first block of a transfer the stage opens its write. A new
+   * transfer is a new bundle: the verdict the last one sent (if any) no
+   * longer describes what is staged, so the re-review M5 flag clears here
+   * and the next apply waits for the next verdict. */
   if (!_stagedWriteOpen) {
     if (!_stage.stagedBeginWrite()) {
       hearthAbortPull();
       return;
     }
     _stagedWriteOpen = true;
+    _verdictSent = false;
   }
   BlkPull pull;
   memset(&pull, 0, sizeof(pull));
@@ -784,8 +785,12 @@ void HearthUpdate::hearthSetBaud(uint32_t baud) {
       /* The reset line is known when it is not -1 (begin() resolved the
        * config pins from the owner). hearthResetCoprocessor() is a no-op
        * without one; its +MTREADY (on the default rate, now readable)
-       * triggers the B671 re-probe. */
+       * triggers the B671 re-probe. The B632 settle runs first, as at
+       * every other reset the update drives: the MG24's key store saves
+       * its key map 2 s after a write, so a reset inside that window
+       * after a commissioning loses the new fabric. */
       if (_owner && _cfg.resetPin != -1) {
+        hearthSettleAfterCommissioning();
         ((HearthClass *)_owner)->hearthResetCoprocessor();
       }
       _baudWantedDownload = false;
@@ -817,6 +822,9 @@ void HearthUpdate::hearthAbandon() {
   _consentPending = false;
   _consentRefused = false;
   _consentRefusalMs = 0;
+  /* The bundle is removed: no verdict stands for it any more (re-review
+   * M5), so an apply that arrives now has nothing to apply. */
+  _verdictSent = false;
   /* End the staged write only while it is open: on DOWNLOADED the write
    * already ended, so the second endWrite here would be a no-op at best and
    * could remove a staged file the verdict is still using at worst. */
@@ -1058,6 +1066,10 @@ uint32_t modelFsNeed(const char *model) {
  *     and the staged bundle kept for a manual retry.
  */
 void HearthUpdate::hearthApply() {
+  /* The verdict is consumed by this apply (re-review M5: one verdict
+   * gives one apply). Cleared before any early return, so a failed
+   * re-open or a bad bundle does not leave a stale verdict standing. */
+  _verdictSent = false;
   HearthFile *staged = _stage.stagedOpenRead();
   if (!staged) {
     /* The staged bundle is gone (a power loss in the consent window):
@@ -1202,17 +1214,19 @@ void HearthUpdate::hearthFwSucceeded(const HearthBundleInfo &info, int part, Hea
  * attempts (spec 7.3): the retained image, if one fits this model, is one
  * more flash.
  *
- * Final review I6, second half: the flasher exits with its own reset on
- * every failure mode of the last attempt (a flasher error, no +MTREADY, a
- * verify mismatch), so its +MTREADY is still landing when the declaration
- * and the requestor switch go out, and they would land in the boot window
- * (the F669 class: no answer, or +MTERR:8). The tail waits for it (the
- * flash's 30 s, bench MG24) before it declares and switches the
- * requestor; the arm the attempt left in place (M4's) is the wait's, so
- * the boot is not reported as an unexpected one. The wait runs in the
- * tail, not in the retained branch, so it covers every failure mode and
- * both the re-declaration and the AT+MTOTA=1. The +MTREADY is consumed by
- * the wait, so the re-probe flag it sets is cleared below.
+ * Final re-review I7: the last attempt that failed in the flasher
+ * (rc != HEARTH_FLASH_OK, the B672 class) exited with its own reset
+ * (B668), so the co-processor is still booting when this tail runs. The
+ * wait for that boot's +MTREADY runs FIRST, before the retained branch's
+ * AT+MTVER? (asked during the boot it gets no answer, and the retained
+ * image would be flashed over a healthy application): the arm the attempt
+ * left in place (M4's, live until its wait consumed the marker) is the
+ * wait's, so the boot is not reported as an unexpected one, and it is
+ * re-armed for the wait's own timeout path. The later wait before the
+ * declaration then goes, so there is one wait. _lastAttemptFlasherError
+ * is the only failure mode with a pending exit reset: after a no-+MTREADY
+ * or a verify mismatch nothing further reboots, so the wait is skipped
+ * for those (the flash's 30 s is not spent on a marker that cannot come).
  *
  * Final review I7: before flashing the retained image the co-processor is
  * asked AT+MTVER?. It answering the pre-apply version (_preApplyHearthVersion,
@@ -1229,6 +1243,28 @@ void HearthUpdate::hearthFwFailed() {
   bool haveRetained = _stage.retainedFwInfo(rtarget, rversion, rlen);
   bool didRollback = false;
   HearthClass *owner = (HearthClass *)_owner;
+  /* Final re-review I7, first: the last attempt's exit reset, when the
+   * flasher itself failed (B672's class). Arm for the wait (the M4 arm
+   * the attempt left in place is the wait's; on a no-+MTREADY or verify
+   * mismatch nothing is armed) so the boot's +MTREADY is consumed as an
+   * expected reboot and never reaches the sketch as
+   * HEARTH_COPROCESSOR_REBOOTED, and the retained branch's AT+MTVER?
+   * below finds the co-processor up. The later wait before the
+   * declaration then goes, so there is one wait. */
+  if (_lastAttemptFlasherError) {
+    owner->hearthArmExpectedReboot();
+    if (!owner->link().waitReady(HEARTH_FLASH_READY_TIMEOUT_MS)) {
+#ifdef ARDUINO
+      Serial.printf("Hearth.update: no +MTREADY in %lu ms after the last attempt\n",
+                    (unsigned long)HEARTH_FLASH_READY_TIMEOUT_MS);
+#endif
+    }
+    owner->hearthDisarmExpectedReboot();
+    /* B671: the wait dispatches the +MTREADY through the URC route,
+     * setting the re-probe flag. Clear it: this reboot was driven by the
+     * update (the flasher's exit) and the requestor is re-run below. */
+    _coprocReadySeen = false;
+  }
   if (haveRetained && strcmp(rtarget, _model) == 0) {
     /* I7: is the co-processor still running the pre-apply version? */
     VerQuery vq;
@@ -1316,29 +1352,6 @@ void HearthUpdate::hearthFwFailed() {
       delete ret;
     }
   }
-  /* Final review I6, second half: when the last attempt's flasher failed
-   * (B668's exit reset the co-processor on every failure mode: a flasher
-   * error, no +MTREADY, a verify mismatch) its +MTREADY is still landing
-   * when the declaration and the requestor switch go out, so they land in
-   * the boot window (the F669 class: no answer, or +MTERR:8). Wait for it
-   * here, in the tail, so it covers every failure mode and both the
-   * re-declaration below and the AT+MTOTA=1 after it. The arm the attempt
-   * left in place (M4's, live until its wait consumed the marker) is the
-   * wait's, so the boot is not reported as an unexpected one and only the
-   * disarm runs. */
-  if (_lastAttemptFlasherError) {
-    if (!owner->link().waitReady(HEARTH_FLASH_READY_TIMEOUT_MS)) {
-#ifdef ARDUINO
-      Serial.printf("Hearth.update: no +MTREADY in %lu ms after the last attempt\n",
-                    (unsigned long)HEARTH_FLASH_READY_TIMEOUT_MS);
-#endif
-    }
-    owner->hearthDisarmExpectedReboot();
-    /* B671: the wait dispatches the +MTREADY through the URC route,
-     * setting the re-probe flag. Clear it: this reboot was driven by the
-     * update (the flasher's exit) and the requestor is re-run below. */
-    _coprocReadySeen = false;
-  }
   if (!didRollback) {
     /* No retained image to restore: the old version is re-declared so
      * the requestor comes back knowing what it is running. */
@@ -1374,6 +1387,11 @@ void HearthUpdate::hearthFwFailed() {
  * once (the failure tail is the caller's).
  */
 int HearthUpdate::hearthApplyFw(HearthUpdateState &st, int firstAttempt) {
+  /* The last-attempt record is this apply's to make (final re-review
+   * Minor): an early return below (no flasher, the bundle will not
+   * re-open) must not inherit the flag the previous apply's last attempt
+   * left, so it starts false. */
+  _lastAttemptFlasherError = false;
   HearthClass *owner = (HearthClass *)_owner;
   HearthFlasher *fl = _flasher ? _flasher : HearthFlasher::forModel(_model);
   /* Reopen the staged bundle on every call: the flasher reads the image
@@ -1432,11 +1450,11 @@ int HearthUpdate::hearthApplyFw(HearthUpdateState &st, int firstAttempt) {
     HEARTH_SERIAL_PORT.begin(HEARTH_LINK_BAUD);
 #endif
     if (rc != HEARTH_FLASH_OK) {
-      /* The flasher failed: disarm (its own exit reset, when it has one,
-       * is what the arm was for) and the next attempt, with no wait and
-       * no AT+MTVER? (the co-processor never rebooted). Final review I6:
-       * this failure mode leaves the flasher's exit reset pending, so the
-       * failure tail's wait for its +MTREADY is the one that comes. */
+      /* The flasher failed: disarm and the next attempt, with no wait and
+       * no AT+MTVER?. The flasher exits with its own reset (B668) after
+       * this one, so its +MTREADY is still landing when the next
+       * attempt's flash (or the failure tail's wait) runs; the failure
+       * tail's wait for it is armed before it runs (final re-review I7). */
       _lastAttemptFlasherError = true;
       owner->hearthDisarmExpectedReboot();
 #ifdef ARDUINO
@@ -1451,10 +1469,11 @@ int HearthUpdate::hearthApplyFw(HearthUpdateState &st, int firstAttempt) {
      * Matter stack, and on the MGM240P that ran past the 10 s. */
     if (!owner->link().waitReady(HEARTH_FLASH_READY_TIMEOUT_MS)) {
       /* No +MTREADY in time: the attempt failed, disarm so the next
-       * spontaneous reboot is still reported. The flasher's exit reset
-       * still lands (final review I6): the failure tail's wait is the one
-       * that comes for it. */
-      _lastAttemptFlasherError = true;
+       * spontaneous reboot is still reported. The flasher already
+       * succeeded, so no further reset is pending (final re-review
+       * Minor): the failure tail does not wait for a marker that cannot
+       * come. */
+      _lastAttemptFlasherError = false;
       owner->hearthDisarmExpectedReboot();
 #ifdef ARDUINO
       Serial.printf("Hearth.update: flash attempt %d of 3 failed: no +MTREADY in %lu ms\n",
@@ -1477,9 +1496,10 @@ int HearthUpdate::hearthApplyFw(HearthUpdateState &st, int firstAttempt) {
       return 0;  /* the new image is confirmed running */
     }
     /* A boot that reports another version: the attempt failed. The
-     * flasher's exit reset still lands (final review I6): the failure
-     * tail's wait is the one that comes for it. */
-    _lastAttemptFlasherError = true;
+     * flasher succeeded and the co-processor is up, so no further reset
+     * is pending (final re-review Minor): the failure tail does not wait
+     * for a marker that cannot come. */
+    _lastAttemptFlasherError = false;
 #ifdef ARDUINO
     Serial.printf("Hearth.update: flash attempt %d of 3 failed: the co-processor runs %s, the bundle says %s\n",
                   attempt, vq.got ? vq.version : "?", p.version);
@@ -1808,6 +1828,9 @@ void HearthUpdate::hearthVerifyAndVerdict() {
   char cmd[HEARTH_LINE_MAX];
   snprintf(cmd, sizeof(cmd), "AT+MTOTASTAGED=1");
   hearthCmd(cmd, 0, 0);
+  /* The verdict for the staged bundle is out (re-review M5): the apply
+   * that follows it is the one that may apply. */
+  _verdictSent = true;
   _status.state = HEARTH_UPDATE_WAIT_APPLY;
   _status.offeredVersion = info.productVersion;
   if (_statusCB) {
@@ -1832,6 +1855,10 @@ void HearthUpdate::hearthRefuse(HearthBundleError reason) {
   if (_statusCB) {
     _statusCB(_status);
   }
+  /* The bundle is refused: the verdict that was pending does not stand,
+   * so the re-review M5 flag clears (an apply for a removed bundle would
+   * find nothing to flash). */
+  _verdictSent = false;
 }
 
 void HearthUpdate::end() {
@@ -1841,6 +1868,9 @@ void HearthUpdate::end() {
   _downloadComplete = false;
   _stagedWriteOpen = false;
   _applyPending = false;
+  /* end() takes FOTA down: a verdict sent before it cannot apply after
+   * it (re-review M5). */
+  _verdictSent = false;
   _requestorRetry = false;
   _requestorRetryMs = 0;
   _requestorRetryNow = false;
@@ -1913,6 +1943,10 @@ bool HearthUpdate::hearthBeginImpl(uint32_t productVersion, const char *versionS
   _requestorRetry = false;
   _requestorRetryMs = 0;
   _requestorRetryNow = false;
+  /* A new begin() is a new FOTA session: no verdict stands yet (re-review
+   * M5), so an apply that arrives before this session's verdict is
+   * ignored. */
+  _verdictSent = false;
   /* Final review I8: this is the one body that names the heavy drain
    * path, on every build: the drain work becomes reachable (a
    * constructed object's hearthDrain() is one null check and nothing

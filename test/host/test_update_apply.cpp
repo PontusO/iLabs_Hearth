@@ -3076,6 +3076,230 @@ static void test_f2b_flash_ready_timeout(void) {
         hearth.update.status().state == HEARTH_UPDATE_FAILED);
 }
 
+/* ------------------------------------------------------------------
+ * Final re-review fix round (task F4). The controller wrote these
+ * tests as the oracle; the implementation must make them pass
+ * unchanged.
+ * ------------------------------------------------------------------ */
+
+/* A co-processor that is booting answers nothing: a Stream over the
+ * MockStream that, from bootAt() until the given time, swallows every
+ * byte written (recording each whole line in lost()) and then releases
+ * "+MTREADY" once. Before bootAt() and after the release it passes
+ * everything through unchanged. The host clock moves only through
+ * g_yieldAdvanceMs, so the release lands inside whatever wait the code
+ * under test is running. */
+class BootWindowStream : public Stream {
+public:
+  explicit BootWindowStream(MockStream &m) : _m(m) {}
+  void bootAt(uint32_t readyAtMs) { _booting = true; _readyAt = readyAtMs; }
+  const std::vector<std::string> &lost() const { return _lost; }
+  size_t write(uint8_t c) override {
+    pump();
+    if (_booting) {
+      if (c == '\n' || c == '\r') {
+        if (!_line.empty()) _lost.push_back(_line);
+        _line.clear();
+      } else {
+        _line += (char)c;
+      }
+      return 1;
+    }
+    return _m.write(c);
+  }
+  int available() override { pump(); return _m.available(); }
+  int read() override { pump(); return _m.read(); }
+  int peek() override { pump(); return _m.peek(); }
+private:
+  void pump() {
+    if (_booting && (int32_t)(millis() - _readyAt) >= 0) {
+      _booting = false;
+      _m.injectURC("+MTREADY");
+    }
+  }
+  MockStream &_m;
+  bool _booting = false;
+  uint32_t _readyAt = 0;
+  std::string _line;
+  std::vector<std::string> _lost;
+};
+
+/* F4 Important 1: a provider that answers ApplyUpdateRequest with
+ * AwaitNextAction makes the requestor report +MTOTA:DEFERRED after the
+ * verdict (spec 5.5); the APPLY that follows the delay must still apply
+ * the staged bundle. The M5 gate keys on "a verdict was sent for the
+ * staged bundle in this boot", not on the previous state. */
+static void test_f4_deferred_then_apply(void) {
+  std::string fx;
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  check("f4 deferred: setup reaches WAIT_APPLY", setupToApply(s, hearth, fs, fake, fx, "good",
+        "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "wifi", 0x10300, "1.3.0", 0x10300, true));
+  s.injectURC("+MTOTA:DEFERRED,5");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f4 deferred: no flash on DEFERRED", fake.calls().size() == 0);
+  check("f4 deferred: nothing went on the wire for DEFERRED", s.unexpected().empty());
+
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.3.0\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  fake.onFlash = [&](int i) {
+    if (i == 0) {
+      s.injectURC("+MTREADY");
+    }
+  };
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f4 deferred: the APPLY after DEFERRED flashed once", fake.calls().size() == 1);
+  check("f4 deferred: the script is drained", s.scriptDrained());
+  check("f4 deferred: nothing unexpected on the wire", s.unexpected().empty());
+  check("f4 deferred: the status is IDLE with no error",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE
+        && hearth.update.status().error == HEARTH_UPDATE_OK);
+  check("f4 deferred: the staged bundle is gone", !hearth.update.stage().stagedExists());
+}
+
+/* F4 Important 2 (I7 with the I6 wait first): the last attempt fails in
+ * the flasher after its entry reset, whose exit reset reboots the
+ * co-processor. The failure tail must wait for that boot's +MTREADY
+ * BEFORE the pre-apply AT+MTVER?: asked during the boot it gets no
+ * answer, and the retained image would be flashed over a healthy
+ * application. Nothing may be written while the co-processor boots,
+ * no fourth flash call, the old version re-declared, and the boot's
+ * +MTREADY does not reach the sketch as HEARTH_COPROCESSOR_REBOOTED
+ * (the M4 arm covers the tail's wait too). */
+static std::vector<hearthEvent_t> g_f4Events;
+
+static void test_f4_i7_waits_for_boot_before_version_check(void) {
+  g_f4Events.clear();
+  std::string fx;
+  check("f4 i7: good fixture loads", loadFixture("fixtures/good.ota", fx));
+  MockStream s;
+  BootWindowStream bw(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  {
+    HearthUpdateStage stg;
+    check("f4 i7: seed manifest written", stg.begin(fs));
+    HearthManifest m;
+    m.productVersion = 0x10300;
+    snprintf(m.productVersionString, sizeof(m.productVersionString), "%s", "1.3.0");
+    snprintf(m.hostVersion, sizeof(m.hostVersion), "%s", "1.4.0");
+    check("f4 i7: seed manifest saved", stg.saveManifest(m));
+    std::vector<uint8_t> retBytes(500);
+    for (int i = 0; i < 500; i++) {
+      retBytes[i] = (uint8_t)(i * 7 + 3);
+    }
+    HearthFile *f = fs.open("/hearth/fw-scratch.bin", "w");
+    check("f4 i7: the scratch file opens", f != 0);
+    if (f) {
+      f->write(retBytes.data(), retBytes.size());
+      delete f;
+    }
+    f = fs.open("/hearth/fw-scratch.bin", "r");
+    check("f4 i7: the scratch file reopens", f != 0);
+    if (f) {
+      check("f4 i7: the retained image is written",
+            stg.retainFwPart(*f, 0, 500, "ESP32-C6 Hearth", "1.1.0"));
+      delete f;
+    }
+  }
+  scriptBeginFor(s, "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "1.2.0", "wifi");
+  hearth.onLinkEvent([](hearthEvent_t e) { g_f4Events.push_back(e); });
+  hearth.begin(bw);
+  hearth.update.hearthAttach(fs);
+  hearth.update.hearthSetFlasher(&fake);
+  HearthUpdateConfig cfg;
+  cfg.resetPin = 15;
+  cfg.strapPin = 14;
+  g_yieldAdvanceMs = 50;
+  check("f4 i7: update begin returns true", hearth.update.begin(0x10300, "1.3.0", cfg));
+  g_yieldAdvanceMs = 0;
+  runDownload(s, hearth, fx, "AT+MTOTASTAGED=1");
+  check("f4 i7: setup reaches WAIT_APPLY", hearth.update.status().state == HEARTH_UPDATE_WAIT_APPLY);
+
+  fake.results = {HEARTH_FLASH_ERR_WRITE, HEARTH_FLASH_ERR_WRITE, HEARTH_FLASH_ERR_WRITE};
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  /* After the boot: the pre-apply check answers the pre-apply version,
+   * so the rollback is skipped and the old version re-declared. */
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  fake.onFlash = [&](int i) {
+    if (i == 2) {
+      bw.bootAt(millis() + 3000);   /* the exit reset: 3 s of boot, then +MTREADY */
+    }
+  };
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+
+  bool sawRebooted = false;
+  for (size_t i = 0; i < g_f4Events.size(); i++) {
+    if (g_f4Events[i] == HEARTH_COPROCESSOR_REBOOTED) {
+      sawRebooted = true;
+    }
+  }
+  check("f4 i7: nothing was written while the co-processor booted", bw.lost().empty());
+  check("f4 i7: exactly three flash calls (no rollback over a healthy image)",
+        fake.calls().size() == 3);
+  check("f4 i7: the script is drained", s.scriptDrained());
+  check("f4 i7: nothing unexpected on the wire", s.unexpected().empty());
+  check("f4 i7: no HEARTH_COPROCESSOR_REBOOTED reached the sketch", !sawRebooted);
+  check("f4 i7: the state is FAILED", hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  check("f4 i7: the error is HEARTH_UPDATE_ERR_FLASH",
+        hearth.update.status().error == HEARTH_UPDATE_ERR_FLASH);
+}
+
+/* F4 Minor (_lastAttemptFlasherError): three verify mismatches (the
+ * flasher succeeded every time, the co-processor booted each image and
+ * is up) leave nothing further to reboot, so the failure tail must not
+ * spend HEARTH_FLASH_READY_TIMEOUT_MS waiting for a +MTREADY that
+ * cannot come (bench MG24 2026-09-30: 30 s of dropped URCs). The whole
+ * apply, three attempts included, stays well under that. */
+static void test_f4_verify_mismatch_tail_does_not_wait(void) {
+  std::string fx;
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  check("f4 nowait: setup reaches WAIT_APPLY", setupToApply(s, hearth, fs, fake, fx, "good",
+        "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "wifi", 0x10300, "1.3.0", 0x10300, true));
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  fake.onFlash = [&](int i) {
+    (void)i;
+    s.injectURC("+MTREADY");
+  };
+  s.injectURC("+MTOTA:APPLY");
+  uint32_t t0 = millis();
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  uint32_t took = millis() - t0;
+  check("f4 nowait: exactly three flash calls", fake.calls().size() == 3);
+  check("f4 nowait: the script is drained", s.scriptDrained());
+  check("f4 nowait: nothing unexpected on the wire", s.unexpected().empty());
+  check("f4 nowait: the state is FAILED", hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  char name[96];
+  snprintf(name, sizeof(name), "f4 nowait: the apply took under %u ms (took %lu)",
+           (unsigned)(HEARTH_FLASH_READY_TIMEOUT_MS / 2), (unsigned long)took);
+  check(name, took < HEARTH_FLASH_READY_TIMEOUT_MS / 2);
+}
+
+
 int main(void) {
   printf("\n===== HearthUpdate apply (task 6a) tests =====\n");
   test_order_and_arguments();
@@ -3144,6 +3368,9 @@ int main(void) {
   test_f2b_m6_host_failure_redeclares();
   test_f2b_m10_per_pin_merge();
   test_f2b_flash_ready_timeout();
+  test_f4_deferred_then_apply();
+  test_f4_i7_waits_for_boot_before_version_check();
+  test_f4_verify_mismatch_tail_does_not_wait();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

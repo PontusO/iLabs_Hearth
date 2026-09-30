@@ -344,11 +344,15 @@ private:
    * the new part's version). The rollback check in hearthFwFailed()
    * compares AT+MTVER?'s answer against this, not against _hearthVersion. */
   char _preApplyHearthVersion[33];
-  /* Final review I6: set by hearthApplyFw() to true when the last attempt
-   * failed with a flasher error (the flasher's B668 exit reset the
-   * co-processor, so its +MTREADY is in the rx buffer for the failure
-   * tail's I6b wait to consume). Cleared on any other failure mode (no
-   * +MTREADY, verify mismatch) and on success. */
+  /* Final re-review Minor: set by hearthApplyFw() to true when the LAST
+   * attempt's flasher itself returned rc != HEARTH_FLASH_OK (the flasher
+   * exits with its own reset, B668, so its +MTREADY is still landing when
+   * the failure tail runs and the tail's first wait consumes it). Cleared
+   * on every other failure mode (no +MTREADY, verify mismatch: the
+   * flasher succeeded, so nothing further reboots), on success, and at
+   * the top of hearthApplyFw() so an early return (no flasher, the
+   * bundle will not re-open) does not inherit a stale true from a
+   * previous apply. */
   bool _lastAttemptFlasherError;
   uint32_t _effectiveVersion;
 
@@ -406,14 +410,19 @@ private:
   bool _consentPending;      /* true while the verdict waits on the consent hook */
   bool _consentRefused;      /* true while a refusal is on the clock */
   uint32_t _consentRefusalMs; /* millis() of the refusal, the time only */
-  /* Final review M5: true when a +MTOTA:APPLY arrived while the state was
-   * HEARTH_UPDATE_WAIT_APPLY (the one state in which the verdict is in and
-   * the bundle is staged). Set in hearthOnOtaLine() (record only, where
-   * _lastState still holds the pre-APPLY state), acted on in
-   * hearthDrain() with _applyPending: an APPLY in any other state is
-   * dropped with the flag, so a co-processor that survived a host reboot
-   * cannot take the host-only path with _hostPart 0xFF. */
-  bool _applyInWaitApply;
+  /* Final re-review M5: a verdict (the AT+MTOTASTAGED=1 for the staged
+   * bundle) went out in this boot, so the +MTOTA:APPLY that follows it is
+   * the one that may apply. Set when the verdict goes out (the consent
+   * path in hearthDrainImpl() and the end of hearthVerifyAndVerdict()),
+   * cleared when a new transfer starts (stagedBeginWrite), when the
+   * bundle is abandoned or removed (hearthAbandon(), hearthRefuse()),
+   * when an apply starts (hearthApply(), one verdict gives one apply),
+   * and in the constructor, end() and begin's body. DEFERRED keeps it:
+   * the provider's AwaitNextAction defers the apply, it does not undo
+   * the verdict, so the APPLY that follows the delay still applies. An
+   * APPLY with no verdict in this boot (the co-processor survived a host
+   * reboot, so no verdict went out here) is dropped with the flag. */
+  bool _verdictSent;
   /* B632: the last commissioning complete (+MTEVT:3). The flag, not a
    * timestamp sentinel, is what arms the wait: a commissioning recorded at
    * millis() 0 still settles. The settle wait clears the flag once the
