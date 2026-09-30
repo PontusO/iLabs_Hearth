@@ -297,6 +297,7 @@ hearthSetReconcileFailed	KEYWORD2
 link	KEYWORD2
 hearthReportProtocolError	KEYWORD2
 hearthResetCoprocessor	KEYWORD2
+coprocessorPins	KEYWORD2
 
 # HearthUpdate (plan Task 4): the FOTA surface on Hearth.update.
 update	KEYWORD2

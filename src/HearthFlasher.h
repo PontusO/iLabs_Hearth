@@ -15,10 +15,13 @@
  * minutes, so the caller (the update apply path) runs it on its own and
  * waits for +MTREADY after it returns.
  *
- * The pins come from HearthUpdateConfig (resetPin/strapPin plus their
- * active-low flags). A pin of -1 means the board variant defines no such
- * line and the sketch supplies none: a flasher that cannot drive the
- * lines refuses with HEARTH_FLASH_ERR_ENTER rather than guessing.
+ * The pins come from the board variant where it defines them (the
+ * Challenger 2350: PIN_ESP_RST and PIN_ESP_MODE), else from
+ * Hearth.coprocessorPins() on a board that stored them there, with
+ * HearthUpdateConfig (resetPin/strapPin plus their active-low flags) as
+ * an override. A pin of -1 means none of those named a line: a flasher
+ * that cannot drive the lines refuses with HEARTH_FLASH_ERR_ENTER rather
+ * than guessing.
  *
  * The stream type comes from the platform: on target the core's Stream
  * (arduino-pico's is arduino::Stream, made visible by the core's own

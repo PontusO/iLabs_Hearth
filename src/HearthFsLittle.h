@@ -1,7 +1,16 @@
+#pragma once
 /*
- * HearthFsLittle.cpp - the device HearthFs, over arduino-pico's LittleFS.
+ * HearthFsLittle - the device HearthFs, over arduino-pico's LittleFS.
  *
- * Guarded on ARDUINO: the host suite never compiles this file, and its
+ * Header-only, and the reason is a link cost (final review I8): LittleFS
+ * and PicoOTA are archives (dot_a_linkage=true), and the linker pulls an
+ * archive member in for any reference from a loose object, before
+ * --gc-sections. LittleFS.cpp.o holds a global `FS LittleFS` with a
+ * constructor, so one reference from a library .cpp kept all of lfs (about
+ * 21 KB) in every sketch that links Hearth, even one that never begins
+ * the update. With every reference to LittleFS in this inline header, the
+ * archive is pulled in only by a sketch that calls Hearth.update.begin().
+ * Guarded on ARDUINO, so the host suite never includes it, and its
  * ArduinoShim.h carries no LittleFS. The whole point of the interface is
  * that HearthUpdateStage runs on this on the device and on HearthFsMem in
  * the host tests without changing a line.
@@ -15,8 +24,6 @@
 #ifdef ARDUINO
 #include "HearthFs.h"
 #include <LittleFS.h>
-
-namespace {
 
 class HearthFileLittle : public HearthFile {
 public:
@@ -66,12 +73,9 @@ public:
   }
 };
 
-HearthFsLittle g_hearthFsLittle;
-
-}   /* anonymous namespace */
-
-HearthFs &hearthLittleFs() {
-  return g_hearthFsLittle;
+inline HearthFs &hearthLittleFs() {
+  static HearthFsLittle fs;
+  return fs;
 }
 
 #endif /* ARDUINO */

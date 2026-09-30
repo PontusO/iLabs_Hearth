@@ -25,6 +25,18 @@
 #include <stdint.h>
 
 #include "HearthFs.h"
+#ifdef ARDUINO
+/* The device defaults below are inline in this header, and this is where
+ * their includes and externs live too (final review I8): every reference
+ * to LittleFS and PicoOTA sits in header-inline code that only a sketch
+ * calling Hearth.update.begin() instantiates, so a sketch that never
+ * begins the update links none of either archive. XIP_BASE comes with the
+ * pico headers the core pulls in, as it does in PicoOTA.h's own
+ * addFile(). */
+#include "HearthFsLittle.h"
+#include <PicoOTA.h>
+extern "C" uint8_t __flash_binary_start, __flash_binary_end;
+#endif
 #include "HearthUpdateStage.h"
 #include "HearthBundle.h"
 #include "HearthDevKey.h"
@@ -87,10 +99,15 @@ struct HearthUpdateConfig {
   bool allowDowngrade = false;
   uint32_t downloadBaud = 921600;
   const char *dir = "/hearth";
+  /* The pins come from the board variant where it defines them (the
+   * Challenger 2350: PIN_ESP_RST and PIN_ESP_MODE), else from
+   * Hearth.coprocessorPins(), with these two fields as an override: a
+   * pin of -1 here takes the pin in force on the board (begin() merges
+   * per pin, final review M10). */
   int resetPin = HEARTH_DEFAULT_RESET_PIN;
-  bool resetActiveLow = true;   /* PIN_ESP_RST or -1 */
+  bool resetActiveLow = true;   /* PIN_ESP_RST, or -1 and the board's */
   int strapPin = HEARTH_DEFAULT_STRAP_PIN;
-  bool strapActiveLow = true;   /* PIN_ESP_MODE or -1 */
+  bool strapActiveLow = true;   /* PIN_ESP_MODE, or -1 and the board's */
   uint32_t consentWindowMs = 600000; /* a refused apply is retried for this long, then abandoned */
 };
 
@@ -98,8 +115,14 @@ class HearthFlasher;  /* Task 5; forward declared so Task 4 links without it */
 
 /* The host-side hooks for the host part of the apply (spec 7, plan Task 6b).
  * Each is a function pointer that takes no context: the library-internal
- * hearthSetHostHooks() installs a set of them and the constructor installs
- * the defaults. On the device (ARDUINO) the defaults are the real ones:
+ * hearthSetHostHooks() installs a set of them, and the inline begin()
+ * wrapper (final review I8) installs the defaults unless an install
+ * already went through: a sketch that never calls begin() links none of
+ * the PicoOTA and linker symbols the defaults name, and a test that
+ * installed its own first is left alone (the wrapper installs the
+ * defaults through hearthSetHostHooks() only when _hostHooksInstalled
+ * is false).
+ * On the device (ARDUINO) the defaults are the real ones:
  * imageRange the running sketch's XIP range (from the linker's
  * __flash_binary_start / __flash_binary_end), stageImage the PicoOTA
  * addFile of the named range plus its commit, reboot rp2040.reboot() and
@@ -121,9 +144,48 @@ public:
 
   /* Bring FOTA up: the filesystem (or HEARTH_UPDATE_ERR_NO_SPACE /
    * HEARTH_UPDATE_ERR_NO_FS), the stage, the effective version, the
-   * declaration and the requestor. See begin()'s own comment in the
-   * implementation for the order. */
-  bool begin(uint32_t productVersion, const char *versionString, const HearthUpdateConfig &cfg = HearthUpdateConfig());
+   * declaration and the requestor. See hearthBeginImpl's own comment in
+   * the implementation for the order.
+   *
+   * The wrapper is inline in this header (final review I8): it is the
+   * only place that names hearthLittleFs() and the ARDUINO default host
+   * hooks, so a sketch that never calls begin() links none of LittleFS,
+   * PicoOTA or the linker symbols the defaults name, while the host build
+   * compiles the wrapper without its ARDUINO block and stays a plain
+   * forward to hearthBeginImpl(). The fs and the hooks attach once, at
+   * the first begin(): a test that attached its own fs or installed its
+   * own hooks earlier (hearthAttach(), hearthSetHostHooks()) is left
+   * alone, and the default hooks go in through hearthSetHostHooks(),
+   * which sets _hostHooksInstalled, so a begin() that follows an explicit
+   * install never lays the defaults over it. */
+  bool begin(uint32_t productVersion, const char *versionString, const HearthUpdateConfig &cfg = HearthUpdateConfig()) {
+#ifdef ARDUINO
+    if (!_fs) {
+      hearthAttach(hearthLittleFs());
+    }
+    if (!_hostHooksInstalled) {
+      HearthHostHooks hk;
+      hk.imageRange = [](const uint8_t **start, uint32_t *len) {
+        *start = &__flash_binary_start;
+        *len = (uint32_t)(&__flash_binary_end - &__flash_binary_start);
+        return true;
+      };
+      hk.stageImage = [](const char *path, uint32_t off, uint32_t len) {
+        picoOTA.begin();
+        picoOTA.addFile(path, off, XIP_BASE, len);
+        return picoOTA.commit();
+      };
+      hk.reboot = []() {
+        rp2040.reboot();
+      };
+      hk.coprocReset = [](const HearthCoprocPins &pins) {
+        return hearthCoprocReset(pins, 100);
+      };
+      hearthSetHostHooks(hk);
+    }
+#endif
+    return hearthBeginImpl(productVersion, versionString, cfg);
+  }
   void end();
   bool checkNow();
   bool available() const;
@@ -146,7 +208,13 @@ public:
    * disabled). Recording only, no link call; hearthDrain() re-probes the
    * declaration and the requestor switch on it. */
   void hearthNoteCoprocReady();
-  void hearthDrain();                        /* from HearthClass::poll() */
+  /* From HearthClass::poll() and every hearthCommand(). The whole update
+   * path (the pull, the verify, the verdict, the apply) runs behind
+   * _drainFn, null until begin() sets it (final review I8: a sketch that
+   * never begins the update links none of it). The _draining and the
+   * link-busy guards run inside hearthDrainImpl(), so a never-begun
+   * object's drain costs one null check. */
+  void hearthDrain();
   void hearthAttach(HearthFs &fs);           /* tests inject the fake fs; target uses hearthLittleFs() */
   void hearthSetFlasher(HearthFlasher *f);   /* Task 5/6 */
   HearthUpdateStage &stage();                /* the stage, over the attached fs */
@@ -161,14 +229,21 @@ public:
    * the device the link's own port brings the UART to the rate; the tests
    * install a callback that records it instead. 0 disables the switch. */
   void hearthSetBaudChanger(void (*cb)(uint32_t));
-  /* The test hook for the host part (plan Task 6b). The constructor
-   * installs the ARDUINO defaults (PicoOTA, the linker symbols,
-   * rp2040.reboot, hearthCoprocReset) and all-null hooks on the host;
-   * tests install their own over file-static records instead. A null hook
-   * means "not available here". */
+  /* The test hook for the host part (plan Task 6b). The inline begin()
+   * wrapper installs the ARDUINO defaults (PicoOTA, the linker symbols,
+   * rp2040.reboot, hearthCoprocReset; final review I8), and all-null
+   * hooks stand in on the host; tests install their own over file-static
+   * records instead. It sets _hostHooksInstalled, so an install through
+   * here (before or after a begin()) is what keeps the wrapper from
+   * laying its defaults over it. A null hook means "not available
+   * here". */
   void hearthSetHostHooks(const HearthHostHooks &h);
 
 private:
+  /* The body begin() forwards to (its comment block stays with this in
+   * the implementation): the fs and the ARDUINO default hooks attach in
+   * the wrapper, not here, so this names no LittleFS or PicoOTA symbol. */
+  bool hearthBeginImpl(uint32_t productVersion, const char *versionString, const HearthUpdateConfig &cfg);
   /* The re-entry guard for hearthDrain(): set on construction, cleared by
    * the destructor on every exit path, including an early return from a
    * nested hearthCommand() call in the middle of the pull. */
@@ -187,6 +262,11 @@ private:
   void hearthVerifyAndVerdict();  /* 4b2: on DOWNLOADED, verify the staged bundle, consent, AT+MTOTASTAGED */
   void hearthRefuse(HearthBundleError reason);  /* 4b2: AT+MTOTASTAGED=0,<reason>, remove staged, FAILED/ERR_BUNDLE */
   void hearthSetBaud(uint32_t baud);  /* 4b2: AT+MTBAUD=<baud> plus the test hook */
+  /* Final review I8: the work hearthDrain() used to run in its own body:
+   * the re-probe, the retry, the baud switch, the pull, the verdict and
+   * the apply. The body lives here, and begin() sets _drainFn to it, so
+   * the heavy code is named only on that path. */
+  void hearthDrainImpl();
   /* Final review I5: the four version fields that must move together,
    * set by every place that changes the effective version (begin(), the
    * fw-only success tail, the first-boot host confirm, the resume): the
@@ -310,6 +390,13 @@ private:
   bool (*_applyRequestCB)();
   void (*_statusCB)(const HearthUpdateStatus &);
   void (*_baudChangerCB)(uint32_t);  /* 4b2 test hook for AT+MTBAUD, 0 = no switch */
+  /* Final review I8: the pointer hearthDrain() calls the work through,
+   * null until begin() sets it (to hearthDrainImpl()). Null on the host
+   * test build, where the tests run hearthDrain() on a constructed,
+   * never-begun object; begin() sets it on every build. The member
+   * pointer is what keeps the drain work out of a never-begun sketch's
+   * link: the only name for hearthDrainImpl() lives in begin()'s body. */
+  void (HearthUpdate::*_drainFn)();
 
   /* 4b2: the apply decision from the verify on DOWNLOADED. Set before the
    * consent hook runs; _fwPart and _hostPart are indexes into the bundle's
@@ -376,4 +463,10 @@ private:
    * only); hearthDrain() clears it and, when _beginComplete and the state
    * is IDLE or UNAVAILABLE, runs hearthDeclareAndRequestor(). */
   bool _coprocReadySeen;
+  /* Final review I8: true once the ARDUINO default host hooks (PicoOTA,
+   * the linker symbols, rp2040.reboot, hearthCoprocReset) were installed
+   * by the inline begin() wrapper, or by any explicit
+   * hearthSetHostHooks() (which sets it too, so an explicit install keeps
+   * its precedence over a later begin()). False in the constructor. */
+  bool _hostHooksInstalled;
 };

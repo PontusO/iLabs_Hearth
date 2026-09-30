@@ -430,10 +430,12 @@ bool HearthClass::hearthCanRebaudLink() const {
  * then switches to the new one; the host must follow immediately after
  * seeing the OK, or the link goes deaf (115200 against 921600, bench
  * 2026-09-30). The flush comes first so a line the co-processor sent at
- * the old rate is not parsed at the new one; the two lines below are the
- * same two hearthEnsureLink() uses to bring the port up, which is why
- * hearthSetRxBuffer() can be called again on an already running port
- * (it ends the port first, as its own comment records).
+ * the old rate is not parsed at the new one: SerialUART::flush() drains
+ * the TX queue; the RX queue is dropped because begin() reallocates it.
+ * The two lines below are the same two hearthEnsureLink() uses to bring
+ * the port up, which is why hearthSetRxBuffer() can be called again on
+ * an already running port (it ends the port first, as its own comment
+ * records).
  */
 bool HearthClass::hearthRebaudLink(uint32_t baud) {
 #ifdef ARDUINO

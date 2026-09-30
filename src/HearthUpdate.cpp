@@ -22,15 +22,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
-#ifdef ARDUINO
-/* The host part's defaults (plan Task 6b): PicoOTA stages the part's range
- * of the named file into the OTA command page, rp2040.reboot() hands the
- * RP2350's OTA bootloader the page, and the linker's __flash_binary symbols
- * name the running sketch's range in XIP. XIP_BASE comes with the pico
- * headers the core pulls in, as it does in PicoOTA.h's own addFile(). */
-#include <PicoOTA.h>
-extern "C" uint8_t __flash_binary_start, __flash_binary_end;
-#endif
 
 HearthUpdate::HearthUpdate()
   : _owner(0),
@@ -67,31 +58,16 @@ HearthUpdate::HearthUpdate()
     _coprocReadySeen(false) {
   _declaredVersion = 0;
   _declaredVersionString[0] = 0;
-#ifdef ARDUINO
-  /* The real host hooks: the running sketch in XIP, the PicoOTA staging
-   * (addFile of the named range plus the commit), rp2040's reboot and the
-   * co-processor's reset line. */
-  _hostHooks.imageRange = [](const uint8_t **start, uint32_t *len) {
-    *start = &__flash_binary_start;
-    *len = (uint32_t)(&__flash_binary_end - &__flash_binary_start);
-    return true;
-  };
-  _hostHooks.stageImage = [](const char *path, uint32_t off, uint32_t len) {
-    picoOTA.begin();
-    picoOTA.addFile(path, off, XIP_BASE, len);
-    return picoOTA.commit();
-  };
-  _hostHooks.reboot = []() {
-    rp2040.reboot();
-  };
-  _hostHooks.coprocReset = [](const HearthCoprocPins &pins) {
-    return hearthCoprocReset(pins, 100);
-  };
-#else
-  /* The host has none of these: every hook stays null, which means "not
-   * available here" (the host apply fails, the co-processor reset is
-   * skipped with a log line). Tests install their own. */
-#endif
+  /* Final review I8: the ARDUINO default host hooks (PicoOTA, the linker
+   * symbols, rp2040.reboot, hearthCoprocReset) are installed by the
+   * inline begin() wrapper instead of here, and the drain work is named
+   * by the same path (_drainFn null until then), so a sketch that never
+   * calls begin() links neither. On the host build both stay null: the
+   * hooks are "not available here" (the host apply fails, the
+   * co-processor reset is skipped with a log line) and tests install
+   * their own. */
+  _drainFn = 0;
+  _hostHooksInstalled = false;
   _status.state = HEARTH_UPDATE_DISABLED;
   _status.percent = 0;
   _status.offeredVersion = 0;
@@ -137,7 +113,10 @@ void HearthUpdate::onStatus(void (*cb)(const HearthUpdateStatus &)) { _statusCB 
 
 void HearthUpdate::hearthSetBaudChanger(void (*cb)(uint32_t)) { _baudChangerCB = cb; }
 
-void HearthUpdate::hearthSetHostHooks(const HearthHostHooks &h) { _hostHooks = h; }
+void HearthUpdate::hearthSetHostHooks(const HearthHostHooks &h) {
+  _hostHooks = h;
+  _hostHooksInstalled = true;
+}
 
 HearthUpdateStatus HearthUpdate::status() const { return _status; }
 
@@ -321,8 +300,19 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
  * ends the staged write and sets _downloadComplete, which Task 4b2 turns
  * into the verification, the verdict, the consent and the
  * AT+MTOTASTAGED.
+ *
+ * Final review I8: the work below is hearthDrainImpl(), reached only
+ * through _drainFn, which begin() sets. A constructed object (a sketch
+ * that never calls begin()) costs one null check and nothing else, and
+ * the whole update path is out of its link.
  */
 void HearthUpdate::hearthDrain() {
+  if (_drainFn) {
+    (this->*_drainFn)();
+  }
+}
+
+void HearthUpdate::hearthDrainImpl() {
   /* Final review I4: every other drain in HearthClass returns when
    * _link.busy() is set (the C3 lesson recorded above
    * hearthDrainCmdRespQueue), and this one was missing the check. A
@@ -1044,6 +1034,7 @@ uint32_t modelFsNeed(const char *model) {
   }
   return 0;
 }
+
 }  // namespace
 
 /*
@@ -1874,14 +1865,7 @@ void HearthUpdate::end() {
  * flash, and the state's phase HOST and HOST_CONFIRM run their first-boot
  * branches after the normal sequence reaches IDLE.
  */
-bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, const HearthUpdateConfig &cfg) {
-  /* The tests inject their fs with hearthAttach(); on the device the
-   * LittleFS-backed fs is the default (hearthLittleFs() is ARDUINO-only). */
-#ifdef ARDUINO
-  if (!_fs) {
-    _fs = &hearthLittleFs();
-  }
-#endif
+bool HearthUpdate::hearthBeginImpl(uint32_t productVersion, const char *versionString, const HearthUpdateConfig &cfg) {
   if (!_fs) {
     _status.state = HEARTH_UPDATE_DISABLED;
     _status.error = HEARTH_UPDATE_ERR_NO_FS;
@@ -1925,6 +1909,14 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
   _requestorRetry = false;
   _requestorRetryMs = 0;
   _requestorRetryNow = false;
+  /* Final review I8: this is the one body that names the heavy drain
+   * path, on every build: the drain work becomes reachable (a
+   * constructed object's hearthDrain() is one null check and nothing
+   * else). The ARDUINO default host hooks and the LittleFS-backed fs go
+   * in through the inline begin() wrapper, unless an earlier
+   * hearthAttach() or hearthSetHostHooks() already installed their own
+   * (the flag keeps that precedence). */
+  _drainFn = &HearthUpdate::hearthDrainImpl;
 
   if (!_fs->begin() || !_stage.begin(*_fs, _cfg.dir)) {
     _status.state = HEARTH_UPDATE_DISABLED;

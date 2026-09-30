@@ -247,8 +247,9 @@ void setup() {
   Serial.println("Endpoint declared. Starting Matter...");
 
   /*
-   * Matter.begin() is the step that talks to the C6. Call it last in
-   * setup(), after every endpoint's own begin(), and never from loop().
+   * Matter.begin() is the step that talks to the co-processor. Call it
+   * last in setup(), after every endpoint's own begin(), and never from
+   * loop().
    */
   Matter.begin();
 

@@ -1,9 +1,10 @@
 /* HearthFs: the thin filesystem surface the update stage stands on.
  *
  * The device implementation wraps arduino-pico's LittleFS
- * (HearthFsLittle.cpp, target only); the host tests drive the stage
- * through HearthFsMem (test/host/HearthFsMem.h). Paths are LittleFS
- * absolute paths; the stage keeps everything under its own directory. */
+ * (HearthFsLittle.h, target only, header-only: see its own comment for the
+ * link cost behind that); the host tests drive the stage through
+ * HearthFsMem (test/host/HearthFsMem.h). Paths are LittleFS absolute
+ * paths; the stage keeps everything under its own directory. */
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -31,6 +32,3 @@ public:
   virtual uint32_t freeBytes() = 0;
   virtual uint32_t totalBytes() = 0;                /* the whole partition, not the free space */
 };
-
-/* The target's HearthFs, over LittleFS. HearthFsLittle.cpp only. */
-HearthFs &hearthLittleFs();

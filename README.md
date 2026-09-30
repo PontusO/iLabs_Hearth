@@ -943,9 +943,9 @@ cannot reach Hearth it puts the saved sketch back and reboots, once. A
 crash before the library runs is not covered, the limit every Arduino
 OTA has; a product that needs more adds the hardware watchdog.
 
-A power loss while the co-processor is being flashed is resumed on the
-next boot, before anything else talks to the co-processor. The recovery
-bootloaders (the C6's ROM, the nRF's MCUboot, the MG24's Gecko
+A power loss while the co-processor is being flashed is resumed when
+`Hearth.update.begin()` runs, before its own link commands. The
+recovery bootloaders (the C6's ROM, the nRF's MCUboot, the MG24's Gecko
 bootloader) are never written by an update.
 
 ### The MG24 and commissioning
