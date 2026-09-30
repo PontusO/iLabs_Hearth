@@ -1402,6 +1402,155 @@ static void test_host_gz_not_selected_applies(void) {
   check("nothing unexpected on the wire (gz not selected)", s.unexpected().empty());
 }
 
+/*
+ * Task 7a3: the two rules the plan states that were never implemented.
+ * Case 1: the begin() of a firmware 1.2.0 or earlier, which has no
+ * AT+MTSWVER: the declaration gets the ordinary unknown command answer
+ * (+MTERR:8 then ERROR) and begin() reports UNAVAILABLE, returns true and
+ * sends nothing further. Cases 2 to 4: the B632 settle wait, at least 2 s
+ * after a commissioning complete (+MTEVT:3) before any reset the update
+ * drives, and no wait without one (or an old one).
+ */
+
+/* Case 1: the firmware without FOTA. The declaration is the only command
+ * out: +MTERR:8 then ERROR, no AT+CGMM or anything after. */
+static void test_begin_firmware_without_fota(void) {
+  HearthFsMem fs;
+  MockStream s;
+  HearthClass hearth;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "+MTERR:8\r\nERROR\r\n");
+  HearthUpdateConfig cfg;
+  cfg.resetPin = 15;
+  cfg.resetActiveLow = true;
+  cfg.strapPin = 14;
+  cfg.strapActiveLow = true;
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (no FOTA)", hearth.update.begin(0x10400, "1.4.0", cfg));
+  g_yieldAdvanceMs = 0;
+  check("the status is UNAVAILABLE (no FOTA)",
+        hearth.update.status().state == HEARTH_UPDATE_UNAVAILABLE);
+  check("the error is OK (no FOTA)",
+        hearth.update.status().error == HEARTH_UPDATE_OK);
+  check("the script is drained (no FOTA)", s.scriptDrained());
+  check("nothing else went out (no FOTA)", s.unexpected().empty());
+}
+
+/* The B632 settle wait, cases 2 to 4. setupToApply's signature takes the
+ * fixture as its second argument (a local alias keeps the call below
+ * readable). */
+static bool setupToApply7a3(MockStream &s, HearthClass &hearth, HearthFsMem &fs,
+                            FlasherFake &fake, const char *fixture, const char *swver) {
+  std::string fx;
+  return setupToApply(s, hearth, fs, fake, fx, fixture, swver,
+                      "ESP32-C6 Hearth", "wifi", 0x10300, "1.3.0", 0x10300, true, "1.2.0");
+}
+
+/* Case 2: the commissioning lands while the apply waits, and the first
+ * flash is held for the settle: the recorded time minus t0 is at least
+ * 2000. */
+static void test_settle_wait_after_commissioning(void) {
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  check("setup reaches WAIT_APPLY (settle)", setupToApply7a3(s, hearth, fs, fake, "good",
+        "AT+MTSWVER=66304,\"1.3.0\""));
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.3.0\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  uint32_t flashAt = 0;
+  fake.onFlash = [&](int i) {
+    if (i == 0) {
+      flashAt = millis();
+      s.injectURC("+MTREADY");
+    }
+  };
+  uint32_t t0 = millis();
+  s.injectURC("+MTEVT:3");
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("the flash is held at least 2 s after the commissioning (settle)",
+        flashAt >= t0 && flashAt - t0 >= 2000);
+  check("one flash call (settle)", fake.calls().size() == 1);
+  check("the status is IDLE (settle)", hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("the script is drained (settle)", s.scriptDrained());
+  check("nothing unexpected on the wire (settle)", s.unexpected().empty());
+}
+
+/* Case 3: no commissioning at all: the same apply, the flash is reached
+ * without the wait, the recorded time minus t0 is below 2000. */
+static void test_no_settle_without_commissioning(void) {
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  check("setup reaches WAIT_APPLY (no settle)", setupToApply7a3(s, hearth, fs, fake, "good",
+        "AT+MTSWVER=66304,\"1.3.0\""));
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.3.0\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  uint32_t flashAt = 0;
+  fake.onFlash = [&](int i) {
+    if (i == 0) {
+      flashAt = millis();
+      s.injectURC("+MTREADY");
+    }
+  };
+  uint32_t t0 = millis();
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("the flash is reached in under 2 s without a commissioning (no settle)",
+        flashAt >= t0 && flashAt - t0 < 2000);
+  check("one flash call (no settle)", fake.calls().size() == 1);
+  check("the status is IDLE (no settle)", hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("the script is drained (no settle)", s.scriptDrained());
+  check("nothing unexpected on the wire (no settle)", s.unexpected().empty());
+}
+
+/* Case 4: an old commissioning does not wait: the +MTEVT:3 is injected
+ * and polled, 2500 ms run, then the apply starts: the flash is reached
+ * within 2000 ms of the apply poll's start. */
+static void test_old_commissioning_does_not_wait(void) {
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  check("setup reaches WAIT_APPLY (old commissioning)", setupToApply7a3(s, hearth, fs, fake, "good",
+        "AT+MTSWVER=66304,\"1.3.0\""));
+  g_yieldAdvanceMs = 50;
+  s.injectURC("+MTEVT:3");
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  delay(2500);
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.3.0\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  uint32_t flashAt = 0;
+  fake.onFlash = [&](int i) {
+    if (i == 0) {
+      flashAt = millis();
+      s.injectURC("+MTREADY");
+    }
+  };
+  uint32_t t0 = millis();
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("the old commissioning does not hold the flash (old commissioning)",
+        flashAt >= t0 && flashAt - t0 < 2000);
+  check("one flash call (old commissioning)", fake.calls().size() == 1);
+  check("the status is IDLE (old commissioning)", hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("the script is drained (old commissioning)", s.scriptDrained());
+  check("nothing unexpected on the wire (old commissioning)", s.unexpected().empty());
+}
+
 int main(void) {
   printf("\n===== HearthUpdate apply (task 6a) tests =====\n");
   test_order_and_arguments();
@@ -1429,6 +1578,11 @@ int main(void) {
   printf("\n===== HearthUpdate apply (task 7a2) tests =====\n");
   test_host_gz_refused();
   test_host_gz_not_selected_applies();
+  printf("\n===== HearthUpdate apply (task 7a3) tests =====\n");
+  test_begin_firmware_without_fota();
+  test_settle_wait_after_commissioning();
+  test_no_settle_without_commissioning();
+  test_old_commissioning_does_not_wait();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

@@ -53,6 +53,8 @@ HearthUpdate::HearthUpdate()
     _consentPending(false),
     _consentRefused(false),
     _consentRefusalMs(0),
+    _commissioned(false),
+    _commissionedMs(0),
     _baud(HEARTH_LINK_BAUD),
     _baudWantedDownload(false),
     _applyPending(false) {
@@ -873,6 +875,7 @@ void HearthUpdate::hearthFwFailed() {
          * part behind it. */
         uint8_t zeros[32];
         memset(zeros, 0, sizeof(zeros));
+        hearthSettleAfterCommissioning();
         fl->flash(*((HearthClass *)_owner)->link().stream(), pins, rsrc, 0, rlen, zeros);
 #if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
         /* The flasher left the port at its own rate; re-clock it. */
@@ -976,6 +979,7 @@ int HearthUpdate::hearthApplyFw(HearthUpdateState &st, int firstAttempt) {
   for (int attempt = firstAttempt; attempt <= 3; attempt++) {
     st.attempts = (uint8_t)attempt;
     _stage.saveState(st);
+    hearthSettleAfterCommissioning();
     int rc = fl->flash(*owner->link().stream(), pins, src, off, p.length, p.sha256);
 #if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
     /* The flasher left the port at its own rate (921600 on the ESP ROM
@@ -1592,6 +1596,19 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
     /* The normal declaration: the effective version, tried once. */
     snprintf(cmd, sizeof(cmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)eff, effStr);
     r0 = hearthCmd(cmd, 0, 0);
+    if (r0 == 8) {
+      /* Firmware 1.2.0 and earlier has no AT+MTSWVER: the parser answers
+       * a command it does not know with +MTERR:8 then ERROR (the ordinary
+       * unknown command path, AT_MT_SPEC.md). It has no AT+MTOTA either,
+       * so FOTA is unavailable, not a broken link: exactly the AT+MTOTA=1
+       * -> 8 branch below, UNAVAILABLE, not an error, no further command. */
+      _status.state = HEARTH_UPDATE_UNAVAILABLE;
+      _status.effectiveVersion = eff;
+      if (_statusCB) {
+        _statusCB(_status);
+      }
+      return true;
+    }
     if (r0 != 0) {
       _status.state = HEARTH_UPDATE_DISABLED;
       _status.error = HEARTH_UPDATE_ERR_LINK;
@@ -1792,6 +1809,7 @@ bool HearthUpdate::hearthFirstBootHost(const HearthUpdateState &stIn) {
   pins.strap = _cfg.strapPin;
   pins.strapActiveLow = _cfg.strapActiveLow;
   if (_hostHooks.coprocReset) {
+    hearthSettleAfterCommissioning();
     ((HearthClass *)_owner)->hearthArmExpectedReboot();
     if (_hostHooks.coprocReset(pins)) {
       if (((HearthClass *)_owner)->link().waitReady(HEARTH_READY_TIMEOUT_MS)) {
@@ -1845,6 +1863,37 @@ bool HearthUpdate::hearthFirstBootHostConfirm(const HearthUpdateState &st) {
     _statusCB(_status);
   }
   return true;
+}
+
+/* B632: a commissioning complete (+MTEVT:3) was dispatched. Recording a
+ * time and a flag, no link call, so it is safe from the URC callback
+ * hearthDispatchEvt() runs in. */
+void HearthUpdate::hearthNoteCommissioned() {
+  _commissioned = true;
+  _commissionedMs = (uint32_t)millis();
+}
+
+/* B632: the MG24's key store saves its key map two seconds after a write,
+ * so a reset inside that window after a commissioning loses the new
+ * fabric. The plan's rule: the library waits at least 2 s after a
+ * commissioning completes before any reset it drives. Called immediately
+ * before every reset the update drives: each flash attempt in
+ * hearthApplyFw(), the retained rollback flash in hearthFwFailed() and
+ * the first-boot co-processor reset in hearthFirstBootHost(). The apply
+ * blocks anyway, so the remainder is a plain delay(). Once the 2000 ms
+ * have run the flag clears: an old commissioning never delays a reset
+ * again. */
+void HearthUpdate::hearthSettleAfterCommissioning() {
+  if (!_commissioned) {
+    return;
+  }
+  uint32_t elapsed = millis() - _commissionedMs;
+  if (elapsed >= 2000) {
+    _commissioned = false;
+    return;
+  }
+  delay(2000 - elapsed);
+  _commissioned = false;
 }
 
 bool HearthUpdate::checkNow() {

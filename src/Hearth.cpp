@@ -532,6 +532,14 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
   if (bit >= 27) {
     return;
   }
+  if (bit == 3) {
+    /* Matter commissioning complete (MATTER_COMMISSIONING_COMPLETE,
+     * AT_MT_SPEC.md S3.11). The update notes the time (B632, the MG24's
+     * key store settles 2 s after the key map is written, so any reset it
+     * drives waits that out first); a URC callback may not call the link,
+     * and recording a time does not. The dispatch carries on unchanged. */
+    self->update.hearthNoteCommissioned();
+  }
   int detail = 0;
   if (*end == ',') {
     detail = atoi(end + 1);

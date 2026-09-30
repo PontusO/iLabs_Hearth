@@ -137,6 +137,10 @@ public:
 
   /* library-internal */
   void hearthOnOtaLine(const char *rest);    /* from HearthClass::hearthOnURCLine; no link calls */
+  /* B632: from HearthClass::hearthDispatchEvt() on +MTEVT:3 (the Matter
+   * commissioning complete); records the time, no link call, and the
+   * settle wait runs before every reset the update drives. */
+  void hearthNoteCommissioned();
   void hearthDrain();                        /* from HearthClass::poll() */
   void hearthAttach(HearthFs &fs);           /* tests inject the fake fs; target uses hearthLittleFs() */
   void hearthSetFlasher(HearthFlasher *f);   /* Task 5/6 */
@@ -195,6 +199,12 @@ private:
    * previous sketch is running again and the loop must stop). */
   bool hearthFirstBootHost(const HearthUpdateState &st);
   bool hearthFirstBootHostConfirm(const HearthUpdateState &st);
+  /* B632: the 2 s settle wait before every reset the update drives (the
+   * flash attempts, the retained rollback flash, the first-boot
+   * co-processor reset). The MG24's key store saves its key map 2 s after
+   * a write, so a reset inside that window after a commissioning loses the
+   * new fabric. */
+  void hearthSettleAfterCommissioning();
   /* 6b: the first-boot failure, called from begin() when the declaration
    * timed out three times: re-stage host-prev.bin and reboot. */
   bool hearthFirstBootHostFail(const HearthUpdateState &st);
@@ -256,6 +266,12 @@ private:
   bool _consentPending;      /* true while the verdict waits on the consent hook */
   bool _consentRefused;      /* true while a refusal is on the clock */
   uint32_t _consentRefusalMs; /* millis() of the refusal, the time only */
+  /* B632: the last commissioning complete (+MTEVT:3). The flag, not a
+   * timestamp sentinel, is what arms the wait: a commissioning recorded at
+   * millis() 0 still settles. The settle wait clears the flag once the
+   * 2000 ms have run, so an old commissioning never delays a reset again. */
+  bool _commissioned;
+  uint32_t _commissionedMs;
   /* The link rate as last set over AT+MTBAUD (HEARTH_LINK_BAUD at start).
    * The drain compares the rate a state needs against this and sends the
    * switch only when they differ, so a repeat state line is a no-op and a
