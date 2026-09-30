@@ -1277,6 +1277,8 @@ void HearthUpdate::hearthFwFailed() {
         (void)rc;
 #if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
         /* The flasher left the port at its own rate; re-clock it. */
+        /* B674: drain the TX first; begin() ends the running UART. */
+        HEARTH_SERIAL_PORT.flush();
         HEARTH_SERIAL_PORT.begin(HEARTH_LINK_BAUD);
 #endif
 #ifdef ARDUINO
@@ -1425,6 +1427,8 @@ int HearthUpdate::hearthApplyFw(HearthUpdateState &st, int firstAttempt) {
 #if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
     /* The flasher left the port at its own rate (921600 on the ESP ROM
      * loader): back to the link baud before the next line on this stream. */
+    /* B674: drain the TX first; begin() ends the running UART. */
+    HEARTH_SERIAL_PORT.flush();
     HEARTH_SERIAL_PORT.begin(HEARTH_LINK_BAUD);
 #endif
     if (rc != HEARTH_FLASH_OK) {

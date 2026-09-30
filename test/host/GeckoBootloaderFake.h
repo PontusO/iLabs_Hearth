@@ -45,6 +45,12 @@ public:
    * block, in order, including the 0x1A padding of the last one. */
   const std::vector<uint8_t> &image() const { return _image; }
   bool ran() const { return _ran; }
+  /* B674: true when flush() was called after the "2" was written. On the
+   * device the caller re-clocks the port the moment flash() returns, and
+   * SerialUART::begin() ends the running UART with the "2" still in the
+   * TX FIFO; the bootloader then reprints its menu instead of running. */
+  bool flushedAfterRun() const { return _flushedAfterRun; }
+  void flush() override { if (_ran) _flushedAfterRun = true; }
   bool uploadComplete() const { return _complete; }
   int blocksAccepted() const { return _accepted; }
   int naksSent() const { return _naks; }
@@ -145,5 +151,5 @@ private:
   State _state = MENU;
   int _expectedSeq = 1, _blockCount = 0, _accepted = 0, _naks = 0, _stx = 0;
   int _nakOnce = 0, _silentAfter = 0, _cancelAt = 0;
-  bool _nakDone = false, _silent = false, _dead = false, _complete = false, _ran = false;
+  bool _nakDone = false, _silent = false, _dead = false, _complete = false, _ran = false, _flushedAfterRun = false;
 };

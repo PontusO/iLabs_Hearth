@@ -305,5 +305,11 @@ int HearthFlasherXmodem::flash(Stream &uart, const HearthCoprocPins &pins, Heart
    * waits for +MTREADY on the AT link after this returns. */
   delay(HEARTH_XMODEM_RUN_SETTLE_MS);
   uart.write('2');
+  /* B674: the "2" must be on the wire before this returns. The caller
+   * re-clocks the port at once, and SerialUART::begin() ends the running
+   * UART first, cutting a byte still in the TX FIFO: the bootloader then
+   * takes a garbled byte, reprints its menu and never runs the
+   * application (bench 2026-09-30, every attempt). */
+  uart.flush();
   return HEARTH_FLASH_OK;
 }

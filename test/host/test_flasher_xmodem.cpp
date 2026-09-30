@@ -315,6 +315,7 @@ int main() {
             (int)xmodemCrc16(img300.data(), 128));
     check("no STX (1K) block was ever sent", fake.stxSeen() == 0);
     check("the fake ran the application ('2' sent last)", fake.ran());
+    check("the '2' is flushed out before flash() returns (B674)", fake.flushedAfterRun());
     {
       /* The flasher's own writes: "1" to start the upload, the blocks,
        * EOT, then "2" to run. The block payloads carry arbitrary data
