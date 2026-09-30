@@ -353,6 +353,38 @@ static void test_wait_ready_finds_marker(void) {
         urcs.find("ESP-ROM") == std::string::npos);
 }
 
+/* Bench 2026-09-30: after an XMODEM upload the MGM240P's Gecko bootloader
+ * leaves its prompt "BL > " and a NUL on the line, with no line end, and the
+ * application's +MTREADY lands on the same line. The marker must still be
+ * found, and it is dispatched as the bare "+MTREADY". */
+static void test_wait_ready_after_a_bootloader_prompt(void) {
+  MockStream s;
+  HearthLink link;
+  link.begin(s);
+  std::string urcs;
+  link.onURC(collect, &urcs);
+  s.injectRaw(std::string("BL > \0+MTREADY\r\n", 16));
+  check("waitReady finds +MTREADY after the prompt and its NUL", link.waitReady(1000));
+  check("the marker is dispatched as the bare +MTREADY", urcs == "+MTREADY;");
+  MockStream s2;
+  HearthLink link2;
+  link2.begin(s2);
+  s2.injectRaw("BL > +MTREADY\r\n");
+  check("waitReady finds +MTREADY after a prompt without a NUL", link2.waitReady(1000));
+}
+
+/* A NUL is never AT text: a line with one in it reads as if it were not there. */
+static void test_nul_bytes_are_dropped(void) {
+  MockStream s;
+  HearthLink link;
+  link.begin(s);
+  s.expect("AT+MTVER?", std::string("+MTV\0ER:1.2.0\r\nOK\r\n", 20));
+  std::string lines;
+  int rc = link.command("AT+MTVER?", collect, &lines);
+  check("a command whose answer carries a NUL still answers OK", rc == 0);
+  check("the NUL is dropped from the line", lines == "+MTVER:1.2.0;");
+}
+
 static void test_wait_ready_times_out(void) {
   MockStream s;
   HearthLink link;
@@ -413,6 +445,8 @@ int main(void) {
   test_flush_input();
   test_flush_input_drops_partial_line();
   test_wait_ready_finds_marker();
+  test_wait_ready_after_a_bootloader_prompt();
+  test_nul_bytes_are_dropped();
   test_wait_ready_times_out();
   test_reentrant_wait_ready_is_refused();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);

@@ -19,6 +19,15 @@ inline void delay(uint32_t ms) { g_millis += ms; }
 extern uint32_t g_yieldAdvanceMs;
 inline void yield() { g_millis += g_yieldAdvanceMs; }
 
+/* The host build's re-entrancy gate (final review I4): a flag a test holds
+ * true while it wants the link to read as busy, so a nested drain (the one a
+ * sketch callback reaches from inside a URC dispatch) returns before it
+ * touches the wire, exactly as while the link's own _busy latch is held.
+ * HearthLink::busy() consults it on the host build; the device build has no
+ * such flag (the latch is the gate there). Default false; every test but the
+ * F2a I4 case leaves it false. */
+extern bool g_linkBusyHeld;
+
 class String : public std::string {
 public:
   String() {}

@@ -25,7 +25,15 @@ HearthClass::HearthClass()
     _deferCurrentCmdResp(false),
     _threadRole(HEARTH_THREAD_UNSPECIFIED),
     _onThreadRoleChangeCB(nullptr),
-    _evtResubscribeNeeded(false) {}
+    _evtResubscribeNeeded(false) {
+  /* Task 7c-fix4: the stored pins start unwired; the variant macros (or a
+   * coprocessorPins() call before the first use) decide the rest. */
+  _coprocPins.reset = -1;
+  _coprocPins.resetActiveLow = true;
+  _coprocPins.strap = -1;
+  _coprocPins.strapActiveLow = true;
+  update.hearthSetOwner(this);
+}
 
 void HearthClass::begin(Stream &serial, unsigned long baud) {
   (void)baud;  // see the header: a caller-supplied Stream has no begin() of its own to call with it;
@@ -165,7 +173,76 @@ void HearthClass::hearthResetCoprocessor() {
    * for the one its own reboot owes it. */
   hearthDisarmExpectedReboot();
   _expectedRebootSeen = false;
+#elif defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
+  /*
+   * Task 7c-fix4 (F669, B670): the board's variant does not define
+   * PIN_ESP_MODE / PIN_ESP_RST (the CPico 2350 carriers of the nRF54L15
+   * and the MGM240P), so the lines come from coprocessorPins(). Gated on
+   * HEARTH_SERIAL_PORT, the same "real target with a variant port" marker
+   * the HEARTH_SERIAL_PORT re-clock uses: the host test build defines
+   * neither the variant macros nor that port, and its begin(Stream&)
+   * must stay exactly as it was. F669: without this the first commands
+   * went out while the co-processor was still booting (the nRF answered
+   * the first command with nothing and AT+MTSWVER with +MTERR:8, its
+   * refusal while still starting). B670: the RP2350's pads come out of
+   * reset with their pull-down enabled, so the strap line is released
+   * FIRST: a low strap makes an MG24 sample its bootloader-activation pin
+   * low on the reset that follows, and it would sit in its Gecko
+   * bootloader. The reset sequence is then the macro path's, byte for
+   * byte.
+   */
+  if (!_link.started()) {
+    return;
+  }
+  HearthCoprocPins pins = hearthCoprocPins();
+  if (pins.reset == -1) {
+    return;  /* nothing stored either: no lines to drive, as before */
+  }
+  if (pins.strap != -1) {
+    hearthCoprocStrap(pins, false);  /* run mode, not recovery: see B670 */
+  }
+  pinMode(pins.reset, OUTPUT);
+  digitalWrite(pins.reset, pins.resetActiveLow ? LOW : HIGH);  /* assert reset */
+  delay(5);
+  _link.flushInput();                /* drop pre-reset noise */
+  digitalWrite(pins.reset, pins.resetActiveLow ? HIGH : LOW);  /* release: the co-processor boots */
+
+  /* Arm first, then wait: waitReady() dispatches the marker through the
+   * ordinary URC path, and the arm is what stops that path from reporting
+   * this entirely expected boot as HEARTH_COPROCESSOR_REBOOTED. */
+  hearthArmExpectedReboot(HEARTH_READY_TIMEOUT_MS);
+  _link.waitReady(HEARTH_READY_TIMEOUT_MS);
+
+  /* Whether or not the marker arrived, this boot is over. Clearing the arm
+   * stops it swallowing a later, genuinely spontaneous reboot; clearing the
+   * seen flag stops the next AT+MTEPAPPLY from mistaking this boot's marker
+   * for the one its own reboot owes it. */
+  hearthDisarmExpectedReboot();
+  _expectedRebootSeen = false;
 #endif
+}
+
+void HearthClass::coprocessorPins(int resetPin, int strapPin, bool resetActiveLow, bool strapActiveLow) {
+  /* Task 7c-fix4 (F669, B670): stored for boards whose variant defines no
+   * PIN_ESP_RST / PIN_ESP_MODE. The call only stores; nothing is driven
+   * until hearthResetCoprocessor() or the update's apply reads the pins. */
+  _coprocPins.reset = resetPin;
+  _coprocPins.resetActiveLow = resetActiveLow;
+  _coprocPins.strap = strapPin;
+  _coprocPins.strapActiveLow = strapActiveLow;
+}
+
+HearthCoprocPins HearthClass::hearthCoprocPins() const {
+  HearthCoprocPins p = _coprocPins;
+#if defined(PIN_ESP_RST)
+  p.reset = PIN_ESP_RST;
+  p.resetActiveLow = true;
+#endif
+#if defined(PIN_ESP_MODE)
+  p.strap = PIN_ESP_MODE;
+  p.strapActiveLow = true;
+#endif
+  return p;
 }
 
 bool HearthClass::linkUp() {
@@ -215,6 +292,11 @@ void HearthClass::poll() {
    * onThreadRoleChange() (or a +MTREADY this same _link.poll() just
    * dispatched) armed it. See hearthDrainEvtResubscribe()'s own comment. */
   hearthDrainEvtResubscribe();
+  /* Plan Task 4: then the FOTA object's wire work (the pending-block pull,
+   * the verdict, the apply), the hearthDrain* pattern: the URC route only
+   * parsed it, the drain is where it reaches the link. No-op while the
+   * update is disabled or has nothing pending. */
+  hearthDrainUpdate();
 }
 
 void HearthClass::hearthOnVerLine(const char *line, void *arg) {
@@ -283,6 +365,10 @@ int HearthClass::hearthCommand(const char *cmd, HearthLink::LineCb onLine, void 
    * also saves/restores _lastError, so a background mask sync can never
    * clobber what this call itself is about to return via lastError(). */
   hearthDrainEvtResubscribe();
+  /* Plan Task 4: then the FOTA object's wire work, the hearthDrain*
+   * pattern: the URC route only parsed the state lines, the drain is where
+   * the update reaches the link. No-op while it is disabled. */
+  hearthDrainUpdate();
   return rc;
 }
 
@@ -290,11 +376,83 @@ void HearthClass::hearthSetError(int code) {
   _lastError = code;
 }
 
+void HearthClass::hearthDrainUpdate() {
+  update.hearthDrain();
+}
+
+/*
+ * The per-command wait form (plan Task 4): the update's block pull passes
+ * its own timeout, everything else is the three-argument form. The
+ * difference is _link.command() taking the timeout, so this does not call
+ * the three-argument form (it would drop the timeout): it repeats the call
+ * with the timeout in the same drain order. 0 keeps the default, as there.
+ */
+int HearthClass::hearthCommand(const char *cmd, HearthLink::LineCb onLine, void *arg, uint32_t timeout_ms) {
+  hearthEnsureLink();
+  poll();
+  int rc = _link.command(cmd, onLine, arg, timeout_ms);
+  hearthCheckExpectedRebootExpiry();
+  _lastError = (rc > 0) ? rc : 0;
+  hearthDrainCmdRespQueue();
+  hearthDrainDeferredWork();
+  hearthDrainEvtResubscribe();
+  hearthDrainUpdate();
+  return rc;
+}
+
 void HearthClass::hearthArmExpectedReboot(uint32_t timeout_ms) {
   _expectingReboot = true;
   _expectedRebootSeen = false;
   _expectedRebootArmedAt = millis();
   _expectedRebootTimeoutMs = timeout_ms;
+}
+
+/*
+ * The rebaudability check for the update's download baud switch (B666).
+ * Only the link's own port can be re-clocked: it is the one the board
+ * variant wires to the co-processor, and it is the one begin() and
+ * hearthEnsureLink() opened. A stream a sketch passed to begin(Stream&)
+ * belongs to the sketch, so the comparison against HEARTH_SERIAL_PORT
+ * decides: false on the host test build (no such port object exists),
+ * false for a sketch-owned stream, true for the variant port.
+ */
+bool HearthClass::hearthCanRebaudLink() const {
+#if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
+  return _link.stream() == (Stream *)&HEARTH_SERIAL_PORT;
+#else
+  return false;
+#endif
+}
+
+/*
+ * B666: the host side of the co-processor's AT+MTBAUD. The firmware
+ * (core/mt/mt_at.c, cmd_mtbaud) answers OK at the CURRENT rate and only
+ * then switches to the new one; the host must follow immediately after
+ * seeing the OK, or the link goes deaf (115200 against 921600, bench
+ * 2026-09-30). The flush comes first so a line the co-processor sent at
+ * the old rate is not parsed at the new one: SerialUART::flush() drains
+ * the TX queue; the RX queue is dropped because begin() reallocates it.
+ * The two lines below are the same two hearthEnsureLink() uses to bring
+ * the port up, which is why hearthSetRxBuffer() can be called again on
+ * an already running port (it ends the port first, as its own comment
+ * records).
+ */
+bool HearthClass::hearthRebaudLink(uint32_t baud) {
+#ifdef ARDUINO
+  if (!hearthCanRebaudLink()) {
+    return false;
+  }
+  HEARTH_SERIAL_PORT.flush();
+  hearthSetRxBuffer(HEARTH_SERIAL_PORT, (size_t)HEARTH_LINK_RX_BUFFER, 0);
+  HEARTH_SERIAL_PORT.begin(baud);
+  return true;
+#else
+  /* No port to re-clock in the host build; the canRebaud check is false
+   * there, so this is unreachable, but the parameter still names the
+   * rate the caller asked for. */
+  (void)baud;
+  return false;
+#endif
 }
 
 void HearthClass::hearthDisarmExpectedReboot() {
@@ -496,6 +654,14 @@ void HearthClass::hearthDispatchEvt(const char *rest, HearthClass *self) {
   }
   if (bit >= 27) {
     return;
+  }
+  if (bit == 3) {
+    /* Matter commissioning complete (MATTER_COMMISSIONING_COMPLETE,
+     * AT_MT_SPEC.md S3.11). The update notes the time (B632, the MG24's
+     * key store settles 2 s after the key map is written, so any reset it
+     * drives waits that out first); a URC callback may not call the link,
+     * and recording a time does not. The dispatch carries on unchanged. */
+    self->update.hearthNoteCommissioned();
   }
   int detail = 0;
   if (*end == ',') {
@@ -887,10 +1053,34 @@ void HearthClass::hearthDrainDeferredWork() {
  */
 void HearthClass::hearthOnURCLine(const char *line, void *arg) {
   HearthClass *self = (HearthClass *)arg;
+  /*
+   * +MTOTA: is the one URC prefix that also names a query result: the
+   * AT+MTOTA? answer is +MTOTA:<mode>,<state>,<percent>,<variant> and its
+   * first field is the mode digit (0, 1 or 2); a genuine state URC's first
+   * field is an upper-case token (IDLE, BLOCK, ...). The digit test keeps
+   * the answer out of the URC set (it goes to the command's own onLine
+   * instead), the colon keeps the +MTOTABLK: command responses out.
+   * hearthOnOtaLine() only parses and sets fields, so it is safe here,
+   * inside the link's own dispatch, where a wire write of its own would be
+   * refused HEARTH_CMD_REENTRANT (spec 3.31, the +MTEVT defect class this
+   * file's isAsyncURC() comment records).
+   */
+  if (strncmp(line, "+MTOTA:", 7) == 0 && !isdigit((unsigned char)line[7])) {
+    self->update.hearthOnOtaLine(line + 7);
+    return;
+  }
   if (strncmp(line, "+MTREADY", 8) == 0) {
     if (self->_onThreadRoleChangeCB) {
       self->_evtResubscribeNeeded = true;
     }
+    /* Task 7c-fix4 (B671): the co-processor's OTA requestor mode is not
+     * persisted (spec 5.2, every boot starts disabled), so every +MTREADY,
+     * expected or not, arms the update's re-probe of its declaration and
+     * the requestor switch. Recording only: this runs inside the link's
+     * own dispatch, where a wire write of its own would be refused
+     * HEARTH_CMD_REENTRANT, and hearthDrain() is where the probe goes out.
+     */
+    self->update.hearthNoteCoprocReady();
     if (self->_expectingReboot) {
       self->_expectingReboot = false;
       self->_expectedRebootSeen = true;

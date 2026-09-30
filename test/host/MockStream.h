@@ -51,6 +51,10 @@ public:
   void injectRaw(const std::string &bytes) { _rx += bytes; }
 
   bool scriptDrained() const { return _script.empty(); }
+  /* The command the script expects next ("" when drained): lets a fake
+   * that runs mid-sequence (FlasherFake's hook) assert which commands have
+   * already gone out, since the script is consumed strictly in order. */
+  std::string nextExpected() const { return _script.empty() ? std::string() : _script.front().cmd; }
   const std::vector<std::string> &unexpected() const { return _unexpected; }
 
   size_t write(uint8_t c) override {

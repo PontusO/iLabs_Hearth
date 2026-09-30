@@ -35,11 +35,23 @@ void HearthLink::begin(Stream &serial) {
  * mask read-modify-write it exists to perform never got past its own
  * first read. Matching the colon is exact and sufficient: the URC always
  * carries one immediately after "+MTEVT" and the mask reply never does.
+ *
+ * "+MTOTA:" (7 chars, WITH the colon) is the second URC prefix that also
+ * names a query result (the +MTATTR one above is the first): the AT+MTOTA?
+ * answer is +MTOTA:<mode>,<state>,<percent>,<variant> and its first field
+ * is the mode digit (0, 1 or 2), while a state URC's first field is an
+ * upper-case token (IDLE, BLOCK, ...). The digit test on the eighth
+ * character is what tells them apart, and the colon keeps the +MTOTABLK:
+ * command responses (AT+MTOTAGET's chunk lines) out of the URC set on top
+ * of that. Routing every +MTOTA: line as a URC would swallow the query's
+ * answer, the +MTEVT defect class this file's isAsyncURC() comment
+ * records. (Plan Task 4, spec 3.31.)
  */
 bool HearthLink::isAsyncURC(const char *line) {
   return strncmp(line, "+MTEVT:", 7) == 0 || strncmp(line, "+MTATTR", 7) == 0
       || strncmp(line, "+MTIDENT", 8) == 0 || strncmp(line, "+MTREADY", 8) == 0
-      || strncmp(line, "+MTCMD", 6) == 0;
+      || strncmp(line, "+MTCMD", 6) == 0
+      || (strncmp(line, "+MTOTA:", 7) == 0 && !isdigit((unsigned char)line[7]));
 }
 
 /*
@@ -97,6 +109,14 @@ const char *HearthLink::readLine(uint32_t timeout_ms) {
       }
       if (_overflow) {
         continue;  // dropping an over-length line until its newline
+      }
+      if (c == '\0') {
+        /* A NUL is never AT text. The MGM240P's Gecko bootloader ends its
+         * menu prompt with "BL > \0" and no line end, so after an XMODEM
+         * upload the application's +MTREADY arrives on the same line as
+         * that prompt (bench 2026-09-30); a stored NUL would cut the line
+         * short and hide the marker. */
+        continue;
       }
       if (_acc_len < HEARTH_LINE_MAX - 1) {
         _acc[_acc_len++] = c;
@@ -236,11 +256,16 @@ bool HearthLink::waitReady(uint32_t timeout_ms) {
     if (!line) {
       return false;
     }
-    if (strncmp(line, "+MTREADY", 8) == 0) {
+    /* Anywhere in the line, not only at its start: a bootloader's last
+     * prompt can share the line with the marker when it ends without a
+     * line end (the Gecko bootloader's "BL > " after an XMODEM upload,
+     * bench 2026-09-30). */
+    const char *mark = strstr(line, "+MTREADY");
+    if (mark) {
       /* Dispatched, not swallowed: the Hearth layer's expected-reboot arm
        * is cleared by its URC handler, and this marker is exactly the one
        * that arm was placed for. */
-      dispatchURC(line);
+      dispatchURC(mark);
       return true;
     }
     /* Boot ROM chatter, or a URC the pre-reset firmware had already queued.

@@ -14,6 +14,11 @@ Contents:
 | `manifest.json` | the SHA-256 and size of every file written to a board, images and bridge alike |
 | `flash.py` | the flasher |
 | `make_manifest.py`, `test_manifest.py` | regenerate and check `manifest.json` |
+| `make_bundle.py`, `check_bundle.py` | build and check signed firmware update bundles |
+| `ota_descriptor.py` | emit the Home Assistant provider-directory descriptor for a bundle |
+| `test_bundle.py` | the bundle tools' own test suite |
+| `hearth_bundle.py` | the bundle container the tools share |
+| `keys/` | the development signing key and its README |
 
 ## Which variant
 
@@ -433,6 +438,173 @@ doubt them: shipping a rebuilt image would have meant shipping bytes nobody
 tested. (The 1.1.0 images carried `1.0.0-158-g0e2d222`, and the 1.0.0 images
 `0.12.0-11-gdf9d168`, for the same reason.)
 
+## Firmware update bundles
+
+The development key in `fw/keys/` is public: it is in the repository, so
+a bundle signed with it proves integrity, not origin. A product
+generates its own key pair (the two `openssl` commands in
+[fw/keys/README.md](keys/README.md)), keeps the private half out of any
+repository, and compiles its public half into the sketch through
+`HearthUpdateConfig::publicKey` (a header like `src/HearthDevKey.h`, made
+with `hearth_bundle.emit_dev_key_header`). There is no unsigned mode: a
+bundle that does not verify against the sketch's key is refused.
+
+### `make_bundle.py`
+
+```
+usage: make_bundle.py [-h] --vendor VENDOR --product PRODUCT --version VERSION
+                      --version-string VERSION_STRING --key KEY [--host HOST]
+                      [--host-gz] [--fw FW] [--target TARGET]
+                      [--variant {none,wifi,thread,combined}]
+                      [--fw-version FW_VERSION] -o OUTPUT
+
+Build and sign a Hearth firmware bundle, wrapped as a Matter OTA image.
+
+  python3 fw/make_bundle.py --vendor 0xFFF1 --product 0x8000 --version 0x00010400 \
+    --version-string 1.4.0 --key fw/keys/hearth_bundle_dev_p256.pem \
+    [--host sketch.bin] \
+    [--fw hearth-wifi-1.3.0.bin --target "ESP32-C6 Hearth" --variant wifi \
+     --fw-version 1.3.0] \
+    -o product-1.4.0.ota
+
+options:
+  -h, --help            show this help message and exit
+  --vendor VENDOR
+  --product PRODUCT
+  --version VERSION
+  --version-string VERSION_STRING
+  --key KEY             ECDSA P-256 private key, PEM
+  --host HOST           the host sketch image (arduino-cli export)
+  --host-gz             refused: the OTA bootloader inflates only a file that
+                        begins with the gzip magic and the host part is staged
+                        in place inside the bundle, so the image would be
+                        flashed still compressed; give the uncompressed .bin
+  --fw FW               the Hearth image for the co-processor
+  --target TARGET       the model string AT+CGMM answers, e.g. 'ESP32-C6
+                        Hearth'
+  --variant {none,wifi,thread,combined}
+  --fw-version FW_VERSION
+                        the Hearth version the image reports to AT+MTVER?
+  -o OUTPUT, --output OUTPUT
+```
+
+The Hearth part, per co-processor: the C6's application `.bin`
+(`--target "ESP32-C6 Hearth"`, with `--variant wifi|thread|combined`
+matching the image), the nRF's MCUboot-signed `zephyr.signed.bin`
+(`--target "nRF54L15 Hearth"` or `"nRF54LM20A Hearth"`, `--variant
+thread`), or the MG24's `.gbl` (`--target "MGM240P Hearth"`, `--variant
+thread`). `--fw-version` is what that image answers to `AT+MTVER?`.
+
+The host part is the sketch's uncompressed `.bin` from
+`arduino-cli compile --export-binaries`. `--host-gz` is refused: the
+RP2350's OTA bootloader inflates only a file that starts with the gzip
+magic, and the host part is staged in place inside the bundle, whose
+first bytes are the Matter OTA header, so a gzip part would land in
+flash still compressed.
+
+`--vendor` and `--product` must be the device's own, or its OTA
+requestor ignores the offer. The development builds are vendor 0xFFF1
+with product 0x8000 for the ESP32-C6 and 0x8010 for the MGM240P; an nRF
+uses its SDK's default. Read any device's ids with `chip-tool
+basicinformation read product-id <node> 0`. `--version` is the product
+version, a Matter software version in `0x00MMmmpp` style (the example's
+0x00010100 is 1.1.0), and it must be higher than what the device runs
+for the update to be accepted.
+
+### `check_bundle.py`
+
+```
+usage: check_bundle.py [-h] --pub PUB ota
+
+Check a Hearth firmware bundle: the same checks the host performs, in the
+same order, with the spec's reason numbers in the failure message (spec
+2026-09-07-fota-design 5.4: 1 signature, 2 digest, 3 target mismatch,
+4 version not accepted, 5 storage, 6 malformed).
+
+  python3 fw/check_bundle.py <file.ota> --pub fw/keys/hearth_bundle_dev_p256.pub.pem
+
+Exits 0 only when everything verifies. The checks the host cannot reach
+without its own configuration (reason 3 target match, reason 4 version
+acceptance, reason 5 storage) are noted, not run.
+
+positional arguments:
+  ota         the bundle, a Matter OTA image
+
+options:
+  -h, --help  show this help message and exit
+  --pub PUB   the public key that signs bundles, PEM
+```
+
+It runs the same checks as the host, in the same order, except the three
+that need the device's own configuration (target, version acceptance,
+storage).
+
+### Offering a bundle from Home Assistant
+
+Put the bundle and the descriptor from
+`python3 fw/ota_descriptor.py --url <url> -o <file>.json <bundle>.ota`
+into the Matter server's OTA provider directory. The node's update
+entity then shows the version, and Install runs the update. For a fleet,
+`update.install` with many targets (a label such as `hearth`, or an
+area) updates them concurrently. This flow follows the design and
+python-matter-server's provider model, but it has not yet been exercised
+on the project's bench, where the chip-tool flow below is the qualified
+one.
+
+### Offering a bundle on a bench (chip-tool)
+
+The flow the project's test harness drives:
+
+1. Start the provider, with a discriminator and passcode distinct from
+   every device on the network (a provider that shares a discriminator
+   with a commissionable device can be paired in its place), and wait
+   for "Server Listening":
+
+   ```sh
+   chip-ota-provider-app --filepath <bundle>.ota --discriminator <d> \
+     --passcode <p> --KVS <dir>/kvs --secured-device-port 5541
+   ```
+
+2. Commission it:
+
+   ```sh
+   chip-tool pairing onnetwork-long <provider-node> <p> <d>
+   ```
+
+3. Give it the access list that lets the device's QueryImage reach its
+   OTA Provider cluster (cluster 41). It is written on the provider, not
+   on the device:
+
+   ```sh
+   chip-tool accesscontrol write acl '[{"fabricIndex":1,"privilege":5,"authMode":2,"subjects":[112233],"targets":null},{"fabricIndex":1,"privilege":3,"authMode":2,"subjects":null,"targets":[{"cluster":41,"endpoint":null,"deviceType":null}]}]' <provider-node> 0
+   ```
+
+4. Announce it to the device:
+
+   ```sh
+   chip-tool otasoftwareupdaterequestor announce-otaprovider <provider-node> 0 0 0 <device-node> 0
+   ```
+
+5. The sketch's status callback then shows the offer, the download and
+   the rest.
+
+A provider left running from an earlier session still owns port 5541:
+stop it first, or the new one fails to bind while the pairing quietly
+reaches the old one.
+
+### `ota_descriptor.py`
+
+```sh
+python3 fw/ota_descriptor.py <bundle>.ota --url <where the server fetches it> -o <bundle>.json
+```
+
+Both `--url` and `-o` are required. The descriptor's field names are those
+of python-matter-server's `OtaProviderFileEntry`; `otaChecksum` is the
+file's SHA-256 in base64 (`otaChecksumType` 1), and
+`maxApplicableSoftwareVersion` is the bundle's product version minus one,
+so only devices running an older version are offered it. A product version
+of 0 is refused.
+
 ## Licences
 
 The library is MIT. Two things in this directory are not covered by that, and
@@ -450,3 +622,9 @@ both carry their own notice:
   binaries that Espressif permits to be redistributed on Espressif silicon. No
   copyleft licence reaches the image. The full SBOM is in the firmware
   repository's README.
+
+The bundle tools are MIT like the library, and they import no GPL code.
+The host library vendors three third-party sources under `src/vendor/`,
+each with its licence or notice and a `VENDORED.md`: micro-ecc v1.1
+(BSD-2-Clause), Brad Conte's SHA-256 (public domain), and
+esp-serial-flasher v1.11.0 (Apache-2.0).

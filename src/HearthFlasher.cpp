@@ -1,0 +1,81 @@
+/*
+ * HearthFlasher.cpp: the flasher registry (forModel) and the two pin
+ * helpers every flasher family shares.
+ *
+ * The helpers are the only place in the library that touches the
+ * co-processor's reset and strap lines, so the host tests exercise the
+ * flashers' full logic against a MockStream: here they report the pin's
+ * availability and do nothing. Under ARDUINO they drive the actual pins
+ * (mode, level, the pulse width).
+ */
+#include "HearthFlasher.h"
+#include "HearthFlasherSmp.h"     /* Task 5a: the SMP family (nRF) */
+#include "HearthFlasherXmodem.h"  /* Task 5b: the Gecko bootloader (MGM240P) */
+#include "HearthFlasherEsp.h"     /* Task 5c: the ESP32-C6 ROM download loader */
+
+#include <string.h>
+
+/*
+ * The three flasher families are registered here for their AT+CGMM model
+ * strings: the SMP client (nRF, Task 5a), the XMODEM client (MGM240P,
+ * Task 5b) and the ESP loader (ESP32-C6, Task 5c). The model strings are
+ * the AT+CGMM answers the update's per-port check already trusts, so no
+ * other registry is needed.
+ */
+HearthFlasher *HearthFlasher::forModel(const char *model) {
+  if (!model) {
+    return nullptr;
+  }
+  if (strcmp(model, "nRF54L15 Hearth") == 0 || strcmp(model, "nRF54LM20A Hearth") == 0) {
+    /* Library-owned static: the caller never deletes (the header says so).
+     * A fresh allocation per call would leave the update's apply path with
+     * a heap object nothing frees. */
+    static HearthFlasherSmp smp;
+    return &smp;
+  }
+  if (strcmp(model, "MGM240P Hearth") == 0) {
+    /* The same library-owned static, for the XMODEM family (Task 5b). */
+    static HearthFlasherXmodem xmodem;
+    return &xmodem;
+  }
+  if (strcmp(model, "ESP32-C6 Hearth") == 0) {
+    /* The same library-owned static, for the ESP ROM loader (Task 5c). */
+    static HearthFlasherEsp esp;
+    return &esp;
+  }
+  return nullptr;
+}
+
+bool hearthCoprocStrap(const HearthCoprocPins &p, bool recovery) {
+#ifdef ARDUINO
+  if (p.strap < 0) {
+    return false;
+  }
+  pinMode(p.strap, OUTPUT);
+  /* Active low: recovery asserts the strap LOW (ROM/serial recovery on
+   * reset). Release is the high (unasserted) level. */
+  digitalWrite(p.strap, (p.strapActiveLow == recovery) ? LOW : HIGH);
+  return true;
+#else
+  (void)recovery;   /* host no-op: only the pin's availability is reported */
+  return p.strap >= 0;
+#endif
+}
+
+bool hearthCoprocReset(const HearthCoprocPins &p, uint32_t pulseMs) {
+#ifdef ARDUINO
+  if (p.reset < 0) {
+    return false;
+  }
+  pinMode(p.reset, OUTPUT);
+  const int assertLevel = p.resetActiveLow ? LOW : HIGH;
+  const int releaseLevel = p.resetActiveLow ? HIGH : LOW;
+  digitalWrite(p.reset, assertLevel);
+  delay(pulseMs);
+  digitalWrite(p.reset, releaseLevel);
+  return true;
+#else
+  (void)pulseMs;    /* host no-op: only the pin's availability is reported */
+  return p.reset >= 0;
+#endif
+}

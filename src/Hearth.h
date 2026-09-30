@@ -212,6 +212,15 @@
 #include "MatterEndpoints/MatterElectricalUtilityMeter.h"
 
 /*
+ * The FOTA object (plan Task 4). Its own header includes the stage and the
+ * bundle headers, both of which include only system headers and
+ * HearthFs.h, so there is no cycle back into this file (checked: neither
+ * names HearthClass). One-way include, the same rule as every endpoint
+ * header above.
+ */
+#include "HearthUpdate.h"
+
+/*
  * The board variant is the single source of truth for the link: which UART
  * reaches the co-processor and which pins drive its reset and boot-mode
  * lines. A sketch never names a serial port, exactly as in the sibling
@@ -299,6 +308,24 @@
 #endif
 
 /*
+ * Max wait for +MTREADY after a flash the update itself drove (a flash
+ * attempt, the retained-image rollback, the flasher's failure exit reset).
+ *
+ * A freshly flashed co-processor first-boots its key store and its Matter
+ * stack, which is much heavier than a bare reboot: on the bench the
+ * MGM240P needed longer than HEARTH_READY_TIMEOUT_MS after a complete
+ * XMODEM upload and the menu's "2" (bench MG24, 2026-09-30 11:31-11:37:
+ * all three attempts logged "no +MTREADY in 10000 ms" although the device
+ * came up and answered over Matter afterwards). The firmware repo's own
+ * flasher waits 20 s (platform/silabs/fw/flash.py, READY_TIMEOUT_S); 30 s
+ * covers it. HEARTH_READY_TIMEOUT_MS stays for the link's own bring-up and
+ * the first-boot reset.
+ */
+#ifndef HEARTH_FLASH_READY_TIMEOUT_MS
+#define HEARTH_FLASH_READY_TIMEOUT_MS 30000
+#endif
+
+/*
  * Safety-net ceiling on hearthArmExpectedReboot(): how long an arm may sit
  * unconsumed before it self-clears. Not a tuned value, just generous enough
  * to cover a full co-processor reboot and Matter stack reinit; its only job
@@ -383,6 +410,29 @@ public:
    * commands do that; the latter also erases the composition).
    */
   void hearthResetCoprocessor();
+
+  /*
+   * The co-processor's reset and boot-strap lines on a board whose variant
+   * does not define them (the CPico 2350 carriers of the nRF54L15 and the
+   * MGM240P: reset GP2, boot strap GP3, both active low). Call this at the
+   * start of setup(), before any other call into the library. The library
+   * then drives the lines itself: hearthResetCoprocessor() resets the
+   * co-processor at link bring-up (F669, the first commands used to go out
+   * while it was still booting) and the update's apply takes its flasher
+   * pins from hearthCoprocPins() when its config carries none. The variant
+   * macros, when the board defines them, always win over the stored pins.
+   * A pin of -1 (not passed here and not in the variant) is driven by
+   * nothing.
+   */
+  void coprocessorPins(int resetPin, int strapPin, bool resetActiveLow = true, bool strapActiveLow = true);
+
+  /*
+   * Library-internal: the co-processor's pins in force, the variant's
+   * (PIN_ESP_RST and PIN_ESP_MODE, active low) when the board defines
+   * them, else the ones coprocessorPins() stored, else -1s. The update's
+   * apply path reads it for the flasher's pins.
+   */
+  HearthCoprocPins hearthCoprocPins() const;
 
   /* True if a bare AT probe round-trips OK. */
   bool linkUp();
@@ -567,6 +617,26 @@ public:
   void hearthArmExpectedReboot(uint32_t timeout_ms = HEARTH_REBOOT_ARM_TIMEOUT_MS);
 
   /*
+   * Whether hearthRebaudLink() below can bring the link's own port to a new
+   * rate: true only on a target build (ARDUINO) where HEARTH_SERIAL_PORT is
+   * defined and the link's stream IS that port. A sketch that passed its
+   * own Stream to begin(Stream&) owns that stream, and the library cannot
+   * re-clock it (the variant port's begin() would re-clock it, and that
+   * stream belongs to the sketch). False on the host test build.
+   */
+  bool hearthCanRebaudLink() const;
+
+  /*
+   * Re-clock the link's own port (HEARTH_SERIAL_PORT) to `baud`: the same
+   * two lines hearthEnsureLink() uses, with the port's input flushed first
+   * so nothing from the old rate is parsed at the new one. Returns false
+   * and touches nothing when hearthCanRebaudLink() is false. Used by the
+   * update's download baud switch (B666) after the co-processor has
+   * answered OK to AT+MTBAUD.
+   */
+  bool hearthRebaudLink(uint32_t baud);
+
+  /*
    * Clear an arm from hearthArmExpectedReboot() without waiting for its
    * +MTREADY or its deadline. Call this on the caller's own timeout path,
    * so the very next spontaneous reboot (which is now what is happening,
@@ -604,6 +674,9 @@ public:
    * ERROR, -2 timeout / link not started).
    */
   int hearthCommand(const char *cmd, HearthLink::LineCb onLine = nullptr, void *arg = nullptr);
+  /* The per-command wait form: the same call with the timeout the update's
+   * block pull needs (plan Task 4). 0 keeps the default. */
+  int hearthCommand(const char *cmd, HearthLink::LineCb onLine, void *arg, uint32_t timeout_ms);
 
   /* Record an error code for a caller that fails before reaching the wire,
    * e.g. an attribute value type the AT protocol cannot carry. */
@@ -659,7 +732,25 @@ public:
    */
   void hearthReportProtocolError();
 
+  /*
+   * The FOTA surface (plan Task 4): the object behind the `update` member
+   * below. begin() brings it up (FOTA is off until then: a constructed
+   * update sends nothing and answers no URC), and the +MTOTA: URC route in
+   * hearthOnURCLine() hands it every state line. See HearthUpdate.h for the
+   * state, error and wire details.
+   */
+  HearthUpdate update;
+
 private:
+  /*
+   * The update's wire work (plan Task 4): the pending-block pull, the
+   * verdict and the apply, run from poll() and hearthCommand() after their
+   * own _link call has returned, the same "after the busy gate is released"
+   * ordering as hearthDrainCmdRespQueue() and friends. The update itself
+   * never calls the link from inside a URC callback; this is how it
+   * reaches the wire.
+   */
+  void hearthDrainUpdate();
   void hearthEnsureLink();
   void hearthRaiseEvent(hearthEvent_t e);
   void hearthCheckExpectedRebootExpiry();
@@ -753,6 +844,12 @@ private:
   HearthPendingCmdResp _cmdRespQueue[kHearthCmdRespQueueDepth];
   uint8_t _cmdRespQueueCount;
   bool _deferredWorkPending;
+  /* Task 7c-fix4 (F669, B670): the co-processor's reset and boot-strap
+   * lines for boards whose variant does not define PIN_ESP_RST /
+   * PIN_ESP_MODE (the CPico 2350 carriers), stored by coprocessorPins().
+   * hearthCoprocPins() reports them (the variant macros win over them when
+   * both exist, -1s when neither does). */
+  HearthCoprocPins _coprocPins;
   /* Task 11: set by hearthDeferCurrentCmdResp(), read and cleared by
    * hearthDispatchCmd() (Hearth.cpp) immediately after the target's
    * hearthOnForwardedCommandFieldsSeq() call returns. See that method's own
