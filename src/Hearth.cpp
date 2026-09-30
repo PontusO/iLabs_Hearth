@@ -332,6 +332,52 @@ void HearthClass::hearthArmExpectedReboot(uint32_t timeout_ms) {
   _expectedRebootTimeoutMs = timeout_ms;
 }
 
+/*
+ * The rebaudability check for the update's download baud switch (B666).
+ * Only the link's own port can be re-clocked: it is the one the board
+ * variant wires to the co-processor, and it is the one begin() and
+ * hearthEnsureLink() opened. A stream a sketch passed to begin(Stream&)
+ * belongs to the sketch, so the comparison against HEARTH_SERIAL_PORT
+ * decides: false on the host test build (no such port object exists),
+ * false for a sketch-owned stream, true for the variant port.
+ */
+bool HearthClass::hearthCanRebaudLink() const {
+#if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
+  return _link.stream() == (Stream *)&HEARTH_SERIAL_PORT;
+#else
+  return false;
+#endif
+}
+
+/*
+ * B666: the host side of the co-processor's AT+MTBAUD. The firmware
+ * (core/mt/mt_at.c, cmd_mtbaud) answers OK at the CURRENT rate and only
+ * then switches to the new one; the host must follow immediately after
+ * seeing the OK, or the link goes deaf (115200 against 921600, bench
+ * 2026-09-30). The flush comes first so a line the co-processor sent at
+ * the old rate is not parsed at the new one; the two lines below are the
+ * same two hearthEnsureLink() uses to bring the port up, which is why
+ * hearthSetRxBuffer() can be called again on an already running port
+ * (it ends the port first, as its own comment records).
+ */
+bool HearthClass::hearthRebaudLink(uint32_t baud) {
+#ifdef ARDUINO
+  if (!hearthCanRebaudLink()) {
+    return false;
+  }
+  HEARTH_SERIAL_PORT.flush();
+  hearthSetRxBuffer(HEARTH_SERIAL_PORT, (size_t)HEARTH_LINK_RX_BUFFER, 0);
+  HEARTH_SERIAL_PORT.begin(baud);
+  return true;
+#else
+  /* No port to re-clock in the host build; the canRebaud check is false
+   * there, so this is unreachable, but the parameter still names the
+   * rate the caller asked for. */
+  (void)baud;
+  return false;
+#endif
+}
+
 void HearthClass::hearthDisarmExpectedReboot() {
   _expectingReboot = false;
 }

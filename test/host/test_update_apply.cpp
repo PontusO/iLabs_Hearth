@@ -1551,6 +1551,106 @@ static void test_old_commissioning_does_not_wait(void) {
   check("nothing unexpected on the wire (old commissioning)", s.unexpected().empty());
 }
 
+/*
+ * Task 7c-fix1 (bug B666): the download baud switch must re-clock the
+ * host's own UART. The co-processor answers AT+MTBAUD at the current rate
+ * and only then switches (firmware core/mt/mt_at.c, cmd_mtbaud), so the
+ * library re-clocks the link's own port (hearthRebaudLink) only on an OK
+ * answer, and a refused switch is not retried. The device path itself is
+ * proven by the RP2350 compile and the bench run; here a hook installed
+ * through hearthSetBaudChanger() stands in for the re-clock, so the
+ * cases below cover the gate: a refusal is never followed and never
+ * retried, an acceptance is followed exactly once.
+ */
+
+static int g_b7fixCalls = 0;
+static uint32_t g_b7fixBaud = 0;
+static void b7fixBaudHook(uint32_t b) {
+  g_b7fixCalls++;
+  g_b7fixBaud = b;
+}
+
+/* Case a: the download starts (the way runDownload() starts it), but the
+ * switch is refused. The hook is never called, a second poll sends no
+ * second AT+MTBAUD (the script has none, unexpected() stays empty), and
+ * the following +MTOTA:BLOCK is still pulled: the transfer goes on at the
+ * old rate. */
+static void test_b666_refused_not_followed(void) {
+  std::string fx;
+  check("fixture loads (b666 refused)", loadFixture("fixtures/good.ota", fx));
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  scriptBeginFor(s, "AT+MTSWVER=66560,\"1.4.0\"", "ESP32-C6 Hearth", "1.2.0", "wifi");
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (b666 refused)", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+
+  g_b7fixCalls = 0;
+  g_b7fixBaud = 0;
+  hearth.update.hearthSetBaudChanger(b7fixBaudHook);
+
+  /* The download's start: AVAILABLE, the refused switch, DOWNLOADING. */
+  s.expect("AT+MTBAUD=921600", "+MTERR:1\r\nERROR\r\n");
+  s.injectURC("+MTOTA:AVAILABLE,66561");
+  s.injectURC("+MTOTA:DOWNLOADING,0");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("the hook was never called (b666 refused)", g_b7fixCalls == 0);
+
+  /* A second poll: no second AT+MTBAUD (the script has none, so
+   * unexpected() must stay empty). */
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("no second AT+MTBAUD (b666 refused)", s.unexpected().empty());
+
+  /* The following block is still pulled: the download goes on at the old
+   * rate. */
+  size_t blen = fx.size();
+  if (blen > 1024) blen = 1024;
+  s.expect("AT+MTOTAGET=0", blkAnswer(0, (uint32_t)blen, fx, 0));
+  s.expect("AT+MTOTAACK=0", "OK\r\n");
+  s.injectURC("+MTOTA:BLOCK,0," + std::to_string((unsigned)blen));
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("the following block was still pulled (b666 refused)", s.scriptDrained());
+  check("nothing unexpected on the wire (b666 refused)", s.unexpected().empty());
+}
+
+/* Case b: the same start with the switch answered OK: the hook is called
+ * exactly once, with 921600. */
+static void test_b666_accepted_followed_once(void) {
+  std::string fx;
+  check("fixture loads (b666 accepted)", loadFixture("fixtures/good.ota", fx));
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  scriptBeginFor(s, "AT+MTSWVER=66560,\"1.4.0\"", "ESP32-C6 Hearth", "1.2.0", "wifi");
+  g_yieldAdvanceMs = 50;
+  check("begin returns true (b666 accepted)", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+
+  g_b7fixCalls = 0;
+  g_b7fixBaud = 0;
+  hearth.update.hearthSetBaudChanger(b7fixBaudHook);
+
+  s.expect("AT+MTBAUD=921600", "OK\r\n");
+  s.injectURC("+MTOTA:AVAILABLE,66561");
+  s.injectURC("+MTOTA:DOWNLOADING,0");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("the hook was called exactly once (b666 accepted)", g_b7fixCalls == 1);
+  check("the hook got 921600 (b666 accepted)", g_b7fixBaud == 921600);
+}
+
 int main(void) {
   printf("\n===== HearthUpdate apply (task 6a) tests =====\n");
   test_order_and_arguments();
@@ -1583,6 +1683,9 @@ int main(void) {
   test_settle_wait_after_commissioning();
   test_no_settle_without_commissioning();
   test_old_commissioning_does_not_wait();
+  printf("\n===== HearthUpdate apply (task 7c-fix1, B666) tests =====\n");
+  test_b666_refused_not_followed();
+  test_b666_accepted_followed_once();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

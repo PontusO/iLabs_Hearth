@@ -576,6 +576,26 @@ public:
   void hearthArmExpectedReboot(uint32_t timeout_ms = HEARTH_REBOOT_ARM_TIMEOUT_MS);
 
   /*
+   * Whether hearthRebaudLink() below can bring the link's own port to a new
+   * rate: true only on a target build (ARDUINO) where HEARTH_SERIAL_PORT is
+   * defined and the link's stream IS that port. A sketch that passed its
+   * own Stream to begin(Stream&) owns that stream, and the library cannot
+   * re-clock it (the variant port's begin() would re-clock it, and that
+   * stream belongs to the sketch). False on the host test build.
+   */
+  bool hearthCanRebaudLink() const;
+
+  /*
+   * Re-clock the link's own port (HEARTH_SERIAL_PORT) to `baud`: the same
+   * two lines hearthEnsureLink() uses, with the port's input flushed first
+   * so nothing from the old rate is parsed at the new one. Returns false
+   * and touches nothing when hearthCanRebaudLink() is false. Used by the
+   * update's download baud switch (B666) after the co-processor has
+   * answered OK to AT+MTBAUD.
+   */
+  bool hearthRebaudLink(uint32_t baud);
+
+  /*
    * Clear an arm from hearthArmExpectedReboot() without waiting for its
    * +MTREADY or its deadline. Call this on the caller's own timeout path,
    * so the very next spontaneous reboot (which is now what is happening,

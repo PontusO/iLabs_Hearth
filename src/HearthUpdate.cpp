@@ -280,8 +280,25 @@ void HearthUpdate::hearthDrain() {
    * rate it needs (_baudWantedDownload); the AT+MTBAUD itself goes out here,
    * because a URC callback may not call the link. The switch is sent only
    * when the needed rate differs from the one last set, so a repeat state
-   * line is a no-op and a switch back is seen. */
-  uint32_t wantBaud = _baudWantedDownload ? _cfg.downloadBaud : HEARTH_LINK_BAUD;
+   * line is a no-op and a switch back is seen.
+   *
+   * The download rate is wanted only when the switch can be FOLLOWED: on
+   * a target build a test hook is installed, or the link's own port is
+   * HEARTH_SERIAL_PORT and hearthRebaudLink() can bring it to the rate.
+   * B666, bench 2026-09-30: on the device nothing re-clocked the host's
+   * UART, the co-processor switched to 921600 after its OK and the link
+   * went deaf. The host build keeps today's behaviour (the command goes
+   * out, nothing to re-clock) so the tests that script AT+MTBAUD without
+   * installing a hook stay valid; the ARDUINO-only condition above is the
+   * gate the device needs and changes nothing there. */
+#ifdef ARDUINO
+  bool downloadFollowable =
+      _baudChangerCB != 0 || ((HearthClass *)_owner)->hearthCanRebaudLink();
+#else
+  bool downloadFollowable = true;
+#endif
+  uint32_t wantBaud =
+      (_baudWantedDownload && downloadFollowable) ? _cfg.downloadBaud : HEARTH_LINK_BAUD;
   if (wantBaud != _baud) {
     hearthSetBaud(wantBaud);
   }
@@ -548,18 +565,31 @@ bool HearthUpdate::hearthDownloadComplete() const {
 /*
  * The download-time baud switch (case 10). The link goes to the download
  * baud on AVAILABLE and back to the default on DOWNLOADED and on FAILED.
- * On the device the link's own port brings the UART to the rate; in the host
- * build (HEARTH_SERIAL_PORT undefined) there is no UART to re-clock, so the
- * AT+MTBAUD goes out and the test hook (hearthSetBaudChanger) records the
- * rate the sketch's own port would use.
+ * B666 (bench 2026-09-30): the co-processor (core/mt/mt_at.c, cmd_mtbaud)
+ * answers OK at the CURRENT rate and only then switches, so the host
+ * re-clocks its own side only when the answer is OK. On the device the
+ * re-clock is hearthRebaudLink() (the link's own port, when it is
+ * HEARTH_SERIAL_PORT); in the host build a test hook installed through
+ * hearthSetBaudChanger() records the rate the sketch's own port would
+ * use, and with neither available the command simply goes out (nothing
+ * to re-clock there). When the answer is not OK the host must NOT
+ * re-clock: both ends stay at the old rate, the transfer runs there, and
+ * _baudWantedDownload is cleared so this drain does not retry the switch
+ * on the next poll.
  */
 void HearthUpdate::hearthSetBaud(uint32_t baud) {
-  _baud = baud;
   char cmd[HEARTH_LINE_MAX];
   snprintf(cmd, sizeof(cmd), "AT+MTBAUD=%lu", (unsigned long)baud);
-  hearthCmd(cmd, 0, 0);
+  int rc = hearthCmd(cmd, 0, 0);
+  if (rc != 0) {
+    _baudWantedDownload = false;  /* B666: the co-processor stayed at the old rate */
+    return;
+  }
+  _baud = baud;
   if (_baudChangerCB) {
     _baudChangerCB(baud);
+  } else if (_owner) {
+    ((HearthClass *)_owner)->hearthRebaudLink(baud);
   }
 }
 
