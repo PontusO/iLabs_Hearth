@@ -1,0 +1,5 @@
+# MCUboot serial recovery's answer to an SMP echo, captured on the bench (nRF54L15, 2026-09-30 10:33,
+# debug library copy logging each UART batch). One line per capture, as hex of every byte on the wire.
+# The frame inside: op 3 (write response), len 6, group 0, seq 3, id 0, payload {"rc": 8} indefinite.
+# On the device these bytes arrived in batches of 1 and 2 bytes (B673).
+reply 0609414241444141414741414144414c3969636d4d492f7932740a
