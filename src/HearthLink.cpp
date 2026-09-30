@@ -110,6 +110,14 @@ const char *HearthLink::readLine(uint32_t timeout_ms) {
       if (_overflow) {
         continue;  // dropping an over-length line until its newline
       }
+      if (c == '\0') {
+        /* A NUL is never AT text. The MGM240P's Gecko bootloader ends its
+         * menu prompt with "BL > \0" and no line end, so after an XMODEM
+         * upload the application's +MTREADY arrives on the same line as
+         * that prompt (bench 2026-09-30); a stored NUL would cut the line
+         * short and hide the marker. */
+        continue;
+      }
       if (_acc_len < HEARTH_LINE_MAX - 1) {
         _acc[_acc_len++] = c;
       } else {
@@ -248,11 +256,16 @@ bool HearthLink::waitReady(uint32_t timeout_ms) {
     if (!line) {
       return false;
     }
-    if (strncmp(line, "+MTREADY", 8) == 0) {
+    /* Anywhere in the line, not only at its start: a bootloader's last
+     * prompt can share the line with the marker when it ends without a
+     * line end (the Gecko bootloader's "BL > " after an XMODEM upload,
+     * bench 2026-09-30). */
+    const char *mark = strstr(line, "+MTREADY");
+    if (mark) {
       /* Dispatched, not swallowed: the Hearth layer's expected-reboot arm
        * is cleared by its URC handler, and this marker is exactly the one
        * that arm was placed for. */
-      dispatchURC(line);
+      dispatchURC(mark);
       return true;
     }
     /* Boot ROM chatter, or a URC the pre-reset firmware had already queued.
