@@ -308,6 +308,24 @@
 #endif
 
 /*
+ * Max wait for +MTREADY after a flash the update itself drove (a flash
+ * attempt, the retained-image rollback, the flasher's failure exit reset).
+ *
+ * A freshly flashed co-processor first-boots its key store and its Matter
+ * stack, which is much heavier than a bare reboot: on the bench the
+ * MGM240P needed longer than HEARTH_READY_TIMEOUT_MS after a complete
+ * XMODEM upload and the menu's "2" (bench MG24, 2026-09-30 11:31-11:37:
+ * all three attempts logged "no +MTREADY in 10000 ms" although the device
+ * came up and answered over Matter afterwards). The firmware repo's own
+ * flasher waits 20 s (platform/silabs/fw/flash.py, READY_TIMEOUT_S); 30 s
+ * covers it. HEARTH_READY_TIMEOUT_MS stays for the link's own bring-up and
+ * the first-boot reset.
+ */
+#ifndef HEARTH_FLASH_READY_TIMEOUT_MS
+#define HEARTH_FLASH_READY_TIMEOUT_MS 30000
+#endif
+
+/*
  * Safety-net ceiling on hearthArmExpectedReboot(): how long an arm may sit
  * unconsumed before it self-clears. Not a tuned value, just generous enough
  * to cover a full co-processor reboot and Matter stack reinit; its only job

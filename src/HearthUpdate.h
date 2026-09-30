@@ -187,6 +187,16 @@ private:
   void hearthVerifyAndVerdict();  /* 4b2: on DOWNLOADED, verify the staged bundle, consent, AT+MTOTASTAGED */
   void hearthRefuse(HearthBundleError reason);  /* 4b2: AT+MTOTASTAGED=0,<reason>, remove staged, FAILED/ERR_BUNDLE */
   void hearthSetBaud(uint32_t baud);  /* 4b2: AT+MTBAUD=<baud> plus the test hook */
+  /* Final review I5: the four version fields that must move together,
+   * set by every place that changes the effective version (begin(), the
+   * fw-only success tail, the first-boot host confirm, the resume): the
+   * re-probe and the rollback re-declare the version actually in force
+   * with its matching string. */
+  void hearthSetEffectiveVersion(uint32_t version, const char *versionString);
+  /* Final review M6: re-declare the version in force (AT+MTSWVER with
+   * _declaredVersion and its string), the apply's failure paths' first
+   * wire call. */
+  void hearthReDeclareInForce();
   void hearthAbandon();     /* 4b2: AT+MTOTA=0 then AT+MTOTA=1, remove the staged bundle, IDLE */
   /* B671: the declaration and the requestor switch, re-run after a
    * co-processor reboot (the requestor mode is not persisted, spec 5.2).
@@ -249,6 +259,17 @@ private:
   char _model[33];
   char _variant[16];
   char _hearthVersion[33];
+  /* Final review I7: the running Hearth version read in begin(), kept
+   * because _hearthVersion is overwritten later (the success tail caches
+   * the new part's version). The rollback check in hearthFwFailed()
+   * compares AT+MTVER?'s answer against this, not against _hearthVersion. */
+  char _preApplyHearthVersion[33];
+  /* Final review I6: set by hearthApplyFw() to true when the last attempt
+   * failed with a flasher error (the flasher's B668 exit reset the
+   * co-processor, so its +MTREADY is in the rx buffer for the failure
+   * tail's I6b wait to consume). Cleared on any other failure mode (no
+   * +MTREADY, verify mismatch) and on success. */
+  bool _lastAttemptFlasherError;
   uint32_t _effectiveVersion;
 
   /* Parsed by hearthOnOtaLine(), acted on by hearthDrain(): the pending

@@ -92,7 +92,8 @@ static bool setupToApply(MockStream &s, HearthClass &hearth, HearthFsMem &fs,
                          FlasherFake &fake, std::string &fx,
                          const char *fixture, const char *swver, const char *model,
                          const char *variant, uint32_t baseVersion, const char *baseStr,
-                         uint32_t cfgSize, bool withManifest, const char *mtver = "1.2.0") {
+                         uint32_t cfgSize, bool withManifest, const char *mtver = "1.2.0",
+                         bool withCfg = true) {
   (void)baseVersion;
   char checkName[80];
   snprintf(checkName, sizeof(checkName), "%s fixture loads", fixture);
@@ -110,14 +111,20 @@ static bool setupToApply(MockStream &s, HearthClass &hearth, HearthFsMem &fs,
   hearth.begin(s);
   hearth.update.hearthAttach(fs);
   hearth.update.hearthSetFlasher(&fake);
-  HearthUpdateConfig cfg;
-  cfg.resetPin = 15;
-  cfg.resetActiveLow = true;
-  cfg.strapPin = 14;
-  cfg.strapActiveLow = true;
   g_yieldAdvanceMs = 50;
-  check("update begin returns true", hearth.update.begin(cfgSize, baseStr, cfg));
+  bool begun;
+  if (withCfg) {
+    HearthUpdateConfig cfg;
+    cfg.resetPin = 15;
+    cfg.resetActiveLow = true;
+    cfg.strapPin = 14;
+    cfg.strapActiveLow = true;
+    begun = hearth.update.begin(cfgSize, baseStr, cfg);
+  } else {
+    begun = hearth.update.begin(cfgSize, baseStr);
+  }
   g_yieldAdvanceMs = 0;
+  check("update begin returns true", begun);
   runDownload(s, hearth, fx, "AT+MTOTASTAGED=1");
   return hearth.update.status().state == HEARTH_UPDATE_WAIT_APPLY;
 }
@@ -313,10 +320,18 @@ static void test_retained_rollback(void) {
   }
 
   s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
-  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
-  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
-  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  /* The three verifies after the attempts answer 9.9.9 (neither the
+   * pre-apply 1.2.0 nor the bundle's 1.3.0): every attempt booted a
+   * version that is not what was running before, so the rollback is the
+   * right thing and F2b's I7 skip (its verdict answers the pre-apply
+   * 1.2.0 here) does not fire. */
+  s.expect("AT+MTVER?", "+MTVER:9.9.9\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:9.9.9\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:9.9.9\r\nOK\r\n");
+  /* I7: the pre-apply check answers the same third version. */
+  s.expect("AT+MTVER?", "+MTVER:9.9.9\r\nOK\r\n");
   s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
+  /* After the rollback flash the co-processor runs the retained 1.2.0. */
   s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
   s.expect("AT+MTOTA=1", "OK\r\n");
   fake.onFlash = [&](int i) {
@@ -364,6 +379,7 @@ static void test_flasher_error_then_success(void) {
     if (i == 1) {
       s.injectURC("+MTREADY");
     }
+    s.injectURC("+MTREADY");  /* I6: the flasher's own exit reset (B668) reboots it */
   };
   s.injectURC("+MTOTA:APPLY");
   g_yieldAdvanceMs = 50;
@@ -844,6 +860,9 @@ static void test_no_hooks(void) {
   s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
   s.expect("AT+MTVER?", "+MTVER:1.3.0\r\nOK\r\n");
   s.expect("AT+MTOTA=1", "OK\r\n");
+  /* M6: the host part's failure (null hooks) re-declares the version in
+   * force before it reports FAILED. */
+  s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
   fake.onFlash = [&](int i) { if (i == 0) s.injectURC("+MTREADY"); };
   s.injectURC("+MTOTA:APPLY");
   g_yieldAdvanceMs = 50;
@@ -1112,7 +1131,11 @@ static void test_resume_three_attempts(void) {
 
   /* The failure tail (the old version re-declared, no rollback image
    * here) and begin()'s own sequence (the effective version, still 66304
-   * "1.3.0", with the running version 1.2.0). */
+   * "1.3.0", with the running version 1.2.0). Final review I6: the
+   * failure tail arms the expected reboot and waits for the +MTREADY the
+   * last attempt's flasher exit (B668) owes it before the declaration, so
+   * the tail's script starts with a +MTREADY injection, not a command. */
+  s.injectURC("+MTREADY");
   s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
   s.expect("AT+MTOTA=1", "OK\r\n");
   scriptBeginFor(s, "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "1.2.0", "wifi");
@@ -1189,9 +1212,11 @@ static void test_resume_remaining_fail_rollback(void) {
   cfg.strapActiveLow = true;
 
   /* The resume's declaration, the two remaining attempts (both answer
-   * 1.2.0), the failure tail (old version re-declared, the rollback
-   * flash, its AT+MTVER?) and begin()'s own sequence. */
+   * 1.2.0), the failure tail (I7's pre-apply check, the old version
+   * re-declared, the rollback flash, its AT+MTVER?) and begin()'s own
+   * sequence. */
   s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
   s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
   s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
   s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
@@ -2525,6 +2550,532 @@ static void test_f2a_m1_failed_apply_no_open_handle(void) {
         !hearth.update.stage().stagedExists());
 }
 
+/*
+ * Final review robustness round 2 (task F2b): I3, I5, I6, I7, M4, M6,
+ * M10, the bench MG24 flash-ready timeout and the stale error. Each test
+ * below is named after the finding it covers.
+ */
+
+/* I3: the switch BACK to the link baud is refused (the co-processor
+ * rebooted at the download baud, its +MTREADY unreadable, the pull timed
+ * out). The hook is called with 115200 anyway (the co-processor comes up
+ * at its default) and the next poll sends no further AT+MTBAUD (the rates
+ * agree now, the deaf-link loop is broken). */
+static void test_f2b_i3_refused_switch_back(void) {
+  std::string fx;
+  check("f2b i3: the good.ota fixture loads", loadFixture("fixtures/good.ota", fx));
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("f2b i3: begin returns true", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+
+  g_b7fixCalls = 0;
+  g_b7fixBaud = 0;
+  hearth.update.hearthSetBaudChanger(b7fixBaudHook);
+
+  /* The download's start, the switch up answered OK. */
+  s.expect("AT+MTBAUD=921600", "OK\r\n");
+  s.injectURC("+MTOTA:AVAILABLE,66561");
+  s.injectURC("+MTOTA:DOWNLOADING,0");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2b i3: the switch up was followed", g_b7fixCalls == 1 && g_b7fixBaud == 921600);
+
+  /* The attempt goes back to IDLE without an ERROR line (a provider
+   * abort): the drain switches back, and the co-processor, rebooted,
+   * answers nothing. */
+  s.expect("AT+MTBAUD=115200", "");
+  s.injectURC("+MTOTA:IDLE");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2b i3: the hook was called with 115200 anyway",
+        g_b7fixCalls == 2 && g_b7fixBaud == 115200);
+
+  /* The next poll: no further AT+MTBAUD (the rates agree, the script has
+   * none, so unexpected() stays empty). */
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2b i3: no further AT+MTBAUD", s.unexpected().empty());
+}
+
+/* I3b: AVAILABLE then IDLE (no ERROR) also switches back to the link
+ * baud: the wanted-download flag is cleared on the IDLE state line, not
+ * only on DOWNLOADED and ERROR, so a later reboot does not hit the deaf
+ * link at the download rate. */
+static void test_f2b_i3b_idle_switches_back(void) {
+  std::string fx;
+  check("f2b i3b: the good.ota fixture loads", loadFixture("fixtures/good.ota", fx));
+  MockStream s;
+  scriptBegin(s);
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  g_yieldAdvanceMs = 50;
+  check("f2b i3b: begin returns true", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+
+  g_b7fixCalls = 0;
+  g_b7fixBaud = 0;
+  hearth.update.hearthSetBaudChanger(b7fixBaudHook);
+
+  s.expect("AT+MTBAUD=921600", "OK\r\n");
+  s.injectURC("+MTOTA:AVAILABLE,66561");
+  s.injectURC("+MTOTA:DOWNLOADING,0");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2b i3b: the switch up was followed", g_b7fixCalls == 1 && g_b7fixBaud == 921600);
+
+  /* No DOWNLOADING blocks, no ERROR: the attempt goes straight back to
+   * IDLE, and the drain switches the link back. */
+  s.expect("AT+MTBAUD=115200", "OK\r\n");
+  s.injectURC("+MTOTA:IDLE");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2b i3b: the switch back went out on IDLE",
+        g_b7fixCalls == 2 && g_b7fixBaud == 115200);
+  check("f2b i3b: the state is IDLE", hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("f2b i3b: nothing unexpected on the wire", s.unexpected().empty());
+}
+
+/* I5: after a fw-only success (6a's case 1), a co-processor reboot
+ * re-probes with the NEW effective version and its NEW string, not the
+ * pre-update pair the success tail used to leave behind. */
+static void test_f2b_i5_reprobe_new_version(void) {
+  std::string fx;
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  check("f2b i5: setup reaches WAIT_APPLY", setupToApply(s, hearth, fs, fake, fx, "good",
+        "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "wifi", 0x10300, "1.3.0", 0x10300, true));
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.3.0\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  fake.onFlash = [&](int i) {
+    if (i == 0) {
+      s.injectURC("+MTREADY");
+    }
+  };
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2b i5: the state is IDLE after the success",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+
+  /* The co-processor reboots: the re-probe declares the NEW version with
+   * the NEW string. */
+  s.injectURC("+MTREADY");
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2b i5: the re-probe declared the NEW version with the NEW string",
+        s.scriptDrained());
+  check("f2b i5: nothing unexpected on the wire", s.unexpected().empty());
+  check("f2b i5: the state is IDLE", hearth.update.status().state == HEARTH_UPDATE_IDLE);
+}
+
+/* I6a: in FAILED (6a's three-failures case), a co-processor reboot
+ * re-probes and the successful re-probe moves the state to IDLE with
+ * error OK: the co-processor is up and FOTA is live again. */
+static void test_f2b_i6a_failed_reprobe_to_idle(void) {
+  std::string fx;
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  check("f2b i6a: setup reaches WAIT_APPLY", setupToApply(s, hearth, fs, fake, fx, "good",
+        "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "wifi", 0x10300, "1.3.0", 0x10300, true));
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  fake.onFlash = [&](int i) {
+    (void)i;
+    s.injectURC("+MTREADY");
+  };
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2b i6a: the state is FAILED after the three failures",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED);
+
+  /* The co-processor reboots: the re-probe runs in FAILED now, and its
+   * success moves the state to IDLE with error OK. */
+  s.injectURC("+MTREADY");
+  s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("f2b i6a: the re-probe sent both commands", s.scriptDrained());
+  check("f2b i6a: the state is IDLE", hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("f2b i6a: the error is OK", hearth.update.status().error == HEARTH_UPDATE_OK);
+  check("f2b i6a: nothing unexpected on the wire", s.unexpected().empty());
+}
+
+/* I6b: the last attempt fails with a flasher error (the flasher's B668
+ * exit reset the co-processor): the failure tail's declaration goes out
+ * only after the +MTREADY was consumed (the script order proves it: the
+ * wait's +MTREADY injection precedes the declaration, and onFlash(2)
+ * checks nextExpected()). */
+static void test_f2b_i6b_failure_tail_waits_for_exit_reset(void) {
+  std::string fx;
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  check("f2b i6b: setup reaches WAIT_APPLY", setupToApply(s, hearth, fs, fake, fx, "good",
+        "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "wifi", 0x10300, "1.3.0", 0x10300, true));
+  fake.results = {HEARTH_FLASH_ERR_WRITE, HEARTH_FLASH_ERR_WRITE, HEARTH_FLASH_ERR_WRITE};
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  fake.onFlash = [&](int i) {
+    if (i == 2) {
+      check("f2b i6b: the failure tail's declaration had not gone out before the exit reset",
+            s.nextExpected() == "AT+MTSWVER=66304,\"1.3.0\"");
+      /* The flasher's own exit reset (B668) reboots the co-processor:
+       * its +MTREADY is what the failure tail's wait consumes. */
+      s.injectURC("+MTREADY");
+    }
+  };
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+
+  check("f2b i6b: exactly three flash calls", fake.calls().size() == 3);
+  check("f2b i6b: the script is drained", s.scriptDrained());
+  check("f2b i6b: nothing unexpected on the wire", s.unexpected().empty());
+  check("f2b i6b: the state is FAILED",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  check("f2b i6b: the error is HEARTH_UPDATE_ERR_FLASH",
+        hearth.update.status().error == HEARTH_UPDATE_ERR_FLASH);
+}
+
+/* I7: three failed verifies, a retained image present, and the
+ * co-processor still answering the pre-apply version to the extra
+ * AT+MTVER?: no fourth flash call, the old version re-declared, FAILED
+ * and HEARTH_UPDATE_ERR_FLASH. */
+static void test_f2b_i7_pre_apply_version_skips_rollback(void) {
+  std::string fx;
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  check("f2b i7: setup reaches WAIT_APPLY", setupToApply(s, hearth, fs, fake, fx, "good",
+        "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "wifi", 0x10300, "1.3.0", 0x10300, true));
+  /* A retained image of 500 known bytes, through the fs, before the apply
+   * (the same seed as 6a's case 5). */
+  std::vector<uint8_t> retBytes(500);
+  for (int i = 0; i < 500; i++) {
+    retBytes[i] = (uint8_t)(i * 7 + 3);
+  }
+  HearthUpdateStage stg;
+  check("f2b i7: stage begin for the retained seed", stg.begin(fs));
+  {
+    HearthFile *f = fs.open("/hearth/fw-scratch.bin", "w");
+    check("f2b i7: the scratch file opens", f != 0);
+    if (f) {
+      check("f2b i7: the 500 bytes are written", f->write(retBytes.data(), retBytes.size()) == retBytes.size());
+      delete f;
+    }
+    f = fs.open("/hearth/fw-scratch.bin", "r");
+    check("f2b i7: the scratch file reopens", f != 0);
+    if (f) {
+      check("f2b i7: the retained image is written",
+            stg.retainFwPart(*f, 0, 500, "ESP32-C6 Hearth", "1.1.0"));
+      delete f;
+    }
+  }
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  /* I7: the pre-apply check answers the pre-apply version (1.2.0), so
+   * the rollback flash is skipped and only the old version is
+   * re-declared. */
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  fake.onFlash = [&](int i) {
+    (void)i;
+    s.injectURC("+MTREADY");
+  };
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+
+  check("f2b i7: exactly three flash calls (no rollback)", fake.calls().size() == 3);
+  check("f2b i7: the script is drained", s.scriptDrained());
+  check("f2b i7: nothing unexpected on the wire", s.unexpected().empty());
+  check("f2b i7: the state is FAILED", hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  check("f2b i7: the error is HEARTH_UPDATE_ERR_FLASH",
+        hearth.update.status().error == HEARTH_UPDATE_ERR_FLASH);
+  check("f2b i7: hearthVersion is the pre-apply 1.2.0",
+        strcmp(hearth.update.status().hearthVersion, "1.2.0") == 0);
+}
+
+/* I7b: the same with AT+MTVER? answering a version different from the
+ * pre-apply one: the rollback flash happens (6a's case 5's
+ * expectations). */
+static void test_f2b_i7b_different_version_rolls_back(void) {
+  std::string fx;
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  check("f2b i7b: setup reaches WAIT_APPLY", setupToApply(s, hearth, fs, fake, fx, "good",
+        "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "wifi", 0x10300, "1.3.0", 0x10300, true));
+  std::vector<uint8_t> retBytes(500);
+  for (int i = 0; i < 500; i++) {
+    retBytes[i] = (uint8_t)(i * 7 + 3);
+  }
+  HearthUpdateStage stg;
+  check("f2b i7b: stage begin for the retained seed", stg.begin(fs));
+  {
+    HearthFile *f = fs.open("/hearth/fw-scratch.bin", "w");
+    check("f2b i7b: the scratch file opens", f != 0);
+    if (f) {
+      check("f2b i7b: the 500 bytes are written", f->write(retBytes.data(), retBytes.size()) == retBytes.size());
+      delete f;
+    }
+    f = fs.open("/hearth/fw-scratch.bin", "r");
+    check("f2b i7b: the scratch file reopens", f != 0);
+    if (f) {
+      check("f2b i7b: the retained image is written",
+            stg.retainFwPart(*f, 0, 500, "ESP32-C6 Hearth", "1.1.0"));
+      delete f;
+    }
+  }
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  /* I7b: the pre-apply check answers a different version (1.1.0, the
+   * retained image's): the rollback flash happens. */
+  s.expect("AT+MTVER?", "+MTVER:1.1.0\r\nOK\r\n");
+  s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.1.0\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  fake.onFlash = [&](int i) {
+    (void)i;
+    s.injectURC("+MTREADY");
+  };
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+
+  const std::vector<FlasherFake::Call> &calls = fake.calls();
+  check("f2b i7b: exactly four flash calls (3 attempts + the rollback)", calls.size() == 4);
+  if (calls.size() == 4) {
+    check("f2b i7b: the rollback's image equals the 500 retained bytes",
+          calls[3].image == retBytes);
+  }
+  check("f2b i7b: the script is drained", s.scriptDrained());
+  check("f2b i7b: nothing unexpected on the wire", s.unexpected().empty());
+  check("f2b i7b: the state is FAILED", hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  check("f2b i7b: the error is HEARTH_UPDATE_ERR_FLASH",
+        hearth.update.status().error == HEARTH_UPDATE_ERR_FLASH);
+}
+
+/* M4: during 6a's three-failures case the sketch's link-event callback
+ * never sees HEARTH_COPROCESSOR_REBOOTED: the flasher's own exit resets
+ * (B668) are armed before each attempt, so their +MTREADYs are consumed
+ * as expected reboots. The file-static vector keeps the lambda alive
+ * past this function (a heap lambda would otherwise outlive its frame). */
+static std::vector<hearthEvent_t> g_f2bM4Events;
+
+static void test_f2b_m4_no_rebooted_event(void) {
+  g_f2bM4Events.clear();
+  std::string fx;
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  hearth.onLinkEvent([](hearthEvent_t e) { g_f2bM4Events.push_back(e); });
+  check("f2b m4: setup reaches WAIT_APPLY", setupToApply(s, hearth, fs, fake, fx, "good",
+        "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "wifi", 0x10300, "1.3.0", 0x10300, true));
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  fake.onFlash = [&](int i) {
+    (void)i;
+    s.injectURC("+MTREADY");
+  };
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+
+  bool sawRebooted = false;
+  for (size_t i = 0; i < g_f2bM4Events.size(); i++) {
+    if (g_f2bM4Events[i] == HEARTH_COPROCESSOR_REBOOTED) {
+      sawRebooted = true;
+    }
+  }
+  check("f2b m4: exactly three flash calls", fake.calls().size() == 3);
+  check("f2b m4: no HEARTH_COPROCESSOR_REBOOTED reached the sketch", !sawRebooted);
+  check("f2b m4: the state is FAILED",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED);
+}
+
+/* M6: both parts, the Hearth part succeeds, the host part fails (the
+ * hooks are null): the old version is re-declared after the failure, so
+ * the controller is not told the product updated. */
+static void test_f2b_m6_host_failure_redeclares(void) {
+  std::string fx;
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  check("f2b m6: setup reaches WAIT_APPLY", setupToApply(s, hearth, fs, fake, fx, "good",
+        "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "wifi", 0x10300, "1.3.0", 0x10300, false));
+  /* No hooks: the host defaults (all null), so the host part fails. */
+  g_host = HostRec();
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.3.0\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  /* M6: the host part's failure re-declares the version in force. */
+  s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
+  fake.onFlash = [&](int i) {
+    if (i == 0) {
+      s.injectURC("+MTREADY");
+    }
+  };
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+
+  check("f2b m6: exactly one flash call", fake.calls().size() == 1);
+  check("f2b m6: the script is drained", s.scriptDrained());
+  check("f2b m6: nothing unexpected on the wire", s.unexpected().empty());
+  check("f2b m6: the state is FAILED",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED);
+  check("f2b m6: the error is HEARTH_UPDATE_ERR_HOST",
+        hearth.update.status().error == HEARTH_UPDATE_ERR_HOST);
+}
+
+/* M10: a config with resetPin 7 and strapPin -1, the owner's pins (2, 3):
+ * the flasher gets reset 7 (the config's) and strap 3 (the owner's). */
+static void test_f2b_m10_per_pin_merge(void) {
+  std::string fx;
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  hearth.coprocessorPins(2, 3);
+  check("f2b m10: the good.ota fixture loads",
+        loadFixture("fixtures/good.ota", fx));
+  HearthUpdateStage stg;
+  check("f2b m10: seed manifest written", stg.begin(fs));
+  {
+    HearthManifest m;
+    m.productVersion = 0x10300;
+    snprintf(m.productVersionString, sizeof(m.productVersionString), "%s", "1.3.0");
+    snprintf(m.hostVersion, sizeof(m.hostVersion), "%s", "1.4.0");
+    check("f2b m10: seed manifest saved", stg.saveManifest(m));
+  }
+  scriptBeginFor(s, "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "1.2.0", "wifi");
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  hearth.update.hearthSetFlasher(&fake);
+  HearthUpdateConfig cfg;
+  cfg.resetPin = 7;
+  cfg.resetActiveLow = true;
+  cfg.strapPin = -1;  /* the owner's strap (3) must fill this in */
+  g_yieldAdvanceMs = 50;
+  check("f2b m10: update begin returns true", hearth.update.begin(0x10300, "1.3.0", cfg));
+  g_yieldAdvanceMs = 0;
+  runDownload(s, hearth, fx, "AT+MTOTASTAGED=1");
+  check("f2b m10: setup reaches WAIT_APPLY",
+        hearth.update.status().state == HEARTH_UPDATE_WAIT_APPLY);
+
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.3.0\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  fake.onFlash = [&](int i) {
+    if (i == 0) {
+      s.injectURC("+MTREADY");
+    }
+  };
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+
+  const std::vector<FlasherFake::Call> &calls = fake.calls();
+  check("f2b m10: exactly one flash call", calls.size() == 1);
+  if (calls.size() == 1) {
+    const FlasherFake::Call &c = calls[0];
+    check("f2b m10: the flasher was handed reset 7 and strap 3",
+          c.pins.reset == 7 && c.pins.resetActiveLow
+          && c.pins.strap == 3 && c.pins.strapActiveLow);
+  }
+  check("f2b m10: the state is IDLE", hearth.update.status().state == HEARTH_UPDATE_IDLE);
+}
+
+/* The post-flash wait gives up only after at least 30000 ms of fake
+ * time: a good flash, no +MTREADY, the wait runs out at
+ * HEARTH_FLASH_READY_TIMEOUT_MS (the bench MG24's first-boot is longer
+ * than the link's 10 s). */
+static void test_f2b_flash_ready_timeout(void) {
+  std::string fx;
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  check("f2b timeout: setup reaches WAIT_APPLY", setupToApply(s, hearth, fs, fake, fx, "good",
+        "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "wifi", 0x10300, "1.3.0", 0x10300, true));
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.2.0\r\nOK\r\n");
+  s.expect("AT+MTSWVER=66304,\"1.3.0\"", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  uint32_t t0 = 0, t1 = 0;
+  fake.onFlash = [&](int i) {
+    if (i == 0) {
+      t0 = millis();
+    } else if (i == 1) {
+      t1 = millis();
+    }
+  };
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+
+  check("f2b timeout: exactly three flash calls", fake.calls().size() == 3);
+  check("f2b timeout: the attempt gave up only after at least 30000 ms of fake time",
+        t1 >= t0 && t1 - t0 >= 30000);
+  check("f2b timeout: the state is FAILED",
+        hearth.update.status().state == HEARTH_UPDATE_FAILED);
+}
+
 int main(void) {
   printf("\n===== HearthUpdate apply (task 6a) tests =====\n");
   test_order_and_arguments();
@@ -2581,6 +3132,18 @@ int main(void) {
   test_f2a_m7_begin_write_removes_staged();
   test_f2a_m8_block_malformed_ignored();
   test_f2a_m1_failed_apply_no_open_handle();
+  printf("\n===== HearthUpdate apply (final review F2b: I3, I5, I6, I7, M4, M6, M10, bench MG24) tests =====\n");
+  test_f2b_i3_refused_switch_back();
+  test_f2b_i3b_idle_switches_back();
+  test_f2b_i5_reprobe_new_version();
+  test_f2b_i6a_failed_reprobe_to_idle();
+  test_f2b_i6b_failure_tail_waits_for_exit_reset();
+  test_f2b_i7_pre_apply_version_skips_rollback();
+  test_f2b_i7b_different_version_rolls_back();
+  test_f2b_m4_no_rebooted_event();
+  test_f2b_m6_host_failure_redeclares();
+  test_f2b_m10_per_pin_merge();
+  test_f2b_flash_ready_timeout();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

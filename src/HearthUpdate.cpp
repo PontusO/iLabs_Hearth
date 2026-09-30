@@ -104,6 +104,8 @@ HearthUpdate::HearthUpdate()
   _model[0] = 0;
   _variant[0] = 0;
   _hearthVersion[0] = 0;
+  _preApplyHearthVersion[0] = 0;
+  _lastAttemptFlasherError = false;
   _effectiveVersion = 0;
 }
 
@@ -219,6 +221,10 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
     _status.state = HEARTH_UPDATE_IDLE;
     _status.percent = 0;
     _havePendingBlock = false;
+    /* Final review I3: the download is over, so the wanted rate goes back
+     * to the default here too, not only on DOWNLOADED, ERROR and the
+     * abort. */
+    _baudWantedDownload = false;
     /* I2, second half: an IDLE the co-processor sends after an ERROR
      * (or instead of it, a provider abort) ends the transfer the same
      * way; the same drain-side flag acts on it. */
@@ -263,9 +269,15 @@ void HearthUpdate::hearthOnOtaLine(const char *rest) {
     }
   } else if (strcmp(state, "DEFERRED") == 0) {
     _status.state = HEARTH_UPDATE_IDLE;
+    /* Final review I3: the offer is not going to run now, so the link
+     * goes back to the default rate too. */
+    _baudWantedDownload = false;
     _status.deferredSeconds = comma ? (uint32_t)strtoul(comma + 1, 0, 10) : 0;
   } else if (strcmp(state, "DISCONTINUED") == 0) {
     _status.state = HEARTH_UPDATE_IDLE;
+    /* Final review I3: the offer is gone, so the link goes back to the
+     * default rate too. */
+    _baudWantedDownload = false;
     _status.percent = 0;
   } else if (strcmp(state, "ERROR") == 0) {
     /* The co-processor ended the transfer (case 6b): the state is FAILED
@@ -352,14 +364,22 @@ void HearthUpdate::hearthDrain() {
    * then the requestor switch. Only a begin() that completed its
    * requestor switch gets re-probed (a begin() that never reached it
    * has sent nothing this can send), and only while the state is
-   * IDLE or UNAVAILABLE: a download, a verdict or an apply is in
-   * flight and handles its own reboots, so any other state does
-   * nothing. */
+   * IDLE, UNAVAILABLE or FAILED: a download, a verdict or an apply is
+   * in flight and handles its own reboots, so any other state does
+   * nothing. Final review I6: FAILED used to be a resting state the
+   * re-probe skipped, and the co-processor's OTA state is already IDLE
+   * after a failed apply (no URC moves it), so a co-processor reboot
+   * while FAILED left the requestor off for the rest of the boot. The
+   * gate admits FAILED now, and hearthDeclareAndRequestor() moves it to
+   * IDLE with error OK when the re-probe succeeds (the co-processor is
+   * up and FOTA is live again) or leaves it as it is when the re-probe
+   * fails. */
   if (_coprocReadySeen) {
     _coprocReadySeen = false;
     if (_beginComplete
         && (_status.state == HEARTH_UPDATE_IDLE
-            || _status.state == HEARTH_UPDATE_UNAVAILABLE)) {
+            || _status.state == HEARTH_UPDATE_UNAVAILABLE
+            || _status.state == HEARTH_UPDATE_FAILED)) {
       hearthDeclareAndRequestor();
     }
   }
@@ -386,12 +406,13 @@ void HearthUpdate::hearthDrain() {
       if (rc == 0) {
         _requestorRetry = false;
         _status.state = HEARTH_UPDATE_IDLE;
-        _status.error = HEARTH_UPDATE_OK;
+        _status.error = HEARTH_UPDATE_OK;  /* the state and the error move together */
         if (_statusCB) {
           _statusCB(_status);
         }
       }
-      /* 8 (or any other failure): stay UNAVAILABLE and retry later. */
+      /* 8 (or any other failure): stay UNAVAILABLE (and its error) and
+       * retry later; no state change, so no error change either. */
     }
     return;
   }
@@ -694,7 +715,11 @@ void HearthUpdate::hearthPullBlock() {
  * in the firmware's cmd_mtota), and no URC can move the state out of
  * FAILED, so without a follow-up AT+MTOTA=1 the provider's next offer would
  * never be heard: the requestor is turned back on right after the =0, as
- * hearthAbandon() does.
+ * hearthAbandon() does. Final review M6: the version in force is re-declared
+ * before the requestor switch, the same first-wire call every other
+ * failure path makes (the abort is one of them, this comment above
+ * promises it): the aborted transfer applied nothing, so the declaration
+ * must not keep claiming the new product version to the controller.
  */
 void HearthUpdate::hearthAbortPull() {
   _havePendingBlock = false;
@@ -702,6 +727,10 @@ void HearthUpdate::hearthAbortPull() {
   _stagedWriteOpen = false;
   _baudWantedDownload = false;
   hearthSetBaud(HEARTH_LINK_BAUD);  /* the download is over, back to the default */
+  /* No re-declaration here: an abort ends a DOWNLOAD, before any apply,
+   * so no new version was ever declared and the one in force is still the
+   * one begin() declared (M6 is about a host part failing after a Hearth
+   * part was applied, not about the transfer). */
   hearthCmd("AT+MTOTA=0", 0, 0);
   hearthCmd("AT+MTOTA=1", 0, 0);  /* I1: the requestor on again for the next offer */
   _stage.stagedEndWrite();
@@ -727,16 +756,51 @@ bool HearthUpdate::hearthDownloadComplete() const {
  * HEARTH_SERIAL_PORT); in the host build a test hook installed through
  * hearthSetBaudChanger() records the rate the sketch's own port would
  * use, and with neither available the command simply goes out (nothing
- * to re-clock there). When the answer is not OK the host must NOT
- * re-clock: both ends stay at the old rate, the transfer runs there, and
- * _baudWantedDownload is cleared so this drain does not retry the switch
- * on the next poll.
+ * to re-clock there). When the answer is not OK and the switch was UP
+ * (to the download baud), the host must NOT re-clock: both ends stay at
+ * the old rate, the transfer runs there, and _baudWantedDownload is
+ * cleared so this drain does not retry the switch on the next poll.
+ *
+ * Final review I3: when the switch was BACK (to HEARTH_LINK_BAUD) and the
+ * answer is not OK, the co-processor is usually gone (it rebooted at the
+ * download baud and comes up at its default, HEARTH_LINK_BAUD, so the
+ * host at the download baud is deaf). The host re-clocks to
+ * HEARTH_LINK_BAUD anyway and records it in _baud, so the next drain sees
+ * the rates equal and does not send another AT+MTBAUD into the deaf link
+ * and wait the 1.5 s command timeout again. The co-processor is reset
+ * through the owner's hearthResetCoprocessor() when a reset line is known
+ * (a no-op without one), so both ends are at a known rate: its +MTREADY
+ * then triggers the B671 re-probe.
  */
 void HearthUpdate::hearthSetBaud(uint32_t baud) {
   char cmd[HEARTH_LINE_MAX];
   snprintf(cmd, sizeof(cmd), "AT+MTBAUD=%lu", (unsigned long)baud);
   int rc = hearthCmd(cmd, 0, 0);
   if (rc != 0) {
+    if (baud == HEARTH_LINK_BAUD) {
+      /* I3: the co-processor may have rebooted to its default rate
+       * already: re-clock the host to the default anyway and say so
+       * (naming the rate, the 7c-fix1 review's one log line). */
+#ifdef ARDUINO
+      Serial.printf("Hearth.update: the co-processor did not answer AT+MTBAUD=%lu, the host clocks to %lu anyway\n",
+                    (unsigned long)baud, (unsigned long)baud);
+#endif
+      _baud = baud;
+      if (_baudChangerCB) {
+        _baudChangerCB(baud);
+      } else if (_owner) {
+        ((HearthClass *)_owner)->hearthRebaudLink(baud);
+      }
+      /* The reset line is known when it is not -1 (begin() resolved the
+       * config pins from the owner). hearthResetCoprocessor() is a no-op
+       * without one; its +MTREADY (on the default rate, now readable)
+       * triggers the B671 re-probe. */
+      if (_owner && _cfg.resetPin != -1) {
+        ((HearthClass *)_owner)->hearthResetCoprocessor();
+      }
+      _baudWantedDownload = false;
+      return;
+    }
     _baudWantedDownload = false;  /* B666: the co-processor stayed at the old rate */
     return;
   }
@@ -782,13 +846,48 @@ void HearthUpdate::hearthAbandon() {
 }
 
 /*
+ * Final review I5: the effective product version and the declaration it
+ * backs, set together. Every place that changes the effective version
+ * (begin(), the fw-only success tail, the first-boot host confirm, the
+ * 6c resume) calls this, so the re-probe and the rollback always declare
+ * the version actually in force with its matching string (before, the
+ * success tails updated the effective version and left the declared pair
+ * at the pre-update values, and a later re-probe or failure would have
+ * re-declared the old one).
+ */
+void HearthUpdate::hearthSetEffectiveVersion(uint32_t version, const char *versionString) {
+  _effectiveVersion = version;
+  _status.effectiveVersion = version;
+  _declaredVersion = version;
+  snprintf(_declaredVersionString, sizeof(_declaredVersionString), "%s", versionString);
+}
+
+/* Final review M6: the re-declaration itself, AT+MTSWVER with the version
+ * in force and its string. The apply's failure paths call this as their
+ * first wire call (the host part's failures, the abort, the failure
+ * tail's no-rollback branch) so the controller is not told the product
+ * updated when it did not. */
+void HearthUpdate::hearthReDeclareInForce() {
+  char rcmd[HEARTH_LINE_MAX];
+  snprintf(rcmd, sizeof(rcmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)_declaredVersion,
+           _declaredVersionString);
+  hearthCmd(rcmd, 0, 0);
+}
+
+/*
  * B671: the declaration and the requestor switch, re-run after a
  * co-processor reboot, from hearthDrain() on the flag
  * hearthNoteCoprocReady() set. A separate function, not begin()'s own
  * tail (begin() sends the declaration before its AT+CGMM/MTVER/MTOTA?
  * queries). Same two commands, same order and same answers as begin():
  * the declaration first (AT+MTSWVER with the effective version and its
- * string), then AT+MTOTA=1.
+ * string), then AT+MTOTA=1. Final review I6: the drain's gate also runs
+ * this while the state is FAILED (a failed apply leaves the
+ * co-processor's OTA state IDLE, so no URC moves it, and the re-probe is
+ * what re-arms the requestor): a successful re-probe moves FAILED to
+ * IDLE with error OK, because the co-processor is up and FOTA is live
+ * again, and a failed re-probe leaves FAILED and its error as they are
+ * (no state change, so no error change either).
  */
 void HearthUpdate::hearthDeclareAndRequestor() {
   char cmd[HEARTH_LINE_MAX];
@@ -830,7 +929,7 @@ void HearthUpdate::hearthDeclareAndRequestor() {
     return;
   }
   _status.state = HEARTH_UPDATE_IDLE;
-  _status.error = HEARTH_UPDATE_OK;
+  _status.error = HEARTH_UPDATE_OK;  /* I6: a successful re-probe clears FAILED's error */
   _requestorRetry = false;  /* the re-probe made the requestor go: no retry */
   if (_statusCB) {
     _statusCB(_status);
@@ -1024,6 +1123,14 @@ void HearthUpdate::hearthApply() {
   st.fwPart = (uint8_t)part;
   st.hostPart = (uint8_t)_hostPart;
 
+  /* Final review I7: keep the pre-apply running Hearth version: the
+   * success tail overwrites _hearthVersion with the new part's, and the
+   * rollback check in hearthFwFailed() compares against this instead
+   * (AT+MTVER? answering it means nothing was written and the old
+   * application is intact). It is kept BEFORE the apply runs, because the
+   * failure tail (which reads it) runs inside hearthApplyFw's failure
+   * path, before hearthApply's own post-apply code. */
+  snprintf(_preApplyHearthVersion, sizeof(_preApplyHearthVersion), "%s", _hearthVersion);
   /* The declaration goes out before any flash (spec 7.5's hard rule). */
   char cmd[HEARTH_LINE_MAX];
   snprintf(cmd, sizeof(cmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)info.productVersion,
@@ -1084,11 +1191,11 @@ void HearthUpdate::hearthFwSucceeded(const HearthBundleInfo &info, int part, Hea
     _haveManifest = true;
     _stage.stagedRemove();
     _stage.clearState();
-    _effectiveVersion = info.productVersion;
+    /* I5: the effective version and the declaration move together. */
+    hearthSetEffectiveVersion(info.productVersion, info.productVersionString);
     _status.state = HEARTH_UPDATE_IDLE;
     _status.error = HEARTH_UPDATE_OK;
     _status.reason = 0;
-    _status.effectiveVersion = info.productVersion;
     if (_statusCB) {
       _statusCB(_status);
     }
@@ -1103,22 +1210,59 @@ void HearthUpdate::hearthFwSucceeded(const HearthBundleInfo &info, int part, Hea
  * hearthApply() by 6c so the resume shares it, ruling 6). Three failed
  * attempts (spec 7.3): the retained image, if one fits this model, is one
  * more flash.
+ *
+ * Final review I6, second half: the flasher exits with its own reset on
+ * every failure mode of the last attempt (a flasher error, no +MTREADY, a
+ * verify mismatch), so its +MTREADY is still landing when the declaration
+ * and the requestor switch go out, and they would land in the boot window
+ * (the F669 class: no answer, or +MTERR:8). The tail waits for it (the
+ * flash's 30 s, bench MG24) before it declares and switches the
+ * requestor; the arm the attempt left in place (M4's) is the wait's, so
+ * the boot is not reported as an unexpected one. The wait runs in the
+ * tail, not in the retained branch, so it covers every failure mode and
+ * both the re-declaration and the AT+MTOTA=1. The +MTREADY is consumed by
+ * the wait, so the re-probe flag it sets is cleared below.
+ *
+ * Final review I7: before flashing the retained image the co-processor is
+ * asked AT+MTVER?. It answering the pre-apply version (_preApplyHearthVersion,
+ * kept before the first attempt: _hearthVersion is overwritten later)
+ * means the old application is intact and running (every attempt failed
+ * at entry, B672's class), so the rollback flash is skipped and only the
+ * old version is re-declared: a retained image is the last image applied
+ * by FOTA and can be OLDER than what runs now (a USB reflash), and
+ * flashing it would downgrade a healthy co-processor.
  */
 void HearthUpdate::hearthFwFailed() {
   char rtarget[33], rversion[33];
   uint32_t rlen = 0;
   bool haveRetained = _stage.retainedFwInfo(rtarget, rversion, rlen);
   bool didRollback = false;
+  HearthClass *owner = (HearthClass *)_owner;
   if (haveRetained && strcmp(rtarget, _model) == 0) {
-    /* The old version is re-declared BEFORE the rollback flash (the
-     * ruling): between the declaration and a successful boot the
-     * co-processor claims a version it is not yet running. */
-    char rcmd[HEARTH_LINE_MAX];
-    snprintf(rcmd, sizeof(rcmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)_declaredVersion,
-             _declaredVersionString);
-    hearthCmd(rcmd, 0, 0);
-    HearthFile *ret = _stage.retainedFwOpen();
-    if (ret) {
+    /* I7: is the co-processor still running the pre-apply version? */
+    VerQuery vq;
+    vq.got = false;
+    vq.version[0] = 0;
+    hearthCmd("AT+MTVER?", onVerLine2, &vq);
+    if (vq.got && strcmp(vq.version, _preApplyHearthVersion) == 0) {
+      /* The pre-apply version answers: nothing was written (the attempts
+       * failed before it, B672's class) and the old application is
+       * intact, so the rollback flash is skipped. Only re-declare; the
+       * requestor switch below comes after. */
+      hearthReDeclareInForce();
+      delete _stage.retainedFwOpen();  /* the branch only checked for it */
+      snprintf(_hearthVersion, sizeof(_hearthVersion), "%s", vq.version);
+      snprintf(_status.hearthVersion, sizeof(_status.hearthVersion), "%s", vq.version);
+#ifdef ARDUINO
+      Serial.printf("Hearth.update: the co-processor still runs %s, the rollback flash is skipped\n",
+                    vq.version);
+#endif
+      didRollback = true;
+    } else if (HearthFile *ret = _stage.retainedFwOpen()) {
+      /* The old version is re-declared BEFORE the rollback flash (the
+       * ruling): between the declaration and a successful boot the
+       * co-processor claims a version it is not yet running. */
+      hearthReDeclareInForce();
       HearthFlasher *fl = _flasher ? _flasher : HearthFlasher::forModel(_model);
       if (fl) {
         HearthFileSource rsrc(*ret);
@@ -1134,7 +1278,11 @@ void HearthUpdate::hearthFwFailed() {
         uint8_t zeros[32];
         memset(zeros, 0, sizeof(zeros));
         hearthSettleAfterCommissioning();
-        int rc = fl->flash(*((HearthClass *)_owner)->link().stream(), pins, rsrc, 0, rlen, zeros);
+        /* The flasher's own exit (success or failure) resets the
+         * co-processor: arm it so that boot is not reported as an
+         * unexpected one (final review M4). */
+        owner->hearthArmExpectedReboot();
+        int rc = fl->flash(*owner->link().stream(), pins, rsrc, 0, rlen, zeros);
         (void)rc;
 #if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
         /* The flasher left the port at its own rate; re-clock it. */
@@ -1145,8 +1293,8 @@ void HearthUpdate::hearthFwFailed() {
           Serial.printf("Hearth.update: the rollback flash of the retained image failed: flasher error %d\n", rc);
         }
 #endif
-        ((HearthClass *)_owner)->hearthArmExpectedReboot();
-        if (((HearthClass *)_owner)->link().waitReady(HEARTH_READY_TIMEOUT_MS)) {
+        /* The flash's own 30 s (bench MG24). */
+        if (owner->link().waitReady(HEARTH_FLASH_READY_TIMEOUT_MS)) {
           /* B671: waitReady dispatched the +MTREADY through the URC route,
            * setting the re-probe flag. Clear it before the AT+MTVER?
            * below (whose own drain would otherwise see the flag set and
@@ -1164,20 +1312,44 @@ void HearthUpdate::hearthFwFailed() {
           }
           didRollback = true;
         } else {
-          ((HearthClass *)_owner)->hearthDisarmExpectedReboot();
+#ifdef ARDUINO
+          Serial.printf("Hearth.update: no +MTREADY in %lu ms after the rollback flash\n",
+                        (unsigned long)HEARTH_FLASH_READY_TIMEOUT_MS);
+#endif
         }
+        owner->hearthDisarmExpectedReboot();
         _coprocReadySeen = false;
       }
       delete ret;
     }
   }
+  /* Final review I6, second half: when the last attempt's flasher failed
+   * (B668's exit reset the co-processor on every failure mode: a flasher
+   * error, no +MTREADY, a verify mismatch) its +MTREADY is still landing
+   * when the declaration and the requestor switch go out, so they land in
+   * the boot window (the F669 class: no answer, or +MTERR:8). Wait for it
+   * here, in the tail, so it covers every failure mode and both the
+   * re-declaration below and the AT+MTOTA=1 after it. The arm the attempt
+   * left in place (M4's, live until its wait consumed the marker) is the
+   * wait's, so the boot is not reported as an unexpected one and only the
+   * disarm runs. */
+  if (_lastAttemptFlasherError) {
+    if (!owner->link().waitReady(HEARTH_FLASH_READY_TIMEOUT_MS)) {
+#ifdef ARDUINO
+      Serial.printf("Hearth.update: no +MTREADY in %lu ms after the last attempt\n",
+                    (unsigned long)HEARTH_FLASH_READY_TIMEOUT_MS);
+#endif
+    }
+    owner->hearthDisarmExpectedReboot();
+    /* B671: the wait dispatches the +MTREADY through the URC route,
+     * setting the re-probe flag. Clear it: this reboot was driven by the
+     * update (the flasher's exit) and the requestor is re-run below. */
+    _coprocReadySeen = false;
+  }
   if (!didRollback) {
     /* No retained image to restore: the old version is re-declared so
      * the requestor comes back knowing what it is running. */
-    char rcmd[HEARTH_LINE_MAX];
-    snprintf(rcmd, sizeof(rcmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)_declaredVersion,
-             _declaredVersionString);
-    hearthCmd(rcmd, 0, 0);
+    hearthReDeclareInForce();
   }
 
   /* Either way the requestor is back on, the state file is gone (a
@@ -1251,6 +1423,13 @@ int HearthUpdate::hearthApplyFw(HearthUpdateState &st, int firstAttempt) {
     st.attempts = (uint8_t)attempt;
     _stage.saveState(st);
     hearthSettleAfterCommissioning();
+    /* Final review M4: arm BEFORE the flash, not after it. A flasher
+     * failure after its entry reset exits with its own reset (B668), and
+     * an arm in place keeps that boot from reaching the sketch as
+     * HEARTH_COPROCESSOR_REBOOTED. The wait below consumes the marker on
+     * a good flash, and every other exit disarms again so the next
+     * spontaneous reboot is still reported. */
+    owner->hearthArmExpectedReboot();
     int rc = fl->flash(*owner->link().stream(), pins, src, off, p.length, p.sha256);
 #if defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
     /* The flasher left the port at its own rate (921600 on the ESP ROM
@@ -1258,24 +1437,33 @@ int HearthUpdate::hearthApplyFw(HearthUpdateState &st, int firstAttempt) {
     HEARTH_SERIAL_PORT.begin(HEARTH_LINK_BAUD);
 #endif
     if (rc != HEARTH_FLASH_OK) {
-      /* The flasher failed: the next attempt, with no wait and no
-       * AT+MTVER? (the co-processor never rebooted). */
+      /* The flasher failed: disarm (its own exit reset, when it has one,
+       * is what the arm was for) and the next attempt, with no wait and
+       * no AT+MTVER? (the co-processor never rebooted). Final review I6:
+       * this failure mode leaves the flasher's exit reset pending, so the
+       * failure tail's wait for its +MTREADY is the one that comes. */
+      _lastAttemptFlasherError = true;
+      owner->hearthDisarmExpectedReboot();
 #ifdef ARDUINO
       Serial.printf("Hearth.update: flash attempt %d of 3 failed: flasher error %d\n", attempt, rc);
 #endif
       continue;
     }
     /* The flash landed: the co-processor is rebooting into the new image.
-     * Arm the expected reboot on the owner (so the boot is not reported as
-     * an unexpected one) and wait for its +MTREADY. */
-    owner->hearthArmExpectedReboot();
-    if (!owner->link().waitReady(HEARTH_READY_TIMEOUT_MS)) {
+     * The arm is already in place (above) and the wait consumes its
+     * +MTREADY. The flash's own 30 s, not the link's 10 s (bench MG24):
+     * a freshly flashed co-processor first-boots its key store and its
+     * Matter stack, and on the MGM240P that ran past the 10 s. */
+    if (!owner->link().waitReady(HEARTH_FLASH_READY_TIMEOUT_MS)) {
       /* No +MTREADY in time: the attempt failed, disarm so the next
-       * spontaneous reboot is still reported. */
+       * spontaneous reboot is still reported. The flasher's exit reset
+       * still lands (final review I6): the failure tail's wait is the one
+       * that comes for it. */
+      _lastAttemptFlasherError = true;
       owner->hearthDisarmExpectedReboot();
 #ifdef ARDUINO
       Serial.printf("Hearth.update: flash attempt %d of 3 failed: no +MTREADY in %lu ms\n",
-                    attempt, (unsigned long)HEARTH_READY_TIMEOUT_MS);
+                    attempt, (unsigned long)HEARTH_FLASH_READY_TIMEOUT_MS);
 #endif
       continue;
     }
@@ -1289,10 +1477,14 @@ int HearthUpdate::hearthApplyFw(HearthUpdateState &st, int firstAttempt) {
     vq.version[0] = 0;
     hearthCmd("AT+MTVER?", onVerLine2, &vq);
     if (vq.got && strcmp(vq.version, p.version) == 0) {
+      _lastAttemptFlasherError = false;  /* the new image runs, no exit reset pending */
       delete staged;
       return 0;  /* the new image is confirmed running */
     }
-    /* A boot that reports another version: the attempt failed. */
+    /* A boot that reports another version: the attempt failed. The
+     * flasher's exit reset still lands (final review I6): the failure
+     * tail's wait is the one that comes for it. */
+    _lastAttemptFlasherError = true;
 #ifdef ARDUINO
     Serial.printf("Hearth.update: flash attempt %d of 3 failed: the co-processor runs %s, the bundle says %s\n",
                   attempt, vq.got ? vq.version : "?", p.version);
@@ -1322,6 +1514,14 @@ int HearthUpdate::hearthApplyFw(HearthUpdateState &st, int firstAttempt) {
  *     indexes the first-boot confirm and the resume (6c) need;
  *  6. the reboot: on the device it does not return, on the host the
  *     test's hook does, and the function returns with it.
+ *
+ * Final review M6: every failure path below re-declares _declaredVersion
+ * (the version in force before this update) before it reports FAILED.
+ * After a successful Hearth part the declaration is the NEW product
+ * version and the co-processor's NotifyUpdateApplied already went out at
+ * its boot, but the manifest is untouched: without the re-declaration the
+ * controller would believe the product updated. The next offer is then
+ * judged against the old version and selects the host part alone.
  */
 void HearthUpdate::hearthApplyHost() {
   HearthUpdateState st;
@@ -1360,7 +1560,8 @@ void HearthUpdate::hearthApplyHost() {
   if (!_hostHooks.imageRange || !_hostHooks.stageImage || !_hostHooks.reboot) {
     /* A hook is not available here: the apply fails, the state file is
      * gone (there is nothing to resume to) and the staged bundle is kept
-     * for a manual retry. */
+     * for a manual retry. M6: the version in force is re-declared first. */
+    hearthReDeclareInForce();
     _stage.clearState();
     _status.state = HEARTH_UPDATE_FAILED;
     _status.error = HEARTH_UPDATE_ERR_HOST;
@@ -1376,6 +1577,8 @@ void HearthUpdate::hearthApplyHost() {
   if (!_hostHooks.imageRange(&xipStart, &xipLen)
       || !_stage.saveHostPrev(xipStart, xipLen)
       || !stagedHostPart(_hostPart, st)) {
+    /* M6: the version in force is re-declared first. */
+    hearthReDeclareInForce();
     _stage.clearState();
     _status.state = HEARTH_UPDATE_FAILED;
     _status.error = HEARTH_UPDATE_ERR_HOST;
@@ -1390,6 +1593,8 @@ void HearthUpdate::hearthApplyHost() {
   st.fwPart = (uint8_t)_fwPart;
   st.hostPart = (uint8_t)_hostPart;
   if (!_stage.saveState(st)) {
+    /* M6: the version in force is re-declared first. */
+    hearthReDeclareInForce();
     _status.state = HEARTH_UPDATE_FAILED;
     _status.error = HEARTH_UPDATE_ERR_HOST;
     _status.reason = 0;
@@ -1687,13 +1892,21 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
    * default on a board whose variant defines none, the CPico 2350
    * carriers), the flasher takes them from the owner's
    * hearthCoprocPins() (coprocessorPins() stored them, or the variant
-   * macros supply them). Explicit cfg pins still win. */
-  if (_cfg.resetPin == -1 && _cfg.strapPin == -1) {
+   * macros supply them). Explicit cfg pins still win. Final review M10:
+   * the merge is PER PIN: a config pin of -1 takes the owner's value for
+   * that pin only, so a config that sets only resetPin still gets the
+   * owner's strap (before, the merge ran only when both were -1, and
+   * such a config failed ERR_ENTER three times). */
+  {
     HearthCoprocPins p = ((HearthClass *)_owner)->hearthCoprocPins();
-    _cfg.resetPin = p.reset;
-    _cfg.resetActiveLow = p.resetActiveLow;
-    _cfg.strapPin = p.strap;
-    _cfg.strapActiveLow = p.strapActiveLow;
+    if (_cfg.resetPin == -1) {
+      _cfg.resetPin = p.reset;
+      _cfg.resetActiveLow = p.resetActiveLow;
+    }
+    if (_cfg.strapPin == -1) {
+      _cfg.strapPin = p.strap;
+      _cfg.strapActiveLow = p.strapActiveLow;
+    }
   }
   /* B671: this begin() has not completed yet; the re-probe after a
    * co-processor reboot runs only once its requestor switch has. */
@@ -1832,9 +2045,11 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
               }
               eff = eff2;
               effStr = effStr2;
-              _effectiveVersion = eff;
-              _declaredVersion = eff;
-              snprintf(_declaredVersionString, sizeof(_declaredVersionString), "%s", effStr);
+              /* I5: the effective version and the declaration move
+               * together (before, this recompute updated the effective
+               * version and the declared pair and only that, and the
+               * status field stayed behind). */
+              hearthSetEffectiveVersion(eff, effStr);
             } else {
               /* Success with a host part selected: the success tail called
                * hearthApplyHost(), which reboots the host (ruling 7). On
@@ -1863,7 +2078,11 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
 
   _effectiveVersion = eff;
   /* The version begin() is about to declare, kept for the rollback path
-   * (spec 7.5 re-declares it before a failed apply gives up). */
+   * (spec 7.5 re-declares it before a failed apply gives up). I5: the
+   * declaration pair moves with the effective version through this
+   * helper, so a resumed apply that fails re-declares what is in force
+   * (before it, the recompute below updated the effective version and
+   * left the declared pair at the pre-update values). */
   _declaredVersion = eff;
   snprintf(_declaredVersionString, sizeof(_declaredVersionString), "%s", effStr);
 
@@ -1892,12 +2111,25 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
     if (r0 != 0) {
       return hearthFirstBootHostFail(st);
     }
+    /* I5: the declaration is the state's target (the NEW product
+     * version), and it went through: that version is in force now, so
+     * the re-probe and the rollback declare it, not the pre-update value
+     * the recompute left the declared pair at. */
+    hearthSetEffectiveVersion(st.targetVersion, st.targetVersionString);
   } else if (haveState && st.phase == HEARTH_PHASE_HOST_CONFIRM) {
     /* The normal declaration (the effective version), tried up to three
      * times. No answer: clearState, FAILED with HEARTH_UPDATE_ERR_LINK,
      * begin() returns false, no stageImage, no reboot (it must not loop).
      * The requestor switch below still runs: begin() returns after it
-     * either way, the same commands on the wire as before. */
+     * either way, the same commands on the wire as before.
+     *
+     * The declaration is the effective version, not the state's target
+     * (the HOST phase above declares the target): this boot ran the
+     * PREVIOUS sketch (the host update did not take, which is why the
+     * phase is HOST_CONFIRM), so the version in force is the one this
+     * sketch's baseline and the manifest agree on, and that is what the
+     * co-processor must be told it claims. Declaring the target here
+     * would tell the controller the product updated when it did not. */
     r0 = -1;
     for (int i = 0; i < 3; i++) {
       snprintf(cmd, sizeof(cmd), "AT+MTSWVER=%lu,\"%s\"",
@@ -2032,6 +2264,10 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
     _status.state = HEARTH_UPDATE_IDLE;
     _status.effectiveVersion = eff;
   }
+  /* Final review I7: the running Hearth version begin() just read, kept
+   * for the rollback check in hearthFwFailed() (its own AT+MTVER? answer
+   * is compared against it: the same version means nothing was written). */
+  snprintf(_preApplyHearthVersion, sizeof(_preApplyHearthVersion), "%s", _hearthVersion);
   /* B671: the requestor switch has run (it is on, or it is refused and
    * the retry is armed), so begin() has completed and the re-probe after
    * a co-processor reboot may run. */
@@ -2141,8 +2377,10 @@ bool HearthUpdate::hearthFirstBootHost(const HearthUpdateState &stIn) {
   _haveManifest = true;
   _stage.clearState();
   _stage.stagedRemove();
-  _effectiveVersion = st.targetVersion;
-  _status.effectiveVersion = st.targetVersion;
+  /* I5: the confirmed product version is in force now, with its string:
+   * the re-probe and any later rollback declare it, not the pre-update
+   * value the recompute left the declared pair at. */
+  hearthSetEffectiveVersion(st.targetVersion, st.targetVersionString);
   /* The co-processor reset: the reset line, not AT+MTEPAPPLY. A null or
    * false hook skips it with a log line (the requestor's NotifyUpdateApplied
    * then waits for the co-processor's next boot). */
@@ -2203,7 +2441,17 @@ bool HearthUpdate::hearthFirstBootHostConfirm(const HearthUpdateState &st) {
    * IDLE: this function only reports the outcome. The state is cleared and
    * the update is FAILED with HEARTH_UPDATE_ERR_HOST (the host update did
    * not take); the manifest is untouched and the staged bundle kept. No
-   * stageImage, no reboot: the loop must stop. */
+   * stageImage, no reboot: the loop must stop.
+   *
+   * Final review M6 does not add a wire call here, though its rule reads
+   * as if it did: begin() has already sent the same declaration, the
+   * effective version (the old one, from the manifest: the recompute of
+   * the effective version in begin() is the same value this re-declaration
+   * would carry), so a second AT+MTSWVER here is a duplicate of a command
+   * the link just answered OK, not a correction of a wrong one (the
+   * hearthApplyHost() failures are the case M6 fixes: their declaration is
+   * the NEW product version, sent in hearthApply() before the host part's
+   * own failure is known). */
   (void)st;
   _stage.clearState();
   _status.state = HEARTH_UPDATE_FAILED;
