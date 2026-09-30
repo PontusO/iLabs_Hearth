@@ -141,6 +141,11 @@ public:
    * commissioning complete); records the time, no link call, and the
    * settle wait runs before every reset the update drives. */
   void hearthNoteCommissioned();
+  /* B671: from HearthClass::hearthOnURCLine() on every +MTREADY (the
+   * requestor mode is not persisted, spec 5.2: every boot starts
+   * disabled). Recording only, no link call; hearthDrain() re-probes the
+   * declaration and the requestor switch on it. */
+  void hearthNoteCoprocReady();
   void hearthDrain();                        /* from HearthClass::poll() */
   void hearthAttach(HearthFs &fs);           /* tests inject the fake fs; target uses hearthLittleFs() */
   void hearthSetFlasher(HearthFlasher *f);   /* Task 5/6 */
@@ -180,6 +185,18 @@ private:
   void hearthRefuse(HearthBundleError reason);  /* 4b2: AT+MTOTASTAGED=0,<reason>, remove staged, FAILED/ERR_BUNDLE */
   void hearthSetBaud(uint32_t baud);  /* 4b2: AT+MTBAUD=<baud> plus the test hook */
   void hearthAbandon();     /* 4b2: AT+MTOTA=0 then AT+MTOTA=1, remove the staged bundle, IDLE */
+  /* B671: the declaration and the requestor switch, re-run after a
+   * co-processor reboot (the requestor mode is not persisted, spec 5.2).
+   * A separate function, not begin()'s own tail: begin() sends the
+   * declaration before its AT+CGMM/MTVER/MTOTA? queries, so it keeps its
+   * own inline sequence and does not call this. The re-probe runs the two
+   * commands in begin()'s order and no others (a begin() that never
+   * reached its requestor has sent nothing this can send, and a timed-out
+   * declaration is re-probed on the next reboot). A 8 on the switch is
+   * the requestor not wired (B667's retry arms), an 8 on the declaration
+   * the firmware without FOTA (settled for good), any other failure
+   * leaves the state as it is. */
+  void hearthDeclareAndRequestor();
   /* 6a: the apply of the Hearth (co-processor) part, run by hearthDrain()
    * once and for all on the pending +MTOTA:APPLY. Task 6c's resume calls
    * hearthApplyFw() directly with the state it loaded. */
@@ -306,4 +323,13 @@ private:
    * is set; hearthNoteCommissioned() only records it (it runs inside a
    * URC callback, no link calls), hearthDrain() acts on it and clears it. */
   bool _requestorRetryNow;
+  /* B671: set by begin() when its requestor switch has run and by end()
+   * back to false: the re-probe after a co-processor reboot runs only
+   * once begin() has completed (a begin() that never reached its requestor
+   * has sent nothing the re-probe can send). */
+  bool _beginComplete;
+  /* B671: a +MTREADY was seen (hearthNoteCoprocReady set this, recording
+   * only); hearthDrain() clears it and, when _beginComplete and the state
+   * is IDLE or UNAVAILABLE, runs hearthDeclareAndRequestor(). */
+  bool _coprocReadySeen;
 };

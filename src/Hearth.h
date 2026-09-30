@@ -393,6 +393,29 @@ public:
    */
   void hearthResetCoprocessor();
 
+  /*
+   * The co-processor's reset and boot-strap lines on a board whose variant
+   * does not define them (the CPico 2350 carriers of the nRF54L15 and the
+   * MGM240P: reset GP2, boot strap GP3, both active low). Call this at the
+   * start of setup(), before any other call into the library. The library
+   * then drives the lines itself: hearthResetCoprocessor() resets the
+   * co-processor at link bring-up (F669, the first commands used to go out
+   * while it was still booting) and the update's apply takes its flasher
+   * pins from hearthCoprocPins() when its config carries none. The variant
+   * macros, when the board defines them, always win over the stored pins.
+   * A pin of -1 (not passed here and not in the variant) is driven by
+   * nothing.
+   */
+  void coprocessorPins(int resetPin, int strapPin, bool resetActiveLow = true, bool strapActiveLow = true);
+
+  /*
+   * Library-internal: the co-processor's pins in force, the variant's
+   * (PIN_ESP_RST and PIN_ESP_MODE, active low) when the board defines
+   * them, else the ones coprocessorPins() stored, else -1s. The update's
+   * apply path reads it for the flasher's pins.
+   */
+  HearthCoprocPins hearthCoprocPins() const;
+
   /* True if a bare AT probe round-trips OK. */
   bool linkUp();
 
@@ -803,6 +826,12 @@ private:
   HearthPendingCmdResp _cmdRespQueue[kHearthCmdRespQueueDepth];
   uint8_t _cmdRespQueueCount;
   bool _deferredWorkPending;
+  /* Task 7c-fix4 (F669, B670): the co-processor's reset and boot-strap
+   * lines for boards whose variant does not define PIN_ESP_RST /
+   * PIN_ESP_MODE (the CPico 2350 carriers), stored by coprocessorPins().
+   * hearthCoprocPins() reports them (the variant macros win over them when
+   * both exist, -1s when neither does). */
+  HearthCoprocPins _coprocPins;
   /* Task 11: set by hearthDeferCurrentCmdResp(), read and cleared by
    * hearthDispatchCmd() (Hearth.cpp) immediately after the target's
    * hearthOnForwardedCommandFieldsSeq() call returns. See that method's own

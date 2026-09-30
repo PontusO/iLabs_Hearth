@@ -856,11 +856,14 @@ the plain light.
 ### The pins and the UART
 
 The Challenger 2350's variant supplies the co-processor's reset and
-boot-mode lines (`PIN_ESP_RST` and `PIN_ESP_MODE`) and the defaults use
-them, so nothing to set there. The CPico 2350 carrier wires the reset to
-GP2 and the boot strap to GP3 (both active low) and the AT UART to
-GP0/GP1, so the sketch sets `cfg.resetPin = 2; cfg.strapPin = 3;` and is
-built with `-DHEARTH_SERIAL_PORT=Serial1`. A flasher handed a pin of -1
+boot-mode lines (`PIN_ESP_RST` and `PIN_ESP_MODE`) and the library uses
+them, so nothing to set there. The CPico 2350 carrier defines none of
+them: it wires the reset to GP2 and the boot strap to GP3 (both active
+low) and the AT UART to GP0/GP1, so the sketch calls
+`Hearth.coprocessorPins(2, 3);` at the start of setup() and is built with
+`-DHEARTH_SERIAL_PORT=Serial1`. The library must hold the strap released
+and see the co-processor's ready line before it talks to it. An unheld
+strap can leave an MG24 in its bootloader. A flasher handed a pin of -1
 refuses rather than guessing; the apply then ends in
 `HEARTH_UPDATE_ERR_FLASH` after its attempts.
 

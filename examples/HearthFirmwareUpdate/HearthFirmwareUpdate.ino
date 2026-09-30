@@ -103,11 +103,13 @@ bool buttonDown = false;
 const uint32_t debounceMs = 250;
 
 /*
- * The update's config. On a Challenger 2350 the reset and strap pins come
- * from the variant (PIN_ESP_RST and PIN_ESP_MODE) and stay at their
- * defaults. On a board that does not define those macros (the CPico 2350
- * carrier), setup() sets them to the pins the carrier wires before begin()
- * runs. A flasher with a pin of -1 would refuse to enter boot mode.
+ * The update's config. The co-processor's reset and strap pins are not
+ * carried here any more: on a Challenger 2350 they come from the variant
+ * (PIN_ESP_RST and PIN_ESP_MODE), and on a board that defines none of
+ * them (the CPico 2350 carrier) the library gets them from
+ * Hearth.coprocessorPins() at the start of setup(), and the update takes
+ * them from the library when begin() runs. A flasher with a pin of -1
+ * would refuse to enter boot mode.
  */
 HearthUpdateConfig updateCfg;
 
@@ -213,6 +215,9 @@ bool onLightChange(bool state) {
 
 void setup() {
   Serial.begin(115200);
+#if !defined(PIN_ESP_RST)
+  Hearth.coprocessorPins(2, 3);   /* the CPico 2350 carrier: reset GP2, boot strap GP3 */
+#endif
   /* Wait for the Serial Monitor to attach, but not forever: a board on a
    * USB charger has nobody to wait for. */
   while (!Serial && millis() < 8000) {}
@@ -256,10 +261,6 @@ void setup() {
    * as the plain light. */
   Hearth.update.onStatus(onUpdateStatus);
   Hearth.update.onApplyRequest(onApplyRequest);
-#if !defined(PIN_ESP_RST)
-  updateCfg.resetPin = 2;   /* the CPico 2350 carrier: reset on GP2 */
-  updateCfg.strapPin = 3;   /* and the boot strap on GP3, both active low */
-#endif
   if (!Hearth.update.begin(0x00010000, "1.0.0", updateCfg)) {
     const HearthUpdateStatus st = Hearth.update.status();
     Serial.print("Hearth.update is off (");

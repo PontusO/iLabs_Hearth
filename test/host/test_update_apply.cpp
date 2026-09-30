@@ -1840,6 +1840,241 @@ static void test_b667_no_fota_not_retried(void) {
         hearth.update.status().error == HEARTH_UPDATE_OK);
 }
 
+/*
+ * Task 7c-fix4 (F669, B670, B671): the co-processor's pins for boards
+ * without the variant macros, and FOTA that survives a co-processor
+ * reboot. The host build has no pins and no port, so the pin paths of
+ * hearthResetCoprocessor() are not exercised here (the RP2350 compile and
+ * the controller's bench prove them); these tests cover what the host can
+ * see: the pins accessor, begin() taking the pins from the owner, and the
+ * re-probe after a co-processor reboot (B671).
+ */
+static void test_coproc_pins_accessor(void) {
+  HearthClass hearth;
+  HearthCoprocPins p = hearth.hearthCoprocPins();
+  check("7cfix4: default pins are -1s",
+        p.reset == -1 && p.strap == -1
+        && p.resetActiveLow && p.strapActiveLow);
+  hearth.coprocessorPins(2, 3);
+  p = hearth.hearthCoprocPins();
+  check("7cfix4: stored pins are {2, true, 3, true}",
+        p.reset == 2 && p.resetActiveLow && p.strap == 3 && p.strapActiveLow);
+  HearthClass h2;
+  h2.coprocessorPins(5, 6, false, true);
+  p = h2.hearthCoprocPins();
+  check("7cfix4: explicit polarity is kept",
+        p.reset == 5 && !p.resetActiveLow && p.strap == 6 && p.strapActiveLow);
+}
+
+/* 7cfix4: begin() with a default config (pins -1) takes the flasher's
+ * pins from the owner's hearthCoprocPins(). Drive an apply through
+ * FlasherFake and check the pins it was handed. The setup is done
+ * manually (not through setupToApply, which hardcodes explicit pins)
+ * so the default config's pins -1 reach begin() and are resolved from
+ * the owner. */
+static void test_begin_takes_owner_pins(void) {
+  std::string fx;
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  FlasherFake fake;
+  hearth.coprocessorPins(2, 3);
+  check("7cfix4 pins: fixture loads",
+        loadFixture("fixtures/good.ota", fx));
+  HearthUpdateStage stg;
+  check("7cfix4 pins: seed manifest written", stg.begin(fs));
+  {
+    HearthManifest m;
+    m.productVersion = 0x10300;
+    snprintf(m.productVersionString, sizeof(m.productVersionString), "%s", "1.3.0");
+    snprintf(m.hostVersion, sizeof(m.hostVersion), "%s", "1.4.0");
+    check("7cfix4 pins: seed manifest saved", stg.saveManifest(m));
+  }
+  scriptBeginFor(s, "AT+MTSWVER=66304,\"1.3.0\"", "ESP32-C6 Hearth", "1.2.0", "wifi");
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  hearth.update.hearthSetFlasher(&fake);
+  g_yieldAdvanceMs = 50;
+  check("7cfix4 pins: update begin returns true",
+        hearth.update.begin(0x10300, "1.3.0"));
+  g_yieldAdvanceMs = 0;
+  runDownload(s, hearth, fx, "AT+MTOTASTAGED=1");
+  check("7cfix4 pins: setup reaches WAIT_APPLY",
+        hearth.update.status().state == HEARTH_UPDATE_WAIT_APPLY);
+
+  PartLine pl;
+  check("7cfix4 pins: the part|good|0 line loads", loadPartLine("good", 0, pl));
+
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTVER?", "+MTVER:1.3.0\r\nOK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  fake.onFlash = [&](int i) {
+    if (i == 0) {
+      s.injectURC("+MTREADY");
+    }
+  };
+  s.injectURC("+MTOTA:APPLY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+
+  const std::vector<FlasherFake::Call> &calls = fake.calls();
+  check("7cfix4 pins: exactly one flash call", calls.size() == 1);
+  if (calls.size() == 1) {
+    const FlasherFake::Call &c = calls[0];
+    check("7cfix4 pins: the flasher was handed {2, true, 3, true}",
+          c.pins.reset == 2 && c.pins.resetActiveLow
+          && c.pins.strap == 3 && c.pins.strapActiveLow);
+  }
+  check("7cfix4 pins: the script is drained", s.scriptDrained());
+  check("7cfix4 pins: nothing unexpected on the wire", s.unexpected().empty());
+}
+
+/* 7cfix4 (B671): the re-probe after an unexpected reboot. begin() to
+ * IDLE, then +MTREADY, then the re-probe sends the declaration and the
+ * requestor switch on the next poll. */
+static void test_b671_reprobe_after_reboot(void) {
+  HearthFsMem fs;
+  MockStream s;
+  HearthClass hearth;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  scriptBeginFor(s, "AT+MTSWVER=66560,\"1.4.0\"", "ESP32-C6 Hearth", "1.2.0", "wifi");
+  g_yieldAdvanceMs = 50;
+  check("7cfix4 b671: begin returns true", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+  check("7cfix4 b671: the state is IDLE",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+
+  /* The co-processor reboots: the re-probe goes out on the next poll. */
+  s.injectURC("+MTREADY");
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("7cfix4 b671: the re-probe sent both commands", s.scriptDrained());
+  check("7cfix4 b671: the state is IDLE",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("7cfix4 b671: nothing unexpected on the wire", s.unexpected().empty());
+}
+
+/* 7cfix4 (B671): the re-probe recovers the boot race. begin() meets
+ * +MTERR:8 on AT+MTSWVER (UNAVAILABLE, settled for good), then a reboot
+ * re-probes and the declaration answers OK this time. */
+static void test_b671_reprobe_recovers_boot_race(void) {
+  HearthFsMem fs;
+  MockStream s;
+  HearthClass hearth;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "+MTERR:8\r\nERROR\r\n");
+  g_yieldAdvanceMs = 50;
+  check("7cfix4 b671 race: begin returns true", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+  check("7cfix4 b671 race: the state is UNAVAILABLE",
+        hearth.update.status().state == HEARTH_UPDATE_UNAVAILABLE);
+
+  /* The co-processor reboots and this time the declaration answers OK. */
+  s.injectURC("+MTREADY");
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("7cfix4 b671 race: the state is IDLE",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("7cfix4 b671 race: the script is drained", s.scriptDrained());
+  check("7cfix4 b671 race: nothing unexpected on the wire", s.unexpected().empty());
+}
+
+/* 7cfix4 (B671): the re-probe arms the B667 retry. begin() to IDLE,
+ * then a reboot, the re-probe's requestor switch meets 8 (UNAVAILABLE
+ * with the retry armed), and a commissioning releases it. */
+static void test_b671_reprobe_arms_b667_retry(void) {
+  HearthFsMem fs;
+  fs.setFreeLimit(4 * 1024 * 1024);
+  MockStream s;
+  HearthClass hearth;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  scriptBeginFor(s, "AT+MTSWVER=66560,\"1.4.0\"", "nRF54L15 Hearth", "1.2.0", "thread");
+  g_yieldAdvanceMs = 50;
+  check("7cfix4 b671 retry: begin returns true", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+  check("7cfix4 b671 retry: the state is IDLE",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+
+  /* The co-processor reboots; the re-probe's requestor switch meets 8. */
+  s.injectURC("+MTREADY");
+  s.expect("AT+MTSWVER=66560,\"1.4.0\"", "OK\r\n");
+  s.expect("AT+MTOTA=1", "+MTERR:8\r\nERROR\r\n");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("7cfix4 b671 retry: the state is UNAVAILABLE",
+        hearth.update.status().state == HEARTH_UPDATE_UNAVAILABLE);
+
+  /* A commissioning releases the B667 retry. */
+  s.injectURC("+MTEVT:3");
+  s.expect("AT+MTOTA=1", "OK\r\n");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("7cfix4 b671 retry: the state is IDLE",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+  check("7cfix4 b671 retry: the script is drained", s.scriptDrained());
+  check("7cfix4 b671 retry: nothing unexpected on the wire", s.unexpected().empty());
+}
+
+/* 7cfix4 (B671): no re-probe mid-transfer. A +MTREADY during a download
+ * does not send AT+MTSWVER (the state is DOWNLOADING, not IDLE or
+ * UNAVAILABLE). */
+static void test_b671_no_reprobe_mid_transfer(void) {
+  std::string fx;
+  MockStream s;
+  HearthClass hearth;
+  HearthFsMem fs;
+  hearth.begin(s);
+  hearth.update.hearthAttach(fs);
+  scriptBeginFor(s, "AT+MTSWVER=66560,\"1.4.0\"", "ESP32-C6 Hearth", "1.2.0", "wifi");
+  g_yieldAdvanceMs = 50;
+  check("7cfix4 b671 mid: begin returns true", hearth.update.begin(0x10400, "1.4.0"));
+  g_yieldAdvanceMs = 0;
+  check("7cfix4 b671 mid: the state is IDLE",
+        hearth.update.status().state == HEARTH_UPDATE_IDLE);
+
+  /* Start a download that stops mid-transfer (beginWrite false). */
+  runDownload(s, hearth, fx, "", false);
+  check("7cfix4 b671 mid: the state is DOWNLOADING",
+        hearth.update.status().state == HEARTH_UPDATE_DOWNLOADING);
+
+  /* A reboot mid-transfer: no re-probe (the state is not IDLE or
+   * UNAVAILABLE). */
+  s.injectURC("+MTREADY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("7cfix4 b671 mid: nothing went out on the poll", s.unexpected().empty());
+}
+
+/* 7cfix4 (B671): no re-probe before begin(). A HearthClass whose update
+ * was never begun: a +MTREADY and a poll send nothing. */
+static void test_b671_no_reprobe_before_begin(void) {
+  MockStream s;
+  HearthClass hearth;
+  hearth.begin(s);
+  /* update was never begun: the state is DISABLED. */
+  check("7cfix4 b671 nobegin: the state is DISABLED",
+        hearth.update.status().state == HEARTH_UPDATE_DISABLED);
+  s.injectURC("+MTREADY");
+  g_yieldAdvanceMs = 50;
+  hearth.poll();
+  g_yieldAdvanceMs = 0;
+  check("7cfix4 b671 nobegin: nothing went out", s.unexpected().empty());
+  check("7cfix4 b671 nobegin: the script is drained", s.scriptDrained());
+}
+
 int main(void) {
   printf("\n===== HearthUpdate apply (task 6a) tests =====\n");
   test_order_and_arguments();
@@ -1879,6 +2114,14 @@ int main(void) {
   test_b667_commissioning_releases_retry();
   test_b667_periodic_retry();
   test_b667_no_fota_not_retried();
+  printf("\n===== HearthUpdate apply (task 7c-fix4, F669/B670/B671) tests =====\n");
+  test_coproc_pins_accessor();
+  test_begin_takes_owner_pins();
+  test_b671_reprobe_after_reboot();
+  test_b671_reprobe_recovers_boot_race();
+  test_b671_reprobe_arms_b667_retry();
+  test_b671_no_reprobe_mid_transfer();
+  test_b671_no_reprobe_before_begin();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

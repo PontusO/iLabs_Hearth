@@ -60,7 +60,9 @@ HearthUpdate::HearthUpdate()
     _applyPending(false),
     _requestorRetry(false),
     _requestorRetryMs(0),
-    _requestorRetryNow(false) {
+    _requestorRetryNow(false),
+    _beginComplete(false),
+    _coprocReadySeen(false) {
   _declaredVersion = 0;
   _declaredVersionString[0] = 0;
 #ifdef ARDUINO
@@ -276,6 +278,28 @@ void HearthUpdate::hearthDrain() {
     return;
   }
   DrainGuard guard(_draining);
+  /* B671, bench 2026-09-30: the co-processor's OTA requestor mode is
+   * not persisted (spec 5.2, every boot starts disabled), so after ANY
+   * co-processor reboot the requestor is off until this host re-runs
+   * the declaration and the requestor switch, and a +MTERR:8 that
+   * settled begin() on the boot race (F669) is never re-checked.
+   * hearthNoteCoprocReady() armed the flag on the +MTREADY (it runs
+   * inside a URC callback, no link calls), and the re-probe runs here,
+   * on the drain, exactly as begin() runs it: the declaration first,
+   * then the requestor switch. Only a begin() that completed its
+   * requestor switch gets re-probed (a begin() that never reached it
+   * has sent nothing this can send), and only while the state is
+   * IDLE or UNAVAILABLE: a download, a verdict or an apply is in
+   * flight and handles its own reboots, so any other state does
+   * nothing. */
+  if (_coprocReadySeen) {
+    _coprocReadySeen = false;
+    if (_beginComplete
+        && (_status.state == HEARTH_UPDATE_IDLE
+            || _status.state == HEARTH_UPDATE_UNAVAILABLE)) {
+      hearthDeclareAndRequestor();
+    }
+  }
   if (_status.state == HEARTH_UPDATE_DISABLED || _status.state == HEARTH_UPDATE_UNAVAILABLE) {
     /* B667, bench 2026-09-30 (nRF54L15 on its CPico carrier): an
      * uncommissioned nRF answers AT+MTOTA=1 with +MTERR:8 while its
@@ -659,6 +683,70 @@ void HearthUpdate::hearthAbandon() {
 }
 
 /*
+ * B671: the declaration and the requestor switch, re-run after a
+ * co-processor reboot, from hearthDrain() on the flag
+ * hearthNoteCoprocReady() set. A separate function, not begin()'s own
+ * tail (begin() sends the declaration before its AT+CGMM/MTVER/MTOTA?
+ * queries). Same two commands, same order and same answers as begin():
+ * the declaration first (AT+MTSWVER with the effective version and its
+ * string), then AT+MTOTA=1.
+ */
+void HearthUpdate::hearthDeclareAndRequestor() {
+  char cmd[HEARTH_LINE_MAX];
+  snprintf(cmd, sizeof(cmd), "AT+MTSWVER=%lu,\"%s\"", (unsigned long)_effectiveVersion, _declaredVersionString);
+  int r0 = hearthCmd(cmd, 0, 0);
+  if (r0 == 8) {
+    /* The firmware without FOTA (begin()'s own branch): settled for
+     * good, no further command and no B667 retry (that 8 is not the
+     * requestor refusing, it is the command itself unknown). */
+    _status.state = HEARTH_UPDATE_UNAVAILABLE;
+    _status.effectiveVersion = _effectiveVersion;
+    if (_statusCB) {
+      _statusCB(_status);
+    }
+    return;
+  }
+  if (r0 != 0) {
+    /* A timeout (or a link failure): leave the state as it is. The
+     * requestor stays where the last good boot left it, and the next
+     * reboot re-probes again. */
+    return;
+  }
+  int rc = hearthCmd("AT+MTOTA=1", 0, 0);
+  if (rc == 8) {
+    /* The requestor is not wired yet (begin()'s own branch, B667):
+     * UNAVAILABLE with the retry armed on the commissioning and every
+     * 30 s until it goes. */
+    _status.state = HEARTH_UPDATE_UNAVAILABLE;
+    _status.effectiveVersion = _effectiveVersion;
+    _requestorRetry = true;
+    _requestorRetryMs = (uint32_t)millis();
+    if (_statusCB) {
+      _statusCB(_status);
+    }
+    return;
+  }
+  if (rc != 0) {
+    /* A timeout: leave the state as it is. */
+    return;
+  }
+  _status.state = HEARTH_UPDATE_IDLE;
+  _status.error = HEARTH_UPDATE_OK;
+  _requestorRetry = false;  /* the re-probe made the requestor go: no retry */
+  if (_statusCB) {
+    _statusCB(_status);
+  }
+}
+
+/* B671: a +MTREADY was dispatched (hearthOnURCLine, every +MTREADY,
+ * expected or not). Recording a flag, no link call, so it is safe from
+ * the URC callback it runs in; the re-probe itself goes out on the next
+ * hearthDrain(). */
+void HearthUpdate::hearthNoteCoprocReady() {
+  _coprocReadySeen = true;
+}
+
+/*
  * The query-result collectors: the lines after the prefix, kept in plain
  * members (no heap, no link calls from inside a command callback).
  */
@@ -951,6 +1039,12 @@ void HearthUpdate::hearthFwFailed() {
 #endif
         ((HearthClass *)_owner)->hearthArmExpectedReboot();
         if (((HearthClass *)_owner)->link().waitReady(HEARTH_READY_TIMEOUT_MS)) {
+          /* B671: waitReady dispatched the +MTREADY through the URC route,
+           * setting the re-probe flag. Clear it before the AT+MTVER?
+           * below (whose own drain would otherwise see the flag set and
+           * fire the re-probe): this reboot was driven by the update (the
+           * rollback flash) and the requestor is re-run below. */
+          _coprocReadySeen = false;
           VerQuery rvq;
           rvq.got = false;
           rvq.version[0] = 0;
@@ -964,6 +1058,7 @@ void HearthUpdate::hearthFwFailed() {
         } else {
           ((HearthClass *)_owner)->hearthDisarmExpectedReboot();
         }
+        _coprocReadySeen = false;
       }
       delete ret;
     }
@@ -1076,6 +1171,11 @@ int HearthUpdate::hearthApplyFw(HearthUpdateState &st, int firstAttempt) {
 #endif
       continue;
     }
+    /* B671: waitReady dispatched the +MTREADY through the URC route,
+     * setting the re-probe flag; clear it because this reboot was driven
+     * by the update (the flash attempt) and the requestor is re-run on
+     * success. */
+    _coprocReadySeen = false;
     VerQuery vq;
     vq.got = false;
     vq.version[0] = 0;
@@ -1436,6 +1536,10 @@ void HearthUpdate::end() {
   _requestorRetry = false;
   _requestorRetryMs = 0;
   _requestorRetryNow = false;
+  /* B671: after end() begin() has not completed, so the re-probe after a
+   * co-processor reboot stays off until a begin() completes again. */
+  _beginComplete = false;
+  _coprocReadySeen = false;
 }
 
 
@@ -1471,6 +1575,21 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
     return false;
   }
   _cfg = cfg;
+  /* Task 7c-fix4 (F669, B670): when the config carries no pins (the
+   * default on a board whose variant defines none, the CPico 2350
+   * carriers), the flasher takes them from the owner's
+   * hearthCoprocPins() (coprocessorPins() stored them, or the variant
+   * macros supply them). Explicit cfg pins still win. */
+  if (_cfg.resetPin == -1 && _cfg.strapPin == -1) {
+    HearthCoprocPins p = ((HearthClass *)_owner)->hearthCoprocPins();
+    _cfg.resetPin = p.reset;
+    _cfg.resetActiveLow = p.resetActiveLow;
+    _cfg.strapPin = p.strap;
+    _cfg.strapActiveLow = p.strapActiveLow;
+  }
+  /* B671: this begin() has not completed yet; the re-probe after a
+   * co-processor reboot runs only once its requestor switch has. */
+  _beginComplete = false;
   _status.error = HEARTH_UPDATE_OK;
   _status.reason = 0;
   _status.offeredVersion = 0;
@@ -1648,7 +1767,10 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
     /* The declaration is the state's target (the new product version, even
      * if the sketch's baseline is lower), tried up to three times until one
      * answers OK. Three failures: the first-boot failure (re-stage
-     * host-prev.bin and reboot, the phase becomes HOST_CONFIRM). */
+     * host-prev.bin and reboot, the phase becomes HOST_CONFIRM). The
+     * requestor switch below still runs: the first-boot confirm resets the
+     * co-processor and re-runs it itself, so the switch here only proves
+     * the link is up. */
     r0 = -1;
     for (int i = 0; i < 3; i++) {
       snprintf(cmd, sizeof(cmd), "AT+MTSWVER=%lu,\"%s\"",
@@ -1662,7 +1784,9 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
   } else if (haveState && st.phase == HEARTH_PHASE_HOST_CONFIRM) {
     /* The normal declaration (the effective version), tried up to three
      * times. No answer: clearState, FAILED with HEARTH_UPDATE_ERR_LINK,
-     * begin() returns false, no stageImage, no reboot (it must not loop). */
+     * begin() returns false, no stageImage, no reboot (it must not loop).
+     * The requestor switch below still runs: begin() returns after it
+     * either way, the same commands on the wire as before. */
     r0 = -1;
     for (int i = 0; i < 3; i++) {
       snprintf(cmd, sizeof(cmd), "AT+MTSWVER=%lu,\"%s\"",
@@ -1689,7 +1813,13 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
        * a command it does not know with +MTERR:8 then ERROR (the ordinary
        * unknown command path, AT_MT_SPEC.md). It has no AT+MTOTA either,
        * so FOTA is unavailable, not a broken link: exactly the AT+MTOTA=1
-       * -> 8 branch below, UNAVAILABLE, not an error, no further command. */
+       * -> 8 branch below, UNAVAILABLE, not an error, no further command.
+       *
+       * B671: the declaration was attempted (this is the boot race, F669:
+       * the nRF answered the first command with nothing and AT+MTSWVER
+       * with +MTERR:8 while still starting), so begin() has completed
+       * enough for the re-probe to re-check it after a reboot. */
+      _beginComplete = true;
       _status.state = HEARTH_UPDATE_UNAVAILABLE;
       _status.effectiveVersion = eff;
       if (_statusCB) {
@@ -1774,6 +1904,7 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
     if (_statusCB) {
       _statusCB(_status);
     }
+    _beginComplete = true;
     return true;
   }
   if (rc != 0) {
@@ -1790,6 +1921,10 @@ bool HearthUpdate::begin(uint32_t productVersion, const char *versionString, con
     _status.state = HEARTH_UPDATE_IDLE;
     _status.effectiveVersion = eff;
   }
+  /* B671: the requestor switch has run (it is on, or it is refused and
+   * the retry is armed), so begin() has completed and the re-probe after
+   * a co-processor reboot may run. */
+  _beginComplete = true;
   if (_statusCB) {
     _statusCB(_status);
   }
@@ -1910,8 +2045,15 @@ bool HearthUpdate::hearthFirstBootHost(const HearthUpdateState &stIn) {
     ((HearthClass *)_owner)->hearthArmExpectedReboot();
     if (_hostHooks.coprocReset(pins)) {
       if (((HearthClass *)_owner)->link().waitReady(HEARTH_READY_TIMEOUT_MS)) {
+        /* B671: waitReady dispatched the +MTREADY through the URC route,
+         * setting the re-probe flag. Clear it before the AT+MTOTA=1 below
+         * (whose own drain would otherwise see the flag set and fire the
+         * re-probe): this reboot was driven by the update (the first-boot
+         * confirm) and the requestor is re-run just below. */
+        _coprocReadySeen = false;
         hearthCmd("AT+MTOTA=1", 0, 0);
       } else {
+        _coprocReadySeen = false;
         ((HearthClass *)_owner)->hearthDisarmExpectedReboot();
       }
     } else {

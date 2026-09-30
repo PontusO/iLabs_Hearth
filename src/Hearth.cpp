@@ -26,6 +26,12 @@ HearthClass::HearthClass()
     _threadRole(HEARTH_THREAD_UNSPECIFIED),
     _onThreadRoleChangeCB(nullptr),
     _evtResubscribeNeeded(false) {
+  /* Task 7c-fix4: the stored pins start unwired; the variant macros (or a
+   * coprocessorPins() call before the first use) decide the rest. */
+  _coprocPins.reset = -1;
+  _coprocPins.resetActiveLow = true;
+  _coprocPins.strap = -1;
+  _coprocPins.strapActiveLow = true;
   update.hearthSetOwner(this);
 }
 
@@ -167,7 +173,76 @@ void HearthClass::hearthResetCoprocessor() {
    * for the one its own reboot owes it. */
   hearthDisarmExpectedReboot();
   _expectedRebootSeen = false;
+#elif defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
+  /*
+   * Task 7c-fix4 (F669, B670): the board's variant does not define
+   * PIN_ESP_MODE / PIN_ESP_RST (the CPico 2350 carriers of the nRF54L15
+   * and the MGM240P), so the lines come from coprocessorPins(). Gated on
+   * HEARTH_SERIAL_PORT, the same "real target with a variant port" marker
+   * the HEARTH_SERIAL_PORT re-clock uses: the host test build defines
+   * neither the variant macros nor that port, and its begin(Stream&)
+   * must stay exactly as it was. F669: without this the first commands
+   * went out while the co-processor was still booting (the nRF answered
+   * the first command with nothing and AT+MTSWVER with +MTERR:8, its
+   * refusal while still starting). B670: the RP2350's pads come out of
+   * reset with their pull-down enabled, so the strap line is released
+   * FIRST: a low strap makes an MG24 sample its bootloader-activation pin
+   * low on the reset that follows, and it would sit in its Gecko
+   * bootloader. The reset sequence is then the macro path's, byte for
+   * byte.
+   */
+  if (!_link.started()) {
+    return;
+  }
+  HearthCoprocPins pins = hearthCoprocPins();
+  if (pins.reset == -1) {
+    return;  /* nothing stored either: no lines to drive, as before */
+  }
+  if (pins.strap != -1) {
+    hearthCoprocStrap(pins, false);  /* run mode, not recovery: see B670 */
+  }
+  pinMode(pins.reset, OUTPUT);
+  digitalWrite(pins.reset, pins.resetActiveLow ? LOW : HIGH);  /* assert reset */
+  delay(5);
+  _link.flushInput();                /* drop pre-reset noise */
+  digitalWrite(pins.reset, pins.resetActiveLow ? HIGH : LOW);  /* release: the co-processor boots */
+
+  /* Arm first, then wait: waitReady() dispatches the marker through the
+   * ordinary URC path, and the arm is what stops that path from reporting
+   * this entirely expected boot as HEARTH_COPROCESSOR_REBOOTED. */
+  hearthArmExpectedReboot(HEARTH_READY_TIMEOUT_MS);
+  _link.waitReady(HEARTH_READY_TIMEOUT_MS);
+
+  /* Whether or not the marker arrived, this boot is over. Clearing the arm
+   * stops it swallowing a later, genuinely spontaneous reboot; clearing the
+   * seen flag stops the next AT+MTEPAPPLY from mistaking this boot's marker
+   * for the one its own reboot owes it. */
+  hearthDisarmExpectedReboot();
+  _expectedRebootSeen = false;
 #endif
+}
+
+void HearthClass::coprocessorPins(int resetPin, int strapPin, bool resetActiveLow, bool strapActiveLow) {
+  /* Task 7c-fix4 (F669, B670): stored for boards whose variant defines no
+   * PIN_ESP_RST / PIN_ESP_MODE. The call only stores; nothing is driven
+   * until hearthResetCoprocessor() or the update's apply reads the pins. */
+  _coprocPins.reset = resetPin;
+  _coprocPins.resetActiveLow = resetActiveLow;
+  _coprocPins.strap = strapPin;
+  _coprocPins.strapActiveLow = strapActiveLow;
+}
+
+HearthCoprocPins HearthClass::hearthCoprocPins() const {
+  HearthCoprocPins p = _coprocPins;
+#if defined(PIN_ESP_RST)
+  p.reset = PIN_ESP_RST;
+  p.resetActiveLow = true;
+#endif
+#if defined(PIN_ESP_MODE)
+  p.strap = PIN_ESP_MODE;
+  p.strapActiveLow = true;
+#endif
+  return p;
 }
 
 bool HearthClass::linkUp() {
@@ -996,6 +1071,14 @@ void HearthClass::hearthOnURCLine(const char *line, void *arg) {
     if (self->_onThreadRoleChangeCB) {
       self->_evtResubscribeNeeded = true;
     }
+    /* Task 7c-fix4 (B671): the co-processor's OTA requestor mode is not
+     * persisted (spec 5.2, every boot starts disabled), so every +MTREADY,
+     * expected or not, arms the update's re-probe of its declaration and
+     * the requestor switch. Recording only: this runs inside the link's
+     * own dispatch, where a wire write of its own would be refused
+     * HEARTH_CMD_REENTRANT, and hearthDrain() is where the probe goes out.
+     */
+    self->update.hearthNoteCoprocReady();
     if (self->_expectingReboot) {
       self->_expectingReboot = false;
       self->_expectedRebootSeen = true;
