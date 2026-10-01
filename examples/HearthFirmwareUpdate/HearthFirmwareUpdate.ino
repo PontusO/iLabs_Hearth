@@ -68,7 +68,27 @@
  * --variant thread; for the MGM240P, --fw is the .gbl, --target "MGM240P
  * Hearth" and --variant thread. A bundle may carry either part or both,
  * and fw/check_bundle.py can verify one against the public key before you
- * offer it.
+ * offer it. A Hearth-part-only bundle for each, as run on the bench
+ * (the development nRF54L15 build reports product 0x8000, the MGM240P
+ * 0x8010; check yours with the chip-tool read above):
+ *
+ *   python3 fw/make_bundle.py --vendor 0xFFF1 --product 0x8000 \
+ *     --version 0x00010100 --version-string 1.1.0 \
+ *     --key fw/keys/hearth_bundle_dev_p256.pem \
+ *     --fw zephyr.signed.bin --target "nRF54L15 Hearth" \
+ *     --variant thread --fw-version <version> \
+ *     -o product-1.1.0.ota
+ *
+ *   python3 fw/make_bundle.py --vendor 0xFFF1 --product 0x8010 \
+ *     --version 0x00010100 --version-string 1.1.0 \
+ *     --key fw/keys/hearth_bundle_dev_p256.pem \
+ *     --fw hearth.gbl --target "MGM240P Hearth" \
+ *     --variant thread --fw-version <version> \
+ *     -o product-1.1.0.ota
+ *
+ * --fw-version is the exact AT+MTVER? answer of the image inside, and it
+ * must differ from what the co-processor runs now, or the Hearth part is
+ * skipped as already applied.
  *
  * OFFERING IT, the two ways (step by step in fw/README.md):
  * (a) Home Assistant: put the .ota and the descriptor from
