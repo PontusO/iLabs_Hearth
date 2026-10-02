@@ -814,8 +814,10 @@ and rolled back, described below.
 
 Firmware 1.2.0 and earlier does not carry the OTA requestor. Against one of
 them `begin()` returns `true` and the status callback reports
-`HEARTH_UPDATE_UNAVAILABLE`; nothing else happens. The next firmware
-release carries the requestor.
+`HEARTH_UPDATE_UNAVAILABLE`; nothing else happens. Firmware 1.3.0 is the
+first release that carries it, so **a co-processor on 1.2.0 or older moves to
+1.3.0 over USB** with `fw/flash.py` and this library's bundled images (see
+`fw/README.md`), once; every update after that can come over the air.
 
 The filesystem must hold the staged bundle plus the retained Hearth image,
 and the need is per co-processor:

@@ -29,7 +29,7 @@ are the same firmware and the same AT protocol otherwise.
 |---|---|---|
 | 1 | **WiFi only** | your network is WiFi. **Most users want this one.** Commissioning still happens over BLE; the C6 joins WiFi on the credentials it is handed. |
 | 2 | **Thread only** | you have a Thread network and a border router. |
-| 3 | **WiFi + Thread** | you want one image that can do either. It carries both stacks, so it has less free RAM than the single-transport images, but as of 1.2.0 it serves the full endpoint table on either transport: see [How many endpoints fit](#how-many-endpoints-fit). |
+| 3 | **WiFi + Thread** | you want one image that can do either. It carries both stacks, so it has less free RAM than the single-transport images, but as of 1.2.0 it serves the full endpoint table on either transport (re-measured on 1.3.0): see [How many endpoints fit](#how-many-endpoints-fit). |
 
 You can reflash between variants at any time. A device that is already
 commissioned keeps its fabric across a reflash (the Matter fabric and the
@@ -55,15 +55,16 @@ it is the active transport or not. So the limit is not one number:
 
 As of 1.2.0 all four rows are the same: the pay-per-composition change in
 the firmware lifted the WiFi-active combined image, which used to top out
-near 20, up to the full table with margin to spare (see [Re-measuring
-it](#re-measuring-it)).
+near 20, up to the full table with margin to spare. Re-measured on the 1.3.0
+images, which add the firmware-over-the-air requestor, all four rows still
+serve the full table (see [Re-measuring it](#re-measuring-it)).
 
 **24 is this library's ceiling, and from the Arduino IDE it is the ceiling
 full stop.** `HEARTH_MAX_ENDPOINTS` (`src/MatterEndPoint.h`) sizes the
 declaration registry at 24, and a sketch cannot declare a 25th: the
 registry refuses it before the C6 is ever asked.
 
-The firmware itself accepts 28 (`MT_COMP_MAX_ENDPOINTS`), and as of 1.2.0 all
+The firmware itself accepts 28 (`MT_COMP_MAX_ENDPOINTS`), and as of 1.3.0 all
 four rows above have the heap for it, so the last four endpoints are real.
 They are just not reachable from the IDE. The IDE offers no way to add a
 `-D` to a build: `arduino-pico`'s `platform.txt` has no `build_opt.h` hook
@@ -98,7 +99,7 @@ counts differ and the reconcile rebuild properly.
 Measured on this firmware, a simple type (a light, a sensor, a switch) costs
 about **1,166 bytes** and an energy type (electrical sensor or meter, water
 heater, heat pump, solar, battery, device energy management, EVSE) costs
-about **2,210**. The 1.2.0 images clear the full 24-endpoint library ceiling
+about **2,210**. The 1.3.0 images clear the full 24-endpoint library ceiling
 on every variant and transport; the arithmetic below matters only if you
 raise the ceiling past 28.
 
@@ -108,8 +109,8 @@ raise the ceiling past 28.
 limit; the endpoint counts above are proxies for it at particular mixes.
 
 To predict a composition larger than the ceiling, work from the measured
-1.2.0 figures: the WiFi-active combined image (the tightest variant) serves
-the full 28-endpoint table with **about 45,000 bytes free**, roughly 21 KB
+1.3.0 figures: the WiFi-active combined image (the tightest variant) serves
+the full 28-endpoint table with **about 41,000 bytes free**, roughly 17 KB
 above the floor, and each further endpoint costs about 1,166 bytes (simple)
 or about 2,210 (energy). If a projection lands below 24,000, use fewer
 endpoints or a single-transport image, which start higher still.
@@ -117,7 +118,7 @@ endpoints or a single-transport image, which start higher still.
 The firmware measures the same thing and logs it on every boot:
 
 ```
-mt_main: free heap at startup: 45156 (BLE resident)
+mt_main: free heap at startup: 41364 (BLE resident)
 ```
 
 That line goes to the **C6's own console UART (GPIO2)**, not to the AT link
@@ -157,7 +158,14 @@ whole curve: the WiFi-active combined image now serves the full 28-endpoint
 table, measured 45,156 to 45,288 bytes free where the 2026-08-20 curve
 recorded 7,608 and a double failure, so the WiFi-active cap that used to sit
 near 20 is retired and every variant clears the library's 24-endpoint
-ceiling with margin. The 24,000-byte floor still governs. Heap moves with
+ceiling with margin. On the 1.3.0 images (2026-10-02, firmware `32799fe`,
+the harness's Phase 3 composition, BLE resident, every trial commissioned
+and serving controller traffic), the firmware-over-the-air requestor costs
+about 3.9 KB on the tightest row: the WiFi-active combined image serves 28
+endpoints with 41,364 bytes free (61,360 at 24, 98,796 at one), the WiFi
+image 80,960 at 28, the Thread image 150,848 and the Thread-active combined
+image 74,136. Every variant still clears the ceiling with margin. The
+24,000-byte floor still governs. Heap moves with
 the SDK, with cluster
 configuration and with anything that changes what gets linked, so after an
 SDK bump or an `sdkconfig.defaults*` edit the cap is re-measured rather
@@ -327,7 +335,7 @@ the firmware version and then `OK`:
 
 ```
 AT+CGMR
-1.2.0
+1.3.0
 OK
 ```
 
@@ -368,7 +376,7 @@ confirms the flash and starts the next step at the same time. The library
 README's [Start here](../README.md#start-here) walks through it.
 
 `Hearth.firmwareVersion()` uses `AT+MTVER?`, which carries the same version as
-`AT+CGMR` in a prefixed form (`+MTVER:1.2.0`) that a parser can tell apart from
+`AT+CGMR` in a prefixed form (`+MTVER:1.3.0`) that a parser can tell apart from
 an unsolicited line.
 
 ## The manifest
@@ -415,28 +423,29 @@ output from the tree it was built in. It is separate from the AT-visible
 firmware version, so it is worth checking directly:
 
 ```sh
-python3 -c "print(open('fw/images/wifi/hearth-wifi-1.2.0.bin','rb').read()[48:80].split(b'\0')[0].decode())"
+python3 -c "print(open('fw/images/wifi/hearth-wifi-1.3.0.bin','rb').read()[48:80].split(b'\0')[0].decode())"
 ```
 
-The shipped images answer `1.1.0-16-gff3f989`: a real commit, with no
+The shipped images answer `1.2.0-264-g32799fe`: a real commit, with no
 `-dirty` suffix. A `-dirty` suffix would mean the image came from a tree with
 uncommitted changes and cannot be tied to any commit, which is a thing worth
 noticing before shipping rather than after a field failure.
 
 **That string names an older-looking commit than the release, and it is
-meant to.** These are the exact bytes the 1.2.0 bench qualified: `ff3f989`
-is a real commit in the 1.2.0 history (`git merge-base --is-ancestor ff3f989
-1.2.0` passes) and the nine committed regression baselines record the same
+meant to.** These are the exact bytes the 1.3.0 bench qualified: `32799fe`
+is a real commit in the 1.3.0 history (`git merge-base --is-ancestor 32799fe
+1.3.0` passes) and the twelve committed regression baselines record the same
 commit as their `fw_repo_head`, so the evidence and the artifact name one
 build. Nothing in the firmware source changed between that commit and the
-`1.2.0` tag: the diff touches only the baseline files, so rebuilding from the
-tag yields the same firmware with a descriptor reading `1.2.0` and a fresh
-timestamp, and its hash will **not** match `manifest.json`. Either way
-`AT+CGMR` answers `1.2.0` on all three images, verified on hardware. So the
-older-looking descriptor is the reason to trust these binaries rather than to
-doubt them: shipping a rebuilt image would have meant shipping bytes nobody
-tested. (The 1.1.0 images carried `1.0.0-158-g0e2d222`, and the 1.0.0 images
-`0.12.0-11-gdf9d168`, for the same reason.)
+`1.3.0` tag: the commits after it touch only the baseline files and
+documentation, so rebuilding from the tag yields the same firmware with a
+descriptor reading `1.3.0` and a fresh timestamp, and its hash will **not**
+match `manifest.json`. Either way `AT+CGMR` answers `1.3.0` on all three
+images, verified on hardware. So the older-looking descriptor is the reason
+to trust these binaries rather than to doubt them: shipping a rebuilt image
+would have meant shipping bytes nobody tested. (The 1.2.0 images carried
+`1.1.0-16-gff3f989`, the 1.1.0 images `1.0.0-158-g0e2d222`, and the 1.0.0
+images `0.12.0-11-gdf9d168`, for the same reason.)
 
 ## Firmware update bundles
 
