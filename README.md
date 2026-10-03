@@ -144,7 +144,7 @@ You should see:
 
 ```
 Hearth first light
-Firmware on the co-processor: 1.1.0
+Firmware on the co-processor: 1.3.0
 Endpoint declared. Starting Matter...
 
 Not commissioned yet. Add this device in your Matter app.
@@ -292,6 +292,7 @@ rather than a combination known to work.
 
 | Library | Firmware | Notes |
 |---|---|---|
+| 1.3.0 | 1.3.0 | Firmware over the air: `Hearth.update`, the `HearthFirmwareUpdate` example and the bundle tools, with the 1.3.0 C6 images, the first that carry the OTA requestor (a board on 1.2.0 moves to 1.3.0 with `fw/flash.py` once). |
 | 1.2.0 | 1.2.0 | The 1.2.0 firmware images: the C6 pays per composition, and the combined image serves the full 28-endpoint table with WiFi active. |
 | 1.1.0 | 1.1.0 | Adds `Matter.openCommissioningWindow()` and `Matter.deviceState()`. Ships the matching images in `fw/`. |
 | 1.0.0 | 1.0.0 | The feature-completeness milestone. |
@@ -814,8 +815,10 @@ and rolled back, described below.
 
 Firmware 1.2.0 and earlier does not carry the OTA requestor. Against one of
 them `begin()` returns `true` and the status callback reports
-`HEARTH_UPDATE_UNAVAILABLE`; nothing else happens. The next firmware
-release carries the requestor.
+`HEARTH_UPDATE_UNAVAILABLE`; nothing else happens. Firmware 1.3.0 is the
+first release that carries it, so **a co-processor on 1.2.0 or older moves to
+1.3.0 over USB** with `fw/flash.py` and this library's bundled images (see
+`fw/README.md`), once; every update after that can come over the air.
 
 The filesystem must hold the staged bundle plus the retained Hearth image,
 and the need is per co-processor:
