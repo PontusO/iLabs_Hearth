@@ -173,23 +173,24 @@ void HearthClass::hearthResetCoprocessor() {
    * for the one its own reboot owes it. */
   hearthDisarmExpectedReboot();
   _expectedRebootSeen = false;
-#elif defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
+#elif (defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)) || defined(HEARTH_HAS_GPIO)
   /*
    * Task 7c-fix4 (F669, B670): the board's variant does not define
    * PIN_ESP_MODE / PIN_ESP_RST (the CPico 2350 carriers of the nRF54L15
-   * and the MGM240P), so the lines come from coprocessorPins(). Gated on
-   * HEARTH_SERIAL_PORT, the same "real target with a variant port" marker
-   * the HEARTH_SERIAL_PORT re-clock uses: the host test build defines
-   * neither the variant macros nor that port, and its begin(Stream&)
-   * must stay exactly as it was. F669: without this the first commands
-   * went out while the co-processor was still booting (the nRF answered
-   * the first command with nothing and AT+MTSWVER with +MTERR:8, its
-   * refusal while still starting). B670: the RP2350's pads come out of
-   * reset with their pull-down enabled, so the strap line is released
-   * FIRST: a low strap makes an MG24 sample its bootloader-activation pin
-   * low on the reset that follows, and it would sit in its Gecko
-   * bootloader. The reset sequence is then the macro path's, byte for
-   * byte.
+   * and the MGM240P), so the lines come from coprocessorPins(). This path
+   * is taken by an Arduino build with a variant port (HEARTH_SERIAL_PORT)
+   * and by any build that defines HEARTH_HAS_GPIO, which is how the
+   * iLabs_Hearth_C package compiles: its shim routes pinMode() and
+   * digitalWrite() to the customer's port. The library's host tests define
+   * neither macro, so their begin(Stream&) stays exactly as it was. F669:
+   * without this the first commands went out while the co-processor was
+   * still booting (the nRF answered the first command with nothing and
+   * AT+MTSWVER with +MTERR:8, its refusal while still starting). B670: the
+   * RP2350's pads come out of reset with their pull-down enabled, so the
+   * strap line is released FIRST: a low strap makes an MG24 sample its
+   * bootloader-activation pin low on the reset that follows, and it would
+   * sit in its Gecko bootloader. The reset sequence is then the macro
+   * path's, byte for byte.
    */
   if (!_link.started()) {
     return;
@@ -1116,6 +1117,19 @@ void HearthClass::hearthOnURCLine(const char *line, void *arg) {
 
 HearthClass Hearth;
 
+/* U2: see HearthCompat.h. */
+void (*hearthLogHook)(const char *line) = nullptr;
+
+void hearthLogLine(const char *line) {
+#ifdef ARDUINO
+  Serial.println(line);
+#else
+  if (hearthLogHook != nullptr) {
+    hearthLogHook(line);
+  }
+#endif
+}
+
 /*
  * ArduinoMatter::_matterEventCB - upstream's own public static member; see
  * Hearth.h's comment on the class for why it stays public rather than
@@ -1589,19 +1603,17 @@ void ArduinoMatter::begin() {
       /* Fail closed: a link hiccup here must not read as "definitely zero
        * fabrics, no warning needed" on what may be a live commissioned
        * device. Warn in both cases; only the message differs. */
-#ifdef ARDUINO
       if (!fabricsKnown) {
-        Serial.println(
+        hearthLogLine(
           "Hearth: could not confirm the fabric count before changing the endpoint "
           "composition; warning as a precaution in case the device is commissioned."
         );
       } else {
-        Serial.println(
+        hearthLogLine(
           "Hearth: endpoint composition is changing on a device with an active fabric; "
           "the commissioned controller's cached data model may need re-pairing to see it."
         );
       }
-#endif
       Hearth.hearthSetWarnedAboutRecommission();
     }
 

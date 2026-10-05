@@ -47,7 +47,7 @@ HearthFlasher *HearthFlasher::forModel(const char *model) {
 }
 
 bool hearthCoprocStrap(const HearthCoprocPins &p, bool recovery) {
-#ifdef ARDUINO
+#if defined(ARDUINO) || defined(HEARTH_HAS_GPIO)  /* U1: the iLabs_Hearth_C build drives it too */
   if (p.strap < 0) {
     return false;
   }

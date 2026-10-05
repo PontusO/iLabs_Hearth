@@ -55,3 +55,20 @@ public:
   virtual int peek() = 0;
   virtual void flush() {}
 };
+
+#include <vector>
+
+/* GPIO stand-ins (U1). The core drives the co-processor lines only when
+ * HEARTH_HAS_GPIO is defined (test_gpio_reset builds with it); every call
+ * is recorded so a test can assert the exact sequence. Enumerators, not
+ * macros, as in the Arduino core, so nothing else is rewritten. */
+enum { LOW = 0, HIGH = 1 };
+enum { INPUT = 0, OUTPUT = 1 };
+struct ShimGpioEvent {
+  char kind;  /* 'm' pinMode, 'w' digitalWrite */
+  int pin;
+  int value;
+};
+extern std::vector<ShimGpioEvent> g_gpioLog;
+inline void pinMode(int pin, int mode) { g_gpioLog.push_back({'m', pin, mode}); }
+inline void digitalWrite(int pin, int value) { g_gpioLog.push_back({'w', pin, value}); }
