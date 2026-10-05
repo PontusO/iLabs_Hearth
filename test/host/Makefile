@@ -15,7 +15,7 @@ SRC = ../../src/HearthLink.cpp
 # its three flashers and the vendored esp-serial-flasher. Every recipe that
 # links Hearth.cpp links this set, because HearthClass owns the update.
 UPDATE_OBJS = ../../src/HearthUpdateStage.cpp ../../src/HearthUpdate.cpp ../../src/HearthBundle.cpp uECC.o sha256.o ../../src/HearthFlasher.cpp ../../src/HearthFlasherSmp.cpp ../../src/HearthFlasherXmodem.cpp ../../src/HearthFlasherEsp.cpp esp_loader.o
-TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer test_cmdfields test_roboticvacuum test_microwaveoven test_composition_parent test_refrigerator test_oven test_cooksurface test_attr64 test_electrical test_waterheater test_heatpump test_demcontrol test_solarpower test_batterystorage test_dem test_thread test_rowtransfer test_chargingschedule test_evse test_utilitymeter test_bundle test_update_stage test_update test_update_apply test_flasher_smp test_flasher_xmodem test_flasher_esp test_gpio_reset
+TESTS = test_hearthlink test_attrval test_endpoint test_hearth test_reconcile test_onofflight test_dimmable test_onoffplugin test_dimmableplugin test_colortemp_sensor test_boolsensors test_measuresensors test_matter_umbrella test_no_global_instances test_preferences test_transport test_fan test_windowcovering test_thermostat test_enhancedcolor test_genericswitch test_colorlight test_cabinet test_doorlock test_lightsensor test_flowsensor test_airquality test_mountedonoffcontrol test_mounteddimmableloadcontrol test_airpurifier test_extractorhood test_cooktop test_roomac test_pump test_watervalve test_modeselect test_chime test_smokecoalarm test_powersource test_laundrywasher test_dishwasher test_laundrydryer test_cmdfields test_roboticvacuum test_microwaveoven test_composition_parent test_refrigerator test_oven test_cooksurface test_attr64 test_electrical test_waterheater test_heatpump test_demcontrol test_solarpower test_batterystorage test_dem test_thread test_rowtransfer test_chargingschedule test_evse test_utilitymeter test_bundle test_update_stage test_update test_update_apply test_flasher_smp test_flasher_xmodem test_flasher_esp test_gpio_reset test_log_hook
 
 all: $(TESTS)
 
@@ -44,6 +44,9 @@ test_hearth: test_hearth.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../s
 # the pin code stays out of a plain host build.
 test_gpio_reset: test_gpio_reset.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/HearthThread.cpp ../../src/MatterEndPoint.cpp $(UPDATE_OBJS)
 	$(CXX) $(CXXFLAGS) -DHEARTH_HAS_GPIO -o $@ $^
+
+test_log_hook: test_log_hook.cpp ArduinoShim.cpp $(SRC) ../../src/Hearth.cpp ../../src/HearthThread.cpp ../../src/MatterEndPoint.cpp ../../src/MatterEndpoints/MatterDimmableLight.cpp $(UPDATE_OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ $^
 
 # C3 added MatterDoorLock reconcile-push tests (adopt and rebuild paths)
 # here, so this recipe needs that endpoint .cpp linked in too, not just the

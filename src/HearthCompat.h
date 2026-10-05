@@ -102,30 +102,36 @@
  * makes; a sketch that has not called it yet loses the message the same way
  * a plain Serial.printf() would.
  *
- * The Serial.println() call is gated on ARDUINO, matching Hearth.cpp's own
- * guard around its Serial.println() warnings: this header is unconditionally
- * pulled in by every host test binary through Hearth.h, and test/host's
- * ArduinoShim.h carries no Serial. Left unguarded, hearthLogE()'s body still
- * has to type-check even when never called (it is not a template), so every
- * one of test/host's binaries failed with "'Serial' was not declared in this
- * scope" before this guard existed. On host, log_e() formats into the buffer
- * and drops it: parity with the message never reaching a real Serial
- * console, not a missing feature to add here.
+ * The line goes through hearthLogLine(): Serial on Arduino, hearthLogHook
+ * elsewhere. This header is unconditionally pulled in by every host test
+ * binary through Hearth.h, and test/host's ArduinoShim.h carries no Serial;
+ * the guard that used to keep hearthLogE()'s body from naming Serial there
+ * has moved into hearthLogLine() itself (see Hearth.cpp), where every one of
+ * test/host's binaries failed with "'Serial' was not declared in this scope"
+ * before it existed. On host, log_e() formats into the buffer and hands it
+ * to hearthLogHook when one is set, dropping it otherwise: parity with the
+ * message never reaching a real Serial console, not a missing feature to add
+ * here.
  */
 #ifndef log_e
 #include <Arduino.h>
 #include <stdarg.h>
+/*
+ * U2 (iLabs_Hearth_C): one sink for the library's warnings. The Arduino
+ * build prints to Serial, as before; any other build calls hearthLogHook
+ * when one is set (the C package binds it to its port's log) and drops the
+ * line otherwise, which is what the host tests have always seen. Both are
+ * defined in Hearth.cpp.
+ */
+void hearthLogLine(const char *line);
+extern void (*hearthLogHook)(const char *line);
 inline void hearthLogE(const char *format, ...) {
   char buf[160];
   va_list args;
   va_start(args, format);
   vsnprintf(buf, sizeof(buf), format, args);
   va_end(args);
-#ifdef ARDUINO
-  Serial.println(buf);
-#else
-  (void)buf;
-#endif
+  hearthLogLine(buf);
 }
 #define log_e(format, ...) hearthLogE(format, ##__VA_ARGS__)
 #endif

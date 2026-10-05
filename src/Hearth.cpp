@@ -1116,6 +1116,19 @@ void HearthClass::hearthOnURCLine(const char *line, void *arg) {
 
 HearthClass Hearth;
 
+/* U2: see HearthCompat.h. */
+void (*hearthLogHook)(const char *line) = nullptr;
+
+void hearthLogLine(const char *line) {
+#ifdef ARDUINO
+  Serial.println(line);
+#else
+  if (hearthLogHook != nullptr) {
+    hearthLogHook(line);
+  }
+#endif
+}
+
 /*
  * ArduinoMatter::_matterEventCB - upstream's own public static member; see
  * Hearth.h's comment on the class for why it stays public rather than
@@ -1589,19 +1602,17 @@ void ArduinoMatter::begin() {
       /* Fail closed: a link hiccup here must not read as "definitely zero
        * fabrics, no warning needed" on what may be a live commissioned
        * device. Warn in both cases; only the message differs. */
-#ifdef ARDUINO
       if (!fabricsKnown) {
-        Serial.println(
+        hearthLogLine(
           "Hearth: could not confirm the fabric count before changing the endpoint "
           "composition; warning as a precaution in case the device is commissioned."
         );
       } else {
-        Serial.println(
+        hearthLogLine(
           "Hearth: endpoint composition is changing on a device with an active fabric; "
           "the commissioned controller's cached data model may need re-pairing to see it."
         );
       }
-#endif
       Hearth.hearthSetWarnedAboutRecommission();
     }
 
