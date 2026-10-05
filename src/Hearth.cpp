@@ -173,7 +173,7 @@ void HearthClass::hearthResetCoprocessor() {
    * for the one its own reboot owes it. */
   hearthDisarmExpectedReboot();
   _expectedRebootSeen = false;
-#elif defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)
+#elif (defined(ARDUINO) && defined(HEARTH_SERIAL_PORT)) || defined(HEARTH_HAS_GPIO)
   /*
    * Task 7c-fix4 (F669, B670): the board's variant does not define
    * PIN_ESP_MODE / PIN_ESP_RST (the CPico 2350 carriers of the nRF54L15
@@ -189,7 +189,7 @@ void HearthClass::hearthResetCoprocessor() {
    * FIRST: a low strap makes an MG24 sample its bootloader-activation pin
    * low on the reset that follows, and it would sit in its Gecko
    * bootloader. The reset sequence is then the macro path's, byte for
-   * byte.
+   * byte. U1 (iLabs_Hearth_C): a non-Arduino build that defines HEARTH_HAS_GPIO takes this path too; its shim routes pinMode()/digitalWrite() to the customer's port.
    */
   if (!_link.started()) {
     return;

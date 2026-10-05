@@ -72,6 +72,8 @@ build/
 /test/host/test_flasher_smp
 /test/host/test_flasher_xmodem
 /test/host/test_flasher_esp
+/test/host/test_gpio_reset
+/test/host/test_log_hook
 /test/host/uECC.o
 /test/host/sha256.o
 /test/host/esp_loader.o

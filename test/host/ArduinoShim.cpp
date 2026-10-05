@@ -21,3 +21,5 @@ size_t Print::printf(const char *fmt, ...) {
   }
   return write(buf);
 }
+
+std::vector<ShimGpioEvent> g_gpioLog;
