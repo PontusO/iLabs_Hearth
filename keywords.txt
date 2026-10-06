@@ -279,6 +279,7 @@ PreferenceType	KEYWORD1
 begin	KEYWORD2
 linkUp	KEYWORD2
 lastError	KEYWORD2
+lastLinkRc	KEYWORD2
 onLinkEvent	KEYWORD2
 setTransport	KEYWORD2
 transport	KEYWORD2
