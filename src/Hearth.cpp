@@ -14,6 +14,7 @@
 
 HearthClass::HearthClass()
   : _lastError(0),
+    _lastLinkRc(0),
     _warnedAboutRecommission(false),
     _reconcileFailed(false),
     _expectingReboot(false),
@@ -40,6 +41,7 @@ void HearthClass::begin(Stream &serial, unsigned long baud) {
                // only the HEARTH_SERIAL_PORT path in hearthEnsureLink() actually uses a baud.
   _link.begin(serial);
   _link.onURC(hearthOnURCLine, this);
+  _lastLinkRc = 0;  // U3: a new link is a fresh start for the raw code too
   _reconcileFailed = false;  // a new link is a new start; see hearthReconcileFailed()
   _expectingReboot = false;
   _expectedRebootSeen = false;
@@ -370,6 +372,8 @@ int HearthClass::hearthCommand(const char *cmd, HearthLink::LineCb onLine, void 
    * pattern: the URC route only parsed the state lines, the drain is where
    * the update reaches the link. No-op while it is disabled. */
   hearthDrainUpdate();
+  /* U3: set last, after the drains, so it is this call's code. */
+  _lastLinkRc = rc;
   return rc;
 }
 
@@ -398,6 +402,8 @@ int HearthClass::hearthCommand(const char *cmd, HearthLink::LineCb onLine, void 
   hearthDrainDeferredWork();
   hearthDrainEvtResubscribe();
   hearthDrainUpdate();
+  /* U3: set last, after the drains, so it is this call's code. */
+  _lastLinkRc = rc;
   return rc;
 }
 

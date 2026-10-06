@@ -294,6 +294,32 @@ static void test_commission_window_error_fails(void) {
   check("script drained", ms.scriptDrained());
 }
 
+/* U3: lastLinkRc() is the raw code of the last hearthCommand(), unlike
+ * lastError(), which keeps positive wire codes only. */
+static void test_last_link_rc(void) {
+  MockStream s;
+  s.expect("AT", "OK\r\n");
+  s.expect("AT+MTBOGUS", "+MTERR:5\r\nERROR\r\n");
+  s.expect("AT+MTPLAIN", "ERROR\r\n");
+  Hearth.begin(s);
+  check("begin() resets the link code", Hearth.lastLinkRc() == 0);
+  Hearth.hearthCommand("AT");
+  check("OK leaves 0", Hearth.lastLinkRc() == 0);
+  Hearth.hearthCommand("AT+MTBOGUS");
+  check("a coded refusal is the wire code, in both", Hearth.lastLinkRc() == 5 && Hearth.lastError() == 5);
+  Hearth.hearthCommand("AT+MTPLAIN");
+  check("plain ERROR is -1, lastError() stays 0", Hearth.lastLinkRc() == -1 && Hearth.lastError() == 0);
+  g_yieldAdvanceMs = 50;
+  Hearth.hearthCommand("AT+MTSILENT");
+  check("a timeout is -2, lastError() stays 0", Hearth.lastLinkRc() == -2 && Hearth.lastError() == 0);
+  Hearth.hearthClearLastLinkRc();
+  check("hearthClearLastLinkRc() resets it", Hearth.lastLinkRc() == 0);
+  Hearth.hearthCommand("AT+MTSILENT2", nullptr, nullptr, 100);
+  check("the timeout overload records -2 too", Hearth.lastLinkRc() == -2);
+  g_yieldAdvanceMs = 0;
+  check("script drained", s.scriptDrained());
+}
+
 int main(void) {
   printf("\n===== Hearth link tests =====\n");
   test_version();
@@ -315,6 +341,7 @@ int main(void) {
   test_state_missing_line_fails();
   test_commission_window_forms();
   test_commission_window_error_fails();
+  test_last_link_rc();
   printf("\n===== RESULT: %d passed, %d failed =====\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }
