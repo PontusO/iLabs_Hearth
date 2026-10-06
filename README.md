@@ -292,6 +292,7 @@ rather than a combination known to work.
 
 | Library | Firmware | Notes |
 |---|---|---|
+| 1.3.1 | 1.3.0 | Library-only, no firmware change (the 1.3.0 images in `fw/` stay): portability for the iLabs_Hearth_C C interface package (`HEARTH_HAS_GPIO` lets a build without the Arduino core drive the co-processor's reset and strap lines, and `hearthLogLine()` / `hearthLogHook` carry the library's warnings outside Arduino), and `Hearth.lastLinkRc()`, the raw code of the last command, so a caller can tell a timeout from a refusal. Existing sketches behave as before. |
 | 1.3.0 | 1.3.0 | Firmware over the air: `Hearth.update`, the `HearthFirmwareUpdate` example and the bundle tools, with the 1.3.0 C6 images, the first that carry the OTA requestor (a board on 1.2.0 moves to 1.3.0 with `fw/flash.py` once). |
 | 1.2.0 | 1.2.0 | The 1.2.0 firmware images: the C6 pays per composition, and the combined image serves the full 28-endpoint table with WiFi active. |
 | 1.1.0 | 1.1.0 | Adds `Matter.openCommissioningWindow()` and `Matter.deviceState()`. Ships the matching images in `fw/`. |
