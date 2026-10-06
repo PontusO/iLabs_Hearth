@@ -545,11 +545,13 @@ public:
     return _lastError;
   }
 
-  /* U3: the raw return code of the most recent hearthCommand() (either
-   * form): 0 OK, >0 the +MTERR code, -1 plain ERROR, -2 timeout or link not
-   * started, -3 HEARTH_CMD_REENTRANT. Unlike lastError(), which keeps
-   * positive wire codes only, this lets a caller tell a timeout from a
-   * refusal. begin() resets it to 0. */
+  /* U3: the raw return code of the last command sent through hearthCommand()
+   * (either form), not the last library call: 0 OK, >0 the +MTERR code, -1
+   * plain ERROR, -2 timeout or link not started, -3 HEARTH_CMD_REENTRANT.
+   * Unlike lastError(), which keeps positive wire codes only, this lets a
+   * caller tell a timeout from a refusal; a call that refuses without
+   * sending leaves it as it was. Both begin() and hearthClearLastLinkRc()
+   * reset it to 0. */
   int lastLinkRc() const {
     return _lastLinkRc;
   }
